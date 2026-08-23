@@ -1,0 +1,82 @@
+"""摘要整合服务：把最近一批碎片消息交给 LLM，产出
+summary / topics / facts(三元组) / relations，写回 memories 并更新 facts 表。
+
+思路照抄 Wave Memory services/consolidation.py 的 prompt 设计，去掉群聊维度。
+"""
+import json
+from datetime import datetime, timedelta, timezone
+
+from app.core import llm, memory
+from app.models.database import connect
+
+CONSOLIDATION_PROMPT = """你是记忆整合系统，只输出 JSON。
+把下面的对话片段整合为：
+{
+  "summary": "一句话概括这段对话的核心内容",
+  "topics": ["话题1", "话题2", "话题3"],
+  "facts": [{"subject": "主语(具体人名或专名)", "predicate": "谓语", "object": "宾语"}],
+  "relations": ["话题A 与 话题B 的关系"]
+}
+要求：
+- topics 最多 3 个，用简短名词短语
+- facts 最多 5 个，必须是三元组格式
+- 如果对话是无意义闲聊，summary 写"日常闲聊"，其他字段留空数组
+
+对话片段：
+{conversation}
+"""
+
+
+async def consolidate_recent(hours: int = 2) -> dict:
+    """整合最近 hours 小时内的、尚未整合的用户消息。"""
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, content, ts FROM memories WHERE sender='user' AND summary='' AND ts >= ? ORDER BY ts LIMIT 50",
+            (since,),
+        ).fetchall()
+        if not rows:
+            return {"messages": 0}
+        conversation = "\n".join(f"{r['ts'][:16]} {r['content']}" for r in rows)
+        ids = [r["id"] for r in rows]
+    finally:
+        conn.close()
+
+    result = await llm.chat_json(
+        "你是记忆整合系统，只输出 JSON。",
+        CONSOLIDATION_PROMPT.replace("{conversation}", conversation),
+    )
+    summary = result.get("summary", "")
+    topics = result.get("topics", [])
+
+    conn = connect()
+    try:
+        # 第一个消息作为代表写入 summary（其余置空避免重复整合）
+        conn.execute(
+            "UPDATE memories SET summary=?, topics=? WHERE id=?",
+            (summary, json.dumps(topics, ensure_ascii=False), ids[0]),
+        )
+        conn.execute(
+            "UPDATE memories SET summary='__merged__' WHERE id IN ({})".format(
+                ",".join("?" * (len(ids) - 1))
+            ),
+            ids[1:],
+        )
+        # facts 入库（去重：同三元组则更新 updated_at）
+        now = datetime.now(timezone.utc).isoformat()
+        for f in result.get("facts", []):
+            subj, pred, obj = f.get("subject", ""), f.get("predicate", ""), f.get("object", "")
+            if not (subj and pred and obj):
+                continue
+            conn.execute(
+                """INSERT INTO facts (subject, predicate, object, source_memory_id, confidence, updated_at)
+                   VALUES (?, ?, ?, ?, 0.7, ?)
+                   ON CONFLICT(subject, predicate, object)
+                   DO UPDATE SET updated_at=excluded.updated_at""",
+                (subj, pred, obj, ids[0], now),
+            )
+        conn.commit()
+        return {"messages": len(rows), "summary": summary, "facts": len(result.get("facts", []))}
+    finally:
+        conn.close()

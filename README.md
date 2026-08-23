@@ -44,6 +44,7 @@ python main.py
 ```
 
 详细实施步骤见 [`docs/实施方案细则.md`](docs/实施方案细则.md)。
+设计参考来源与深入学习指南见 [`docs/REFERENCES.md`](docs/REFERENCES.md)。
 
 ## 许可证
 

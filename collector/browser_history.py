@@ -57,6 +57,7 @@ class BrowserHistoryCollector:
         while self._running:
             try:
                 await asyncio.to_thread(self._collect_once)
+                self.pusher.report_health("browser")
             except Exception as e:
                 print(f"[browser] 采集失败: {e}")
             await asyncio.sleep(self.interval)
@@ -99,6 +100,6 @@ class BrowserHistoryCollector:
                 "start_ts": _webkit_to_iso(visit_time),
             })
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         self._running = False
-        await self.pusher.flush()
+        self.pusher.flush_to_disk()

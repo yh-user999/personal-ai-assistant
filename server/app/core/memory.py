@@ -1,12 +1,17 @@
 """记忆闭环核心：
-写入（消息入库 + 向量化）、检索（向量 Top-K + 关键词兜底）、注入（格式化 prompt 片段）。
+写入（消息入库 + 向量化 + 精确去重）、检索（向量 Top-K + 关键词兜底 + 主题活跃度补偿）、
+注入（格式化 prompt 片段）。
 
-M1 里程碑实现 BM25/关键词检索（FTS5 或 LIKE），M1.5 接入 sqlite-vec 向量检索。
+v0.2 采纳外部评审优化：
+- 精确去重：24h 内完全相同消息不重复入库
+- 主题活跃度补偿：检索评分加入 topic boost（近 7 天高频话题不因时间衰减被淹没），
+  对应 Generative Agents 的 recency/importance/relevance 三要素
 参考 Wave Memory：importance 随引用增长、检索评分 = 相似度 × importance × 时间衰减。
 """
 import json
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from app.core import embedding
 from app.models.database import connect
@@ -20,10 +25,18 @@ def _now() -> str:
 
 # ── 写入 ──────────────────────────────────────────────────
 
-async def write_message(sender: str, content: str) -> int:
-    """写入一条对话记忆并向量化。返回 memory_id。"""
+async def write_message(sender: str, content: str) -> int | None:
+    """写入一条对话记忆并向量化。返回 memory_id（重复时返回 None）。"""
     conn = connect()
     try:
+        # 精确去重：24h 内完全相同内容不重复入库
+        dup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        dup = conn.execute(
+            "SELECT id FROM memories WHERE sender=? AND content=? AND ts >= ? LIMIT 1",
+            (sender, content, dup_cutoff),
+        ).fetchone()
+        if dup:
+            return None
         cur = conn.execute(
             "INSERT INTO memories (sender, content, ts, importance) VALUES (?, ?, ?, 1.0)",
             (sender, content, _now()),
@@ -64,10 +77,43 @@ async def update_summary(memory_id: int, summary: str, topics: list[str]) -> Non
 
 # ── 检索 ──────────────────────────────────────────────────
 
+def _topic_boost_map(conn, days: int = 7) -> Counter:
+    """统计近 days 天各 topic 出现频次（用于热点补偿）。调用方负责关闭连接。"""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    counter: Counter = Counter()
+    rows = conn.execute(
+        "SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ?",
+        (since,),
+    )
+    for r in rows:
+        try:
+            for t in json.loads(r["topics"]):
+                counter[t] += 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return counter
+
+
+def _compute_topic_boost(topics_json: str, freq: Counter) -> float:
+    """话题活跃度补偿：记忆所含话题近期越活跃，boost 越高（上限 1.5）。
+
+    公式：1 + min(0.5, max_freq / 20)。单条记忆取所含话题的最高频次。
+    """
+    try:
+        topics = json.loads(topics_json)
+    except (json.JSONDecodeError, TypeError):
+        return 1.0
+    if not topics:
+        return 1.0
+    max_freq = max((freq.get(t, 0) for t in topics), default=0)
+    return 1.0 + min(0.5, max_freq / 20.0)
+
+
 async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> list[dict]:
     """检索相关记忆。向量优先，失败退化为关键词。
 
-    返回: [{"id", "sender", "content", "summary", "ts", "score"}]
+    评分 = 相似度 × importance × 时间衰减 × 主题活跃度补偿
+    返回: [{"id", "sender", "content", "summary", "ts", "topics", "score"}]
     """
     rows: list[dict] = []
 
@@ -79,7 +125,7 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
             cur = conn.execute(
                 """
                 SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance,
-                       v.distance
+                       m.topics, v.distance
                 FROM memory_vectors v
                 JOIN memories m ON m.id = v.memory_id
                 WHERE v.distance < ?
@@ -102,7 +148,7 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
             kw = f"%{query}%"
             cur = conn.execute(
                 """
-                SELECT id, sender, content, summary, ts, importance, 0.5 AS distance
+                SELECT id, sender, content, summary, ts, importance, topics, 0.5 AS distance
                 FROM memories
                 WHERE content LIKE ? OR summary LIKE ?
                 ORDER BY ts DESC LIMIT ?
@@ -113,7 +159,17 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
         finally:
             conn.close()
 
-    # 评分 = 1 - distance（近似相似度）× importance × 时间衰减
+    if not rows:
+        return []
+
+    # 3) 主题活跃度补偿
+    conn = connect()
+    try:
+        freq = _topic_boost_map(conn)
+    finally:
+        conn.close()
+
+    # 4) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
     now = time.time()
     scored = []
     for r in rows:
@@ -124,7 +180,8 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
         except Exception:
             age_days = 0
         decay = 0.5 ** (age_days / 30.0)  # 30 天半衰期
-        scored.append({**r, "score": sim * imp * decay})
+        boost = _compute_topic_boost(r.get("topics", ""), freq)
+        scored.append({**r, "score": sim * imp * decay * boost})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]

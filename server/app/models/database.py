@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.config import settings
 
-_SCHEMA = """
+_BASE_SCHEMA = """
 -- ① 对话记忆（情境记忆）
 CREATE TABLE IF NOT EXISTS memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,21 +72,31 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
   stats TEXT DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+"""
 
--- 向量表（sqlite-vec 虚拟表，与 memories.id 关联）
+# 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。
+# 单独拆分：扩展不可用时 init_db 跳过此段，基础功能不受影响。
+VEC_TABLE_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
   memory_id INTEGER PRIMARY KEY,
   embedding FLOAT[1024]
 );
 """
 
+_SCHEMA = _BASE_SCHEMA + VEC_TABLE_SQL
+
 
 def connect() -> sqlite3.Connection:
-    """打开数据库连接并加载 sqlite-vec 扩展。"""
+    """打开数据库连接：WAL 模式（读写并发）+ busy_timeout（锁等待）。
+
+    WAL 允许读写并行：采集事件写入不会阻塞记忆检索查询。
+    """
     db_file = settings.db_file
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_file))
+    conn = sqlite3.connect(str(db_file), timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         conn.enable_load_extension(True)
         conn.load_extension("vec0")  # sqlite-vec 的扩展名因安装方式而异
@@ -101,5 +111,14 @@ def init_db() -> None:
     try:
         conn.executescript(_SCHEMA)
         conn.commit()
+    except sqlite3.OperationalError as e:
+        # sqlite-vec 未安装时虚拟表建表失败：回滚，改用基础表（向量检索自动退化）
+        conn.rollback()
+        try:
+            conn.executescript(_SCHEMA.replace(VEC_TABLE_SQL, ""))
+            conn.commit()
+            print(f"[db] sqlite-vec 不可用，向量检索已禁用: {e}")
+        except sqlite3.OperationalError:
+            pass
     finally:
         conn.close()

@@ -1,69 +1,139 @@
-"""事件推送器：批量推送行为事件到服务器，断网时本地缓存重试。
+"""事件推送器：线程安全缓冲 + 批量推送 + 断网落盘重试 + 心跳上报。
 
-- 每满 50 条或每 30s 推送一次
-- 推送失败（断网/服务器不可达）→ 事件落盘 cache/pending_*.jsonl，恢复后重试
+v0.2 重构要点：
+- 修复线程安全 bug：采集在 asyncio.to_thread 工作线程中产生事件，
+  旧实现用 get_event_loop().call_soon_threadsafe() 在 Python 3.10+ 会失败；
+  现改为 queue.Queue（线程安全）+ 异步消费协程。
+- 新增心跳：每 5 分钟上报各通道最近成功时间，服务器可检测采集停滞。
+- 新增隐私过滤：事件入队前本地脱敏（可配置）。
 """
 import asyncio
 import json
+import queue
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
+try:
+    from privacy_filter import sanitize_event
+except ImportError:  # 测试环境兜底
+    def sanitize_event(e):
+        return e
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 class EventPusher:
-    def __init__(self, server_url: str, token: str = "", batch_size: int = 50, flush_interval: float = 30.0):
+    def __init__(self, server_url: str, token: str = "", batch_size: int = 50,
+                 flush_interval: float = 30.0, heartbeat_interval: float = 300.0,
+                 privacy_filter: bool = True, cache_dir: str = "./cache"):
         self.server_url = server_url.rstrip("/")
         self.token = token
         self.batch_size = batch_size
         self.flush_interval = flush_interval
-        self._events: list[dict] = []
-        self._lock = asyncio.Lock()
-        self._cache_dir = Path("./cache")
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self.heartbeat_interval = heartbeat_interval
+        self.privacy_filter = privacy_filter
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # 线程安全队列：任意线程 put，消费协程 get
+        self._queue: queue.Queue = queue.Queue(maxsize=10000)
+        # 各采集通道最近成功时间（通道名 → ISO 时间）；GIL 下单键赋值线程安全
+        self._health: dict = {}
+        self._running = True
+
+    # ── 生产者侧（任意线程调用，同步）────────────────────────
 
     def add_event(self, event: dict) -> None:
-        """同步入口（采集线程调用），事件进内存队列。"""
-        # 简化：单事件循环下直接用 append（采集器均为 to_thread 内调用，用锁保护）
-        asyncio.get_event_loop().call_soon_threadsafe(
-            lambda: asyncio.ensure_future(self._add(event))
-        )
+        """入队。事件在入队前完成本地脱敏。"""
+        if self.privacy_filter:
+            event = sanitize_event(event)
+        try:
+            self._queue.put_nowait(event)
+        except queue.Full:
+            # 背压：队列满则落盘，防止内存无限增长
+            self._save_to_disk([event])
 
-    async def _add(self, event: dict) -> None:
-        async with self._lock:
-            self._events.append(event)
-            if len(self._events) >= self.batch_size:
-                await self._push_batch()
+    def report_health(self, channel: str, ts: str = None) -> None:
+        """采集通道报告心跳（成功完成一轮采集时调用）。"""
+        self._health[channel] = ts or _now_iso()
 
-    async def flush(self) -> None:
-        async with self._lock:
-            await self._push_batch()
+    def flush_to_disk(self) -> None:
+        """停止前把内存队列剩余事件落盘（下次启动时重试推送）。"""
+        batch = self._drain(batch_size=10_000)
+        if batch:
+            self._save_to_disk(batch)
 
-    async def _push_batch(self) -> None:
-        if not self._events:
-            return
-        batch, self._events = self._events[: self.batch_size], []
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+    # ── 消费侧（异步）──────────────────────────────────────
+
+    async def run(self) -> None:
+        """消费循环：批量推送。"""
+        await self._retry_cache()
+        while self._running:
+            batch = self._drain(self.batch_size)
+            if not batch:
+                await asyncio.sleep(1)
+                continue
+            await self._push_batch(batch)
+
+    async def heartbeat(self) -> None:
+        """心跳循环：上报各通道最近成功时间。"""
+        while self._running:
+            await asyncio.sleep(self.heartbeat_interval)
+            await self._send_heartbeat()
+
+    async def stop(self) -> None:
+        self._running = False
+        self.flush_to_disk()
+
+    # ── 内部实现 ────────────────────────────────────────────
+
+    def _drain(self, batch_size: int) -> list[dict]:
+        batch = []
+        for _ in range(batch_size):
+            try:
+                batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        return batch
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    async def _push_batch(self, batch: list[dict]) -> None:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.post(
                     f"{self.server_url}/api/events",
                     json={"events": batch},
-                    headers=headers,
+                    headers=self._headers(),
                 )
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
+            print(f"[pusher] 推送成功 {len(batch)} 条")
         except Exception as e:
-            print(f"[pusher] 推送失败，缓存 {len(batch)} 条: {e}")
-            # 落盘缓存
-            f = self._cache_dir / f"pending_{int(time.time())}.jsonl"
-            with f.open("a", encoding="utf-8") as fp:
-                for ev in batch:
-                    fp.write(json.dumps(ev, ensure_ascii=False) + "\n")
+            print(f"[pusher] 推送失败，落盘 {len(batch)} 条: {e}")
+            self._save_to_disk(batch)
 
-    async def retry_cache(self) -> None:
-        """启动时重试历史缓存。"""
-        for f in sorted(self._cache_dir.glob("pending_*.jsonl")):
+    async def _send_heartbeat(self) -> None:
+        payload = {"client": "collector", "channels": dict(self._health)}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{self.server_url}/api/heartbeat",
+                    json=payload,
+                    headers=self._headers(),
+                )
+        except Exception:
+            pass  # 心跳失败不致命，下轮重试
+
+    async def _retry_cache(self) -> None:
+        """启动时推送历史落盘缓存。"""
+        for f in sorted(self.cache_dir.glob("pending_*.jsonl")):
             events = []
             for line in f.read_text(encoding="utf-8").splitlines():
                 try:
@@ -71,7 +141,11 @@ class EventPusher:
                 except json.JSONDecodeError:
                     continue
             if events:
-                async with self._lock:
-                    self._events.extend(events)
-                await self._push_batch()
+                await self._push_batch(events)
             f.unlink(missing_ok=True)
+
+    def _save_to_disk(self, events: list[dict]) -> None:
+        f = self.cache_dir / f"pending_{int(time.time())}.jsonl"
+        with f.open("a", encoding="utf-8") as fp:
+            for ev in events:
+                fp.write(json.dumps(ev, ensure_ascii=False) + "\n")

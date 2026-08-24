@@ -1,5 +1,7 @@
-"""行为事件接收接口：Windows 采集器推送的事件入库。"""
-from fastapi import APIRouter, Header, HTTPException
+"""行为事件接收接口：Windows 采集器推送的事件入库 + 心跳上报。"""
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import settings
@@ -40,3 +42,22 @@ async def receive_events(batch: EventBatch, authorization: str | None = Header(d
     finally:
         conn.close()
     return {"received": len(batch.events)}
+
+
+class HeartbeatBody(BaseModel):
+    client: str = "collector"
+    channels: dict = {}  # 通道名 → 最近成功 ISO 时间
+
+
+@router.post("/heartbeat")
+async def heartbeat(body: HeartbeatBody, request: Request) -> dict:
+    """采集器心跳：更新各通道最近成功时间，供健康检查检测采集停滞。
+
+    心跳轻量存内存（app.state），服务重启即清零——个人场景足够。
+    """
+    request.app.state.collector_heartbeat = {
+        "client": body.client,
+        "channels": body.channels,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {"ok": True}

@@ -52,7 +52,31 @@ def weekly_stats(days: int = 7) -> dict:
         "浏览域名Top5": json.dumps(
             [{"domain": b["name"], "次数": b["cnt"]} for b in browsers], ensure_ascii=False
         ),
+        "本周热点话题Top5": json.dumps(top_topics(days=days, limit=5), ensure_ascii=False),
     }
+
+
+def top_topics(days: int = 7, limit: int = 5) -> list[dict]:
+    """热点话题：近 days 天 memories.topics 出现频次 Top-N。"""
+    from collections import Counter
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    counter: Counter = Counter()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ?",
+            (since,),
+        )
+        for r in rows:
+            try:
+                for t in json.loads(r["topics"]):
+                    counter[t] += 1
+            except (json.JSONDecodeError, TypeError):
+                continue
+    finally:
+        conn.close()
+    return [{"topic": t, "count": c} for t, c in counter.most_common(limit)]
 
 
 async def evict_stale() -> dict:

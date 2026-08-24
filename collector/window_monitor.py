@@ -53,6 +53,7 @@ class WindowMonitor:
         while self._running:
             try:
                 await asyncio.to_thread(self._tick)
+                self.pusher.report_health("window")
             except Exception:
                 pass
             await asyncio.sleep(self.interval)
@@ -84,7 +85,7 @@ class WindowMonitor:
             })
         self._current = None
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         self._running = False
         self._flush(time.time())
-        await self.pusher.flush()
+        self.pusher.flush_to_disk()

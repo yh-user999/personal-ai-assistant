@@ -28,3 +28,15 @@ def test_worklog_route():
         r = client.post("/api/chat", json={"message": "记录：下午2-5点调RAG性能"})
         assert r.status_code == 200
         assert "已记录" in r.json()["reply"]
+
+
+def test_heartbeat_and_health():
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/heartbeat",
+            json={"client": "collector", "channels": {"window": "2025-01-01T00:00:00+00:00"}},
+        )
+        assert r.status_code == 200
+        hb = client.get("/api/health").json()["collector_heartbeat"]
+        assert hb["client"] == "collector"
+        assert "window" in hb["channels"]

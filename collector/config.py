@@ -29,6 +29,9 @@ class CollectorSettings(BaseSettings):
     # git 扫描的项目目录（逗号分隔）
     git_repos: str = ""
 
+    # 隐私过滤：事件离开本机前脱敏（密码/token/手机号/邮箱等）
+    privacy_filter: bool = True
+
     # 浏览器历史缓存位置（增量游标）
     cache_dir: str = "./cache"
 

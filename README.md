@@ -46,6 +46,7 @@ python main.py
 详细实施步骤见 [`docs/实施方案细则.md`](docs/实施方案细则.md)。
 设计参考来源与深入学习指南见 [`docs/REFERENCES.md`](docs/REFERENCES.md)。
 外部 AI 评审的采纳/拒绝记录见 [`docs/AI_REVIEW.md`](docs/AI_REVIEW.md)。
+让 AI 继续优化的提问模板见 [`docs/AI_OPTIMIZATION_PROMPTS.md`](docs/AI_OPTIMIZATION_PROMPTS.md)。
 
 ## 许可证
 

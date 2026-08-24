@@ -47,6 +47,7 @@ python main.py
 设计参考来源与深入学习指南见 [`docs/REFERENCES.md`](docs/REFERENCES.md)。
 外部 AI 评审的采纳/拒绝记录见 [`docs/AI_REVIEW.md`](docs/AI_REVIEW.md)。
 让 AI 继续优化的提问模板见 [`docs/AI_OPTIMIZATION_PROMPTS.md`](docs/AI_OPTIMIZATION_PROMPTS.md)。
+部署环境与服务器信息见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 ## 许可证
 

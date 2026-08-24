@@ -23,18 +23,18 @@
 | 7890/7891 | mihomo（clash，本机已有） | 运行中 |
 | 22 | SSH | 运行中 |
 
-## LLM/Embedding 配置（2026-08-24 确定）
+## LLM/Embedding 配置（2026-08-24 确定，已验证可用）
 
 | 项 | 配置 |
 |---|---|
-| LLM 网关 | OpenCode Zen：`https://opencode.ai/zen/v1`（OpenAI 兼容） |
-| LLM 模型 | `deepseek-v4-flash`（备选 `deepseek-v4-pro`；注意 Zen 账户需有余额） |
+| LLM 网关 | **OpenCode Go 订阅**：`https://opencode.ai/zen/go/v1`（OpenAI 兼容） |
+| LLM 模型 | `deepseek-v4-flash`（Go 套餐模型列表内，另有 `deepseek-v4-pro`） |
 | Embedding | 智谱：`https://open.bigmodel.cn/api/paas/v4`，模型 `embedding-3`，维度 **2048** |
-| 备份 LLM | 智谱 GLM：`glm-4-flash`（同智谱 key），余额不足时临时顶替 |
 | .env 备份 | `.env.bak`（原始配置快照） |
 
-> 教训：DeepSeek 官方 key 与 OpenCode Zen key 不通用；OpenCode Zen 的
-> DeepSeek 走 `opencode.ai/zen` 网关，模型名是 `deepseek-v4-*`。
+> 教训：OpenCode 有两个网关——Zen（按量计费 `/zen/v1`）与 Go（$10/月订阅
+> `/zen/go/v1`）；key 相同但端点不同。DeepSeek 官方 key 与 OpenCode key 不通用，
+> Go 套餐里 DeepSeek 的模型 ID 是 `deepseek-v4-*`。
 
 ## 防火墙（两层，都放行才通）
 

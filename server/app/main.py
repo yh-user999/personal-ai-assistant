@@ -4,15 +4,23 @@ M1 里程碑：注册 chat 路由并跑通记忆检索注入。
 M2 里程碑：注册 events/stats 路由。
 M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 """
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 from app.api import chat, events, reports, stats
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
+
+# 统一日志：INFO 级别，含时间/级别/模块
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("assistant")
 
 
 @asynccontextmanager

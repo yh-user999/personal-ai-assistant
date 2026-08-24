@@ -3,10 +3,13 @@
 表结构与 docs/实施方案细则.md 第四节对应。
 注意：sqlite-vec 是扩展，需在连接时 load_extension。
 """
+import logging
 import sqlite3
 from pathlib import Path
 
 from app.config import settings
+
+logger = logging.getLogger("assistant.db")
 
 _BASE_SCHEMA = """
 -- ① 对话记忆（情境记忆）
@@ -72,6 +75,11 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
   stats TEXT DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+
+-- 查询索引（v0.3 采纳评审建议：常用查询字段建索引）
+CREATE INDEX IF NOT EXISTS idx_memories_ts ON memories(ts);
+CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at);
+CREATE INDEX IF NOT EXISTS idx_worklog_created ON work_log(created_at);
 """
 
 # 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。
@@ -117,7 +125,7 @@ def init_db() -> None:
         try:
             conn.executescript(_SCHEMA.replace(VEC_TABLE_SQL, ""))
             conn.commit()
-            print(f"[db] sqlite-vec 不可用，向量检索已禁用: {e}")
+            logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
         except sqlite3.OperationalError:
             pass
     finally:

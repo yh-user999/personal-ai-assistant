@@ -4,6 +4,7 @@
 用法: python main.py
 """
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -12,6 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("collector")
 
 from config import settings  # noqa: E402
 from window_monitor import WindowMonitor  # noqa: E402
@@ -36,10 +43,10 @@ async def main() -> None:
         collectors.append(GitScanner(pusher, repos=settings.git_repos, interval=settings.git_interval))
 
     if not collectors:
-        print("没有启用的采集通道，检查 .env 配置")
+        logger.warning("没有启用的采集通道，检查 .env 配置")
         return
 
-    print(f"采集器启动：{len(collectors)} 个通道 → {settings.server_url}")
+    logger.info("采集器启动：%d 个通道 → %s", len(collectors), settings.server_url)
     tasks = [
         asyncio.create_task(pusher.run()),
         asyncio.create_task(pusher.heartbeat()),

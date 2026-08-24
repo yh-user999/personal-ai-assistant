@@ -4,11 +4,14 @@
 """
 import asyncio
 import json
+import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pusher import EventPusher
+
+logger = logging.getLogger("collector.git")
 
 
 class GitScanner:
@@ -37,14 +40,14 @@ class GitScanner:
                 await asyncio.to_thread(self._scan_all)
                 self.pusher.report_health("git")
             except Exception as e:
-                print(f"[git] 扫描失败: {e}")
+                logger.warning("扫描失败: %s", e)
             await asyncio.sleep(self.interval)
 
     def _scan_all(self) -> None:
         for repo in self.repos:
             repo_path = Path(repo)
             if not repo_path.exists():
-                print(f"[git] 仓库不存在: {repo}")
+                logger.warning("仓库不存在: %s", repo)
                 continue
             since = self._cursors.get(repo, "")
             try:
@@ -76,7 +79,7 @@ class GitScanner:
                     self.pusher.add_event(c)
                 self._cursors[repo] = latest
             except Exception as e:
-                print(f"[git] {repo} 扫描出错: {e}")
+                logger.warning("%s 扫描出错: %s", repo, e)
         self._save_cursors()
 
     def stop(self) -> None:

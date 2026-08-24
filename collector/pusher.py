@@ -9,12 +9,15 @@ v0.2 重构要点：
 """
 import asyncio
 import json
+import logging
 import queue
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+
+logger = logging.getLogger("collector.pusher")
 
 try:
     from privacy_filter import sanitize_event
@@ -114,9 +117,9 @@ class EventPusher:
                 )
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
-            print(f"[pusher] 推送成功 {len(batch)} 条")
+            logger.info("推送成功 %d 条", len(batch))
         except Exception as e:
-            print(f"[pusher] 推送失败，落盘 {len(batch)} 条: {e}")
+            logger.warning("推送失败，落盘 %d 条: %s", len(batch), e)
             self._save_to_disk(batch)
 
     async def _send_heartbeat(self) -> None:

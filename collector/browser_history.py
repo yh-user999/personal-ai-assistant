@@ -7,6 +7,7 @@
 """
 import asyncio
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from pusher import EventPusher
+
+logger = logging.getLogger("collector.browser")
 
 CHROME_HISTORY = Path(os.environ.get(
     "LOCALAPPDATA", "C:/Users/default/AppData/Local"
@@ -59,7 +62,7 @@ class BrowserHistoryCollector:
                 await asyncio.to_thread(self._collect_once)
                 self.pusher.report_health("browser")
             except Exception as e:
-                print(f"[browser] 采集失败: {e}")
+                logger.warning("采集失败: %s", e)
             await asyncio.sleep(self.interval)
 
     def _collect_once(self) -> None:
@@ -71,7 +74,7 @@ class BrowserHistoryCollector:
                 shutil.copy2(history_path, tmp)
                 self._read(tmp)
             except Exception as e:
-                print(f"[browser] {history_path.name} 读取失败: {e}")
+                logger.warning("%s 读取失败: %s", history_path.name, e)
             finally:
                 shutil.rmtree(tmp.parent, ignore_errors=True)
         self._save_cursor(self._cursor)

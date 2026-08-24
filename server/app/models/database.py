@@ -84,10 +84,11 @@ CREATE INDEX IF NOT EXISTS idx_worklog_created ON work_log(created_at);
 
 # 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。
 # 单独拆分：扩展不可用时 init_db 跳过此段，基础功能不受影响。
-VEC_TABLE_SQL = """
+# 维度跟随 .env 的 EMBEDDING_DIMENSION（不同向量模型维度不同：1024 / 2048）。
+VEC_TABLE_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
   memory_id INTEGER PRIMARY KEY,
-  embedding FLOAT[1024]
+  embedding FLOAT[{settings.embedding_dimension}] distance_metric=cosine
 );
 """
 
@@ -106,11 +107,16 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     try:
+        # 让 sqlite-vec 包自己给出扩展文件路径（Linux/Windows 通用）。
+        # 之前直接 load_extension("vec0") 按名字找，Linux 上找不到文件会失败。
+        import sqlite_vec
+
         conn.enable_load_extension(True)
-        conn.load_extension("vec0")  # sqlite-vec 的扩展名因安装方式而异
-    except sqlite3.OperationalError:
+        conn.load_extension(sqlite_vec.loadable_path())
+        logger.info("sqlite-vec 已加载: %s", sqlite_vec.loadable_path())
+    except Exception as e:
         # 扩展未加载不致命：向量检索功能暂不可用，其余功能正常
-        pass
+        logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
     return conn
 
 

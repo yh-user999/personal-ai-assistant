@@ -117,7 +117,8 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
     """
     rows: list[dict] = []
 
-    # 1) 向量检索
+    # 1) 向量检索（sqlite-vec vec0 是 KNN 虚拟表，必须 MATCH + k 语法，
+    #    不能像普通列那样 WHERE v.distance < ?——距离过滤在 Python 层做）
     try:
         qvec = (await embedding.embed([query]))[0]
         conn = connect()
@@ -128,11 +129,9 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
                        m.topics, v.distance
                 FROM memory_vectors v
                 JOIN memories m ON m.id = v.memory_id
-                WHERE v.distance < ?
-                ORDER BY v.distance
-                LIMIT ?
+                WHERE v.embedding MATCH ? AND k = ?
                 """,
-                (1.0 - min_similarity, top_k * 2),
+                (json.dumps(qvec), top_k * 2),
             )
             for r in cur.fetchall():
                 rows.append(dict(r))
@@ -170,10 +169,16 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
         conn.close()
 
     # 4) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
+    #    distance 为 cosine 距离（0~2）：sim = 1 - distance
     now = time.time()
     scored = []
     for r in rows:
-        sim = max(0.0, 1.0 - float(r.get("distance", 0.5)))
+        distance = r.get("distance")
+        if distance is None:  # 零向量等特例（真实 embedding 不会出现）
+            continue
+        sim = max(0.0, 1.0 - float(distance))
+        if sim < min_similarity:
+            continue
         imp = float(r.get("importance", 1.0))
         try:
             age_days = (now - datetime.fromisoformat(r["ts"]).timestamp()) / 86400

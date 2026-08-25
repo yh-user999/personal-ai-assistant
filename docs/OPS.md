@@ -59,7 +59,8 @@ Start-ScheduledTask -TaskName "PAA-Collector"
 ### 查日志
 
 ```powershell
-Get-Content F:\Projects\git\personal-ai-assistant\collector\logs\collector.log -Tail 10
+# 注意 -Encoding UTF8：日志文件是 UTF-8，不带参数会显示中文乱码
+Get-Content F:\Projects\git\personal-ai-assistant\collector\logs\collector.log -Encoding UTF8 -Tail 10
 ```
 
 ### 查任务状态 / 运行结果
@@ -90,7 +91,7 @@ Start-ScheduledTask -TaskName "PAA-Robot"
 ### 查日志（黑匣子）
 
 ```powershell
-Get-Content F:\Projects\git\personal-ai-assistant\desktop\logs\desktop.log -Tail 10
+Get-Content F:\Projects\git\personal-ai-assistant\desktop\logs\desktop.log -Encoding UTF8 -Tail 10
 ```
 
 ### 手动退出

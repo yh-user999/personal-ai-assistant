@@ -55,22 +55,28 @@ class GitScanner:
                 if not since:
                     # 首次：只取最近 7 天
                     cmd = ["git", "log", "--since=7 days ago", "--pretty=%H|%cI|%s", "--date=iso"]
-                out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=30)
+                # encoding="utf-8"：commit message 是 UTF-8，text=True 会用系统
+                # GBK 解码导致中文报错；errors="replace" 兜底防崩
+                out = subprocess.run(
+                    cmd, cwd=repo, capture_output=True,
+                    encoding="utf-8", errors="replace", timeout=30,
+                )
                 if out.returncode != 0:
                     continue
                 commits = []
                 latest = since
-                for line in out.stdout.strip().splitlines():
+                for line in (out.stdout or "").strip().splitlines():  # 空输出防御
                     if not line:
                         continue
                     parts = line.split("|", 2)
                     if len(parts) < 3:
                         continue
                     _hash, ts, subject = parts
+                    detail = (subject or "").strip()[:100] or "(无提交说明)"
                     commits.append({
                         "kind": "git_commit",
                         "name": repo_path.name,
-                        "detail": subject[:100],
+                        "detail": detail,
                         "start_ts": ts,
                     })
                     if ts > latest:

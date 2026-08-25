@@ -9,19 +9,17 @@ from datetime import datetime, timezone
 
 from app.models.database import connect
 
-# 数字格式：14:00-17:00 / 14:00至16:30 / 9~11
+# 数字格式：14:00-17:00 / 14:00至16:30 / 9~11 / 14:00到16:30
 _TIME_RANGE_RE = re.compile(
-    r"(\d{1,2}(?::\d{2})?)\s*[-~至]\s*(\d{1,2}(?::\d{2})?)"
+    r"(\d{1,2}(?::\d{2})?)\s*[-\~至到]\s*(\d{1,2}(?::\d{2})?)"
 )
 # 中文口语：上午9点到11点 / 下午3点到5点 / 晚上7-9点
-# 注意：数字后可有可无"点"字（"3点到5点"与"3-5点"都支持）
-_CN_RANGE_RE = re.compile(r"(上午|下午|晚上)?\s*(\d{1,2})\s*点?\s*[-~至]\s*(\d{1,2})\s*点")
+# 注意：① 数字后可有可无"点"字；② "到"和"至"都要支持（口语说"到"）
+_CN_RANGE_RE = re.compile(r"(上午|下午|晚上)?\s*(\d{1,2})\s*点?\s*[-\~至到]\s*(\d{1,2})\s*点")
 
 
 def _parse_time_range(content: str) -> str:
-    m = _TIME_RANGE_RE.search(content)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
+    # 先试中文口语（特征：结尾带"点"字），再试纯数字格式
     m = _CN_RANGE_RE.search(content)
     if m:
         period, h1, h2 = m.group(1), int(m.group(2)), int(m.group(3))
@@ -32,6 +30,9 @@ def _parse_time_range(content: str) -> str:
             if h2 < 12:
                 h2 += 12
         return f"{h1:02d}:00-{h2:02d}:00"
+    m = _TIME_RANGE_RE.search(content)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
     return ""
 
 

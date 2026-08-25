@@ -1,4 +1,4 @@
-# 打包桌面悬浮球为单个 exe（Windows PowerShell）
+﻿# 打包桌面悬浮球为单个 exe（Windows PowerShell）
 # 用法: .\scripts\build_desktop.ps1
 $ErrorActionPreference = "Stop"
 

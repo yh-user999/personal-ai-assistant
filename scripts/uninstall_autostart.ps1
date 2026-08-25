@@ -1,4 +1,4 @@
-# 卸载开机自启（管理员 PowerShell）
+﻿# 卸载开机自启（管理员 PowerShell）
 # 用法: 管理员 PowerShell 执行  .\scripts\uninstall_autostart.ps1
 $ErrorActionPreference = "SilentlyContinue"
 

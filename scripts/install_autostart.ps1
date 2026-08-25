@@ -1,4 +1,4 @@
-# 一键安装开机自启（管理员 PowerShell）
+﻿# 一键安装开机自启（管理员 PowerShell）
 # 注册两个任务计划：
 #   PAA-Collector  采集器（登录后延迟 30s 启动，崩溃自动重启 3 次）
 #   PAA-Robot      桌面机器人（登录后启动）

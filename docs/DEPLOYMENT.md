@@ -27,6 +27,18 @@ Windows / 手机 ──Tailscale 加密专线──→ JD 服务器（100.x.y.z:
 - 所有 API 请求带 `Authorization: Bearer <API_TOKEN>`（.env 配置，不入库）
 - 换设备访问 = 该设备登录同一 Tailscale 账号即可
 
+## Windows 端部署（2026-08-25）
+
+| 项 | 配置 |
+|---|---|
+| 项目路径 | `F:\Projects\git\personal-ai-assistant`（git clone，`git pull` 更新） |
+| Python | 3.14（`pythonw.exe` 无窗口启动） |
+| 开机自启 | 任务计划 `PAA-Collector`（登录+30s）+ `PAA-Robot`（登录+15s）；脚本 `scripts/install_autostart.ps1` |
+| 崩溃自愈 | 采集器重启 3 次 / 机器人 1 次 |
+| 网络依赖 | Tailscale `--unattended`（登录前自动连专线，机器人启动不红灯） |
+| 日志 | 采集器 `collector/logs/collector.log`；服务器 `/tmp/assistant.log` |
+| 采集范围 | 前台窗口（8s）/ Chrome+Edge 历史（10min）/ git 指定仓库（15min），本地脱敏后推送 |
+
 ## 服务规划
 
 | 端口 | 服务 | 暴露面 |

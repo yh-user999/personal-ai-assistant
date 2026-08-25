@@ -22,7 +22,7 @@
 |------|------|--------|
 | `server/` | 服务端：聊天编排、记忆闭环、行为统计、周报 | FastAPI + SQLite + sqlite-vec + DeepSeek API |
 | `collector/` | Windows 采集器：前台窗口、浏览器历史、git 提交 | Python + Win32 API（ctypes） |
-| `desktop/` | 桌面悬浮球：悬浮图标、聊天气泡、托盘、通知 | PySide6（Qt6） |
+| `desktop/` | 桌面悬浮机器人：自绘形象（呼吸/眨眼/状态灯）、气泡聊天、托盘、开机自启 | PySide6（Qt6） |
 | `docs/` | 实施方案细则、架构文档 | Markdown |
 | `scripts/` | 部署脚本（服务器 / 采集器 / 打包） | bash / PowerShell |
 

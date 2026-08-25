@@ -53,6 +53,11 @@ async def consolidate_recent(hours: int = 2) -> dict:
     summary = result.get("summary", "")
     topics = result.get("topics", [])
 
+    # 关切追踪：本批话题更新关切表（提及次数+1、刷新时间）
+    from app.services.concern_tracker import upsert_concerns
+
+    upsert_concerns(topics)
+
     conn = connect()
     try:
         # 第一个消息作为代表写入 summary（其余置空避免重复整合）

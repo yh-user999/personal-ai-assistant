@@ -96,6 +96,28 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- ⑨ 关切话题（用户最近在意的主题，mention_count 追踪活跃度）
+CREATE TABLE IF NOT EXISTS concerns (
+  topic TEXT PRIMARY KEY,
+  mention_count INTEGER DEFAULT 1,
+  last_mentioned_at TEXT NOT NULL
+);
+
+-- ⑩ 术语词典（用户问过的技术名词 → 解释，保证口径一致）
+CREATE TABLE IF NOT EXISTS jargon_terms (
+  term TEXT PRIMARY KEY,
+  explanation TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  times_used INTEGER DEFAULT 0
+);
+
+-- ⑪ 风格范例（用户满意的回复，few-shot 注入）
+CREATE TABLE IF NOT EXISTS style_examples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 # 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。

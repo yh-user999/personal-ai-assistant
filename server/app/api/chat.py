@@ -1,4 +1,4 @@
-"""聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 自省（纠正→教训）。"""
+"""聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 思维模块（自省/关切/术语/风格）。"""
 import re
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -6,6 +6,9 @@ from pydantic import BaseModel
 from app.core import llm, memory
 from app.models.database import connect
 from app.services import worklog
+from app.services.concern_tracker import get_concerns_injection
+from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
+from app.services.jargon import detect_definition, get_jargon_injection, save_term
 from app.services.profile import get_profile_injection
 from app.services.self_reflect import detect_correction, get_lessons_injection, save_lesson
 
@@ -30,6 +33,14 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 用户过往的纠正与偏好（务必遵守，违反即违背用户明确指示）：
 {lessons}
+
+用户当前关切的话题：
+{concerns}
+
+{jargon}
+
+用户认可过的回复风格（参照其形式，不必逐字模仿）：
+{style_examples}
 """
 
 
@@ -52,27 +63,39 @@ async def chat(req: ChatRequest) -> ChatResponse:
         worklog.add_log(content)
         return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
 
-    # 0) 自省：检测纠正信号 → 连同被纠正的 AI 回复存为教训
-    if detect_correction(msg):
-        conn = connect()
-        try:
-            last = conn.execute(
-                "SELECT content FROM memories WHERE sender='assistant' ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        finally:
-            conn.close()
-        if last:
-            save_lesson(msg, last["content"])
+    # 0) 思维模块：检测与存储（用上一条 AI 回复做上下文）
+    last_ai = None
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT content FROM memories WHERE sender='assistant' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            last_ai = row["content"]
+    finally:
+        conn.close()
+
+    if detect_correction(msg) and last_ai:      # 自省：纠正 → 教训
+        save_lesson(msg, last_ai)
+    if detect_positive_feedback(msg) and last_ai:  # 风格：认可 → 范例
+        save_example(last_ai)
+    definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
 
     # 1) 检索相关记忆并注入
     mems = await memory.search(msg)
     injections = memory.format_injection(mems)
     profile = get_profile_injection()
     lessons = get_lessons_injection()
+    concerns = get_concerns_injection()
+    jargon = get_jargon_injection(msg)
+    style_examples = get_examples_injection()
 
     system = SYSTEM_PROMPT.replace("{injections}", injections or "（暂无相关记忆）")
     system = system.replace("{profile}", profile or "（画像未建立，通过对话逐步了解用户）")
     system = system.replace("{lessons}", lessons or "（暂无）")
+    system = system.replace("{concerns}", concerns or "（暂无）")
+    system = system.replace("{jargon}", jargon or "")
+    system = system.replace("{style_examples}", style_examples or "（暂无）")
 
     # 2) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     await memory.write_message("user", msg)
@@ -85,10 +108,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
         ]
     )
 
-    # 4) 记录回复 + 提升被引用记忆的重要性
+    # 4) 记录回复 + 提升被引用记忆的重要性 + 术语建档
     await memory.write_message("assistant", reply)
     if mems:
         memory.bump_importance([m["id"] for m in mems])
+    if definition_term:
+        save_term(definition_term, reply)
 
     return ChatResponse(reply=reply, memories_used=len(mems))
 

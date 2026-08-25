@@ -8,6 +8,16 @@ from datetime import datetime, timedelta, timezone
 from app.core import llm
 from app.models.database import connect
 
+
+def _stale_concerns_text(days: int = 3) -> str:
+    """超过 days 天未提及的关切（供小结提醒）。"""
+    from app.services.concern_tracker import get_stale_concerns
+
+    stale = get_stale_concerns(days=days)
+    if not stale:
+        return "（无）"
+    return "、".join(f"{s['topic']}（{s['mention_count']} 次）" for s in stale)
+
 DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据，写一份 3-5 行的《今日小结》：
 1. 今天做了什么（对话主题/工作日志/应用使用）
 2. 一个值得注意的观察（如有）
@@ -21,6 +31,9 @@ DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据�
 
 今日工作日志：
 {logs}
+
+超过 3 天未提及的关切话题（如有，在小结末尾温和提醒一句）：
+{stale_concerns}
 """
 
 
@@ -75,7 +88,8 @@ async def run_daily_summary() -> dict:
         "你是用户的私人 AI 助手，只输出 JSON。",
         DAILY_PROMPT.replace("{summaries}", summary_text)
         .replace("{stats}", stats_text)
-        .replace("{logs}", log_text),
+        .replace("{logs}", log_text)
+        .replace("{stale_concerns}", _stale_concerns_text()),
     )
     # 输出格式 { "content": "..." }；容错取 summary 字段
     content = result.get("content") or result.get("summary") or ""

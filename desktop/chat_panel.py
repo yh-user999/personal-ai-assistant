@@ -189,7 +189,10 @@ class ChatPanel(QWidget):
         report_btn = QPushButton("📋 周报")
         report_btn.setToolTip("查看最新周报")
         report_btn.clicked.connect(self._show_report)
-        for b in (stats_btn, report_btn):
+        history_btn = QPushButton("🕘 历史")
+        history_btn.setToolTip("展开最近 10 条对话记录")
+        history_btn.clicked.connect(self._load_history)
+        for b in (stats_btn, report_btn, history_btn):
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
@@ -197,6 +200,7 @@ class ChatPanel(QWidget):
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
+        quick_row.addWidget(history_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -218,20 +222,27 @@ class ChatPanel(QWidget):
         row.addWidget(send_btn)
         layout.addLayout(row)
 
-    # ── 历史加载 ───────────────────────────────────────────
+        # 初始欢迎语：历史默认折叠，点「🕘 历史」才展开
+        self._append(
+            "assistant",
+            "你好，我是你的个人助手。聊天记录默认收起，点下方「🕘 历史」可展开最近 10 条对话。",
+        )
+
+    # ── 历史（默认折叠，手动展开）─────────────────────────
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._history_loaded:
-            self._history_loaded = True
-            self._append("assistant", "正在加载历史…")
-            self._history_worker = _HistoryWorker(self.client)
-            self._history_worker.done.connect(self._on_history)
-            self._history_worker.start()
-        # 每次打开定位到最新消息（不留在旧滚动位置）
-        sb = self.browser.verticalScrollBar()
-        sb.setValue(sb.maximum())
         self.input.setFocus()
+
+    def _load_history(self) -> None:
+        """点「🕘 历史」按钮才加载最近 10 条。"""
+        if self._history_loaded or self._history_worker is not None:
+            return
+        self._history_loaded = True
+        self._append("assistant", "正在加载历史…")
+        self._history_worker = _HistoryWorker(self.client)
+        self._history_worker.done.connect(self._on_history)
+        self._history_worker.start()
 
     def _on_history(self, messages: list) -> None:
         worker = self._history_worker

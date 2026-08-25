@@ -14,9 +14,20 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+# 确保日志目录存在（FileHandler 需要）
+(Path(__file__).resolve().parent / "logs").mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        # 文件日志：开机自启（pythonw 无控制台）时仍可排查
+        logging.FileHandler(
+            Path(__file__).resolve().parent / "logs" / "collector.log",
+            encoding="utf-8",
+        ),
+    ],
 )
 logger = logging.getLogger("collector")
 

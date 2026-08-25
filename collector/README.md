@@ -18,8 +18,8 @@ python main.py            # 前台运行调试
 ## 安装为开机自启（管理员 PowerShell）
 
 ```powershell
-# 见 scripts/install_collector.ps1
-.\scripts\install_collector.ps1
+# 见 scripts/install_autostart.ps1
+.\scripts\install_autostart.ps1
 ```
 
 ## 隐私说明

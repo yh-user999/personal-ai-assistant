@@ -5,7 +5,8 @@
 # 用法: 管理员 PowerShell 执行  .\scripts\install_autostart.ps1
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+# 脚本位于 <项目根>\scripts\，上翻一层即项目根
+$ProjectRoot = Split-Path $PSScriptRoot -Parent
 $CollectorDir = Join-Path $ProjectRoot "collector"
 $DesktopDir = Join-Path $ProjectRoot "desktop"
 

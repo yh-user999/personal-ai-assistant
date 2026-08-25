@@ -1,11 +1,13 @@
-"""聊天接口：记忆检索注入 + LLM 编排 + 记录归档。"""
+"""聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 自省（纠正→教训）。"""
 import re
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core import llm, memory
+from app.models.database import connect
 from app.services import worklog
 from app.services.profile import get_profile_injection
+from app.services.self_reflect import detect_correction, get_lessons_injection, save_lesson
 
 router = APIRouter()
 
@@ -25,6 +27,9 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 {injections}
 
 {profile}
+
+用户过往的纠正与偏好（务必遵守，违反即违背用户明确指示）：
+{lessons}
 """
 
 
@@ -47,13 +52,27 @@ async def chat(req: ChatRequest) -> ChatResponse:
         worklog.add_log(content)
         return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
 
+    # 0) 自省：检测纠正信号 → 连同被纠正的 AI 回复存为教训
+    if detect_correction(msg):
+        conn = connect()
+        try:
+            last = conn.execute(
+                "SELECT content FROM memories WHERE sender='assistant' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if last:
+            save_lesson(msg, last["content"])
+
     # 1) 检索相关记忆并注入
     mems = await memory.search(msg)
     injections = memory.format_injection(mems)
     profile = get_profile_injection()
+    lessons = get_lessons_injection()
 
     system = SYSTEM_PROMPT.replace("{injections}", injections or "（暂无相关记忆）")
     system = system.replace("{profile}", profile or "（画像未建立，通过对话逐步了解用户）")
+    system = system.replace("{lessons}", lessons or "（暂无）")
 
     # 2) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     await memory.write_message("user", msg)

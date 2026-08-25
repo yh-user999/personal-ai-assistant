@@ -22,6 +22,7 @@ class SchedulerManager:
     async def start(self) -> None:
         from app.services.consolidation import consolidate_recent
         from app.services.weekly_reflect import run_weekly_reflect
+        from app.services.daily_summary import run_daily_summary
         from app.services.profile import refresh_profile
         from app.services.analyzer import evict_stale
 
@@ -49,6 +50,13 @@ class SchedulerManager:
             day_of_week=settings.weekly_report_weekday,
             hour=settings.weekly_report_hour,
             id="weekly_reflect",
+        )
+        # 每日小结：每晚 22:00
+        self.scheduler.add_job(
+            lambda: asyncio.create_task(run_daily_summary()),
+            "cron",
+            hour=22,
+            id="daily_summary",
         )
         # 淘汰：noise 7 天删除 / chat 30 天
         self.scheduler.add_job(

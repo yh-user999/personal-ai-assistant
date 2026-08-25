@@ -62,3 +62,10 @@ class ApiClient:
         rr = httpx.get(f"{self.base_url}/api/reports/{week}", headers=self._headers(), timeout=15)
         rr.raise_for_status()
         return rr.json()
+
+    def latest_daily(self) -> dict | None:
+        """最新每日小结（无则返回 None）。"""
+        r = httpx.get(f"{self.base_url}/api/daily/latest", headers=self._headers(), timeout=15)
+        r.raise_for_status()
+        d = r.json()
+        return d if d.get("exists") else None

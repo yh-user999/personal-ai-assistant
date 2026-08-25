@@ -80,6 +80,22 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
 CREATE INDEX IF NOT EXISTS idx_memories_ts ON memories(ts);
 CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at);
 CREATE INDEX IF NOT EXISTS idx_worklog_created ON work_log(created_at);
+
+-- ⑦ 教训表（自省模块：用户纠正的内容，高优先级长期记忆）
+CREATE TABLE IF NOT EXISTS lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,            -- 用户纠正的原话
+  context TEXT DEFAULT '',          -- 被纠正的 AI 回复（上下文）
+  created_at TEXT NOT NULL
+);
+
+-- ⑧ 每日小结（每晚 22:00 生成当天工作摘要）
+CREATE TABLE IF NOT EXISTS daily_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,        -- '2026-08-25'
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 # 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。

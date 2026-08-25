@@ -38,3 +38,18 @@ async def generate_now() -> dict:
     from app.services.weekly_reflect import run_weekly_reflect
 
     return await run_weekly_reflect()
+
+
+@router.get("/daily/latest")
+async def latest_daily() -> dict:
+    """最新每日小结（桌面托盘检查用）。"""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT date, content, created_at FROM daily_summaries ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"exists": False}
+    return {"exists": True, **dict(row)}

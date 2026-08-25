@@ -46,7 +46,9 @@ async def run_weekly_reflect() -> dict:
         conn.close()
 
     from app.services.analyzer import weekly_stats
+    from app.services.self_reflect import count_lessons_since
     stats = weekly_stats(days=7)
+    stats["本周被纠正次数"] = count_lessons_since(since)
 
     summary_text = "\n".join(
         f"[{r['ts'][:10]}] {r['summary']} topics={r['topics']}" for r in summaries[:50]

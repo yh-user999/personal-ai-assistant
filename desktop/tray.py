@@ -9,8 +9,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
 class _ReportWorker(QThread):
-    """后台检查最新周报。"""
-    done = Signal(object)
+    """后台检查最新周报 + 每日小结。"""
+    done = Signal(object, object)  # (report, daily)
 
     def __init__(self, client) -> None:
         super().__init__()
@@ -18,9 +18,9 @@ class _ReportWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.done.emit(self.client.latest_report())
+            self.done.emit(self.client.latest_report(), self.client.latest_daily())
         except Exception:
-            self.done.emit(None)
+            self.done.emit(None, None)
 
 
 def make_robot_icon(size: int = 64) -> QIcon:
@@ -56,6 +56,7 @@ class TrayIcon(QSystemTrayIcon):
         self.ball = ball
         self.setToolTip("Personal AI Assistant")
         self._known_week = None
+        self._known_daily_date = None
         self._report_worker = None
 
         menu = QMenu()
@@ -92,16 +93,28 @@ class TrayIcon(QSystemTrayIcon):
         self._report_worker.done.connect(self._on_report)
         self._report_worker.start()
 
-    def _on_report(self, report) -> None:
+    def _on_report(self, report, daily) -> None:
         worker = self._report_worker
         self._report_worker = None
         if worker:
             worker.deleteLater()  # 防 QThread 慢性泄漏
+        # 新周报
         if report and report.get("week") != self._known_week:
             self._known_week = report.get("week")
             self.showMessage(
                 "📋 新周报已生成",
                 f"《{report.get('week', '')} 学习进度反思》已就绪，点击托盘菜单查看",
+                QSystemTrayIcon.Information,
+                8000,
+            )
+        # 新每日小结（每晚 22:00 后第一次检查时通知）
+        if daily and daily.get("date") != self._known_daily_date:
+            self._known_daily_date = daily.get("date")
+            content = (daily.get("content") or "").strip()
+            preview = content[:60] + ("…" if len(content) > 60 else "")
+            self.showMessage(
+                "🌙 今日小结已生成",
+                preview or "点击托盘菜单查看",
                 QSystemTrayIcon.Information,
                 8000,
             )

@@ -126,13 +126,18 @@ class EventPusher:
         payload = {"client": "collector", "channels": dict(self._health)}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(
+                r = await client.post(
                     f"{self.server_url}/api/heartbeat",
                     json=payload,
                     headers=self._headers(),
                 )
-        except Exception:
-            pass  # 心跳失败不致命，下轮重试
+            if r.status_code == 200:
+                logger.info("心跳已发送: %s", payload["channels"])
+            else:
+                logger.warning("心跳响应异常 HTTP %s", r.status_code)
+        except Exception as e:
+            # 心跳失败不致命（下轮重试），但必须留痕——静默失败无法排障
+            logger.warning("心跳发送失败: %s", e)
 
     async def _retry_cache(self) -> None:
         """启动时推送历史落盘缓存。"""

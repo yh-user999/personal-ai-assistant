@@ -1,10 +1,26 @@
 """系统托盘：自绘机器人图标 + 菜单 + 新周报通知。
 
 v0.5：真正接入桌面端——托盘常驻、打开面板、今日概览（面板内）、新周报弹通知。
+v0.6：周报检查线程化（不在 UI 线程做网络请求）+ QThread deleteLater。
 """
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+
+class _ReportWorker(QThread):
+    """后台检查最新周报。"""
+    done = Signal(object)
+
+    def __init__(self, client) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.client.latest_report())
+        except Exception:
+            self.done.emit(None)
 
 
 def make_robot_icon(size: int = 64) -> QIcon:
@@ -40,6 +56,7 @@ class TrayIcon(QSystemTrayIcon):
         self.ball = ball
         self.setToolTip("Personal AI Assistant")
         self._known_week = None
+        self._report_worker = None
 
         menu = QMenu()
         menu.addAction("打开面板", self._open_panel)
@@ -68,16 +85,23 @@ class TrayIcon(QSystemTrayIcon):
             self._open_panel()
 
     def _check_new_report(self) -> None:
-        """发现新周报 → 托盘通知。"""
-        try:
-            report = self.ball._health_client.latest_report()
-            if report and report.get("week") != self._known_week:
-                self._known_week = report.get("week")
-                self.showMessage(
-                    "📋 新周报已生成",
-                    f"《{report.get('week', '')} 学习进度反思》已就绪，点击托盘菜单查看",
-                    QSystemTrayIcon.Information,
-                    8000,
-                )
-        except Exception:
-            pass  # 网络问题静默，下轮再试
+        """发现新周报 → 托盘通知（后台线程，不卡 UI）。"""
+        if self._report_worker is not None:
+            return
+        self._report_worker = _ReportWorker(self.ball._health_client)
+        self._report_worker.done.connect(self._on_report)
+        self._report_worker.start()
+
+    def _on_report(self, report) -> None:
+        worker = self._report_worker
+        self._report_worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
+        if report and report.get("week") != self._known_week:
+            self._known_week = report.get("week")
+            self.showMessage(
+                "📋 新周报已生成",
+                f"《{report.get('week', '')} 学习进度反思》已就绪，点击托盘菜单查看",
+                QSystemTrayIcon.Information,
+                8000,
+            )

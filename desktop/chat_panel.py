@@ -49,6 +49,38 @@ class _HistoryWorker(QThread):
             self.done.emit([])
 
 
+class _ApiWorker(QThread):
+    """后台执行快捷查询（统计/周报），避免 UI 线程网络阻塞。"""
+    done = Signal(str, str)  # (mode, text)
+
+    def __init__(self, client: ApiClient, mode: str) -> None:
+        super().__init__()
+        self.client = client
+        self.mode = mode
+
+    def run(self) -> None:
+        try:
+            if self.mode == "stats":
+                d = self.client.stats_summary(7)
+                text = (
+                    f"📊 近 7 天统计：<br>对话 {d['messages']} 条 · git 提交 {d['git_commits']} 次 · "
+                    f"工作日志 {d['work_logs']} 条<br><br><b>应用时长 Top：</b><br>"
+                    + "".join(f"· {a['name']}: {a['hours']}h<br>" for a in d.get("top_apps", []))
+                    + "<br><b>浏览域名 Top：</b><br>"
+                    + "".join(f"· {b['name']}: {b['count']} 次<br>" for b in d.get("top_domains", []))
+                )
+                self.done.emit("stats", text)
+            else:  # report
+                r = self.client.latest_report()
+                if not r:
+                    text = "暂无周报。每周日 21:00 自动生成，敬请期待。"
+                else:
+                    text = f"📋 周报 {r.get('week', '')}：<br>{r.get('content', '')}"
+                self.done.emit("report", text)
+        except Exception as e:
+            self.done.emit(self.mode, f"[获取失败] {e}")
+
+
 def _fmt_ts(ts: str) -> str:
     """ISO 时间 → HH:MM（取 UTC 小时直接显示，个人使用足够）。"""
     try:
@@ -69,6 +101,7 @@ class ChatPanel(QWidget):
         self.client = ApiClient()
         self._worker = None
         self._history_worker = None
+        self._api_worker = None
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
         self._init_ui()
@@ -108,6 +141,8 @@ class ChatPanel(QWidget):
         # 消息区
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(False)
+        # 防内存无限增长：最多保留 500 段，超出自动丢弃最早内容
+        self.browser.document().setMaximumBlockCount(500)
         self.browser.setStyleSheet(
             "background: transparent; border: none; color: #eee; font-size: 13px;"
         )
@@ -167,7 +202,10 @@ class ChatPanel(QWidget):
         self.input.setFocus()
 
     def _on_history(self, messages: list) -> None:
+        worker = self._history_worker
         self._history_worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
         self.browser.clear()
         if not messages:
             self._append(
@@ -207,28 +245,23 @@ class ChatPanel(QWidget):
     # ── 快捷功能 ───────────────────────────────────────────
 
     def _show_stats(self) -> None:
-        try:
-            d = self.client.stats_summary(7)
-            text = (
-                f"📊 近 7 天统计：<br>对话 {d['messages']} 条 · git 提交 {d['git_commits']} 次 · "
-                f"工作日志 {d['work_logs']} 条<br><br><b>应用时长 Top：</b><br>"
-                + "".join(f"· {a['name']}: {a['hours']}h<br>" for a in d.get("top_apps", []))
-                + "<br><b>浏览域名 Top：</b><br>"
-                + "".join(f"· {b['name']}: {b['count']} 次<br>" for b in d.get("top_domains", []))
-            )
-        except Exception as e:
-            text = f"[统计获取失败] {e}"
-        self._append("assistant", text, "", raw=True)
+        self._run_api("stats")
 
     def _show_report(self) -> None:
-        try:
-            r = self.client.latest_report()
-            if not r:
-                text = "暂无周报。每周日 21:00 自动生成，敬请期待。"
-            else:
-                text = f"📋 周报 {r.get('week', '')}：<br>{r.get('content', '')}"
-        except Exception as e:
-            text = f"[周报获取失败] {e}"
+        self._run_api("report")
+
+    def _run_api(self, mode: str) -> None:
+        """快捷查询统一走后台线程（服务器不可达时不卡 UI）。"""
+        worker = _ApiWorker(self.client, mode)
+        worker.done.connect(self._on_api_done)
+        self._api_worker = worker
+        worker.start()
+
+    def _on_api_done(self, mode: str, text: str) -> None:
+        worker = self._api_worker
+        self._api_worker = None
+        if worker:
+            worker.deleteLater()
         self._append("assistant", text, "", raw=True)
 
     # ── 发送与状态联动 ─────────────────────────────────────
@@ -246,7 +279,10 @@ class ChatPanel(QWidget):
         self._worker.start()
 
     def _on_done(self, role: str, text: str) -> None:
+        worker = self._worker
         self._worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
         self._append(role, text, "")
         if self.ball:
             self.ball.set_state("online")  # 回复完成 → 绿灯

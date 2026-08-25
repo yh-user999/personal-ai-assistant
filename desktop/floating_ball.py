@@ -92,7 +92,10 @@ class FloatingBall(QWidget):
         self._health_worker.start()
 
     def _on_health(self, ok: bool) -> None:
+        worker = self._health_worker
         self._health_worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
         if self.state == "thinking":
             return  # 聊天中不打断状态
         self.set_state("online" if ok else "error")

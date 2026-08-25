@@ -53,6 +53,7 @@ python main.py
 部署环境与服务器信息见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 实践日志与踩坑记录见 [`docs/LESSONS.md`](docs/LESSONS.md)。
 六课带教进度账本见 [`docs/LEARNING_PROGRESS.md`](docs/LEARNING_PROGRESS.md)。
+组件启停与排查命令见 [`docs/OPS.md`](docs/OPS.md)。
 
 ## 安全
 

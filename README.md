@@ -29,14 +29,17 @@
 ## 快速开始
 
 ```bash
+# 0. 前置：两台机器装 Tailscale 并登录同一账号（服务走专线，不暴露公网）
+
 # 1. 服务器端（JD 服务器）
 cd server && pip install -r requirements.txt
-cp .env.example ../.env   # 填入 DeepSeek / Embedding API Key
-python run.py             # 启动 http://<host>:8000
+cp .env.example ../.env   # 填入 LLM/Embedding Key + 生成 API_TOKEN
+python run.py             # 启动后仅 Tailscale IP 可访问
 
 # 2. 采集器（Windows）
 cd collector && pip install -r requirements.txt
-python main.py            # 采集并推送事件到服务器
+# .env: SERVER_URL=http://<服务器Tailscale IP>:8000 + API_TOKEN
+python main.py
 
 # 3. 桌面悬浮球（Windows）
 cd desktop && pip install -r requirements.txt
@@ -48,6 +51,13 @@ python main.py
 外部 AI 评审的采纳/拒绝记录见 [`docs/AI_REVIEW.md`](docs/AI_REVIEW.md)。
 让 AI 继续优化的提问模板见 [`docs/AI_OPTIMIZATION_PROMPTS.md`](docs/AI_OPTIMIZATION_PROMPTS.md)。
 部署环境与服务器信息见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
+实践日志与踩坑记录见 [`docs/LESSONS.md`](docs/LESSONS.md)。
+
+## 安全
+
+- 全 API 走 `API_TOKEN` 鉴权（.env 配置，不入库）
+- 服务仅 Tailscale 专线可达，公网只暴露 SSH 22
+- 敏感信息（IP/密钥/token）只存本地笔记，**禁止入仓库**
 
 ## 许可证
 

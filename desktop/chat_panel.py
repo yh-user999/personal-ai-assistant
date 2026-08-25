@@ -1,20 +1,49 @@
 """聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
 
-v0.5 体验升级：
+v0.6 体验修正：
 - 气泡式消息（用户右/助手左，圆角气泡）+ 时间戳
-- 打开时后台加载最近 30 条历史
-- 快捷按钮：今日概览 / 周报
+- 打开时只加载最近 10 条历史，自动定位到最新消息
+- 统计/周报改为独立弹窗（不混入聊天流）
 - ✕ 按钮与 Esc 关闭；聊天中联动机器人状态灯
 """
 import html as html_lib
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from api_client import ApiClient
+
+
+class _InfoDialog(QDialog):
+    """统计/周报独立弹窗：不污染聊天流，可滚动可关闭。"""
+
+    def __init__(self, title: str, html_text: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        self.resize(440, 520)
+        lay = QVBoxLayout(self)
+        browser = QTextBrowser()
+        browser.setHtml(html_text)
+        browser.setStyleSheet("background: #14161b; color: #d8dbe2; border: none; font-size: 13px;")
+        lay.addWidget(browser, 1)
+        close_btn = QPushButton("关闭（Esc）")
+        close_btn.clicked.connect(self.close)
+        close_btn.setStyleSheet(
+            "QPushButton { background: #23262f; color: #ccc; border: 1px solid #333;"
+            "border-radius: 8px; padding: 8px; }"
+            "QPushButton:hover { color: #fff; }"
+        )
+        lay.addWidget(close_btn)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
 
 class _ChatWorker(QThread):
@@ -44,7 +73,7 @@ class _HistoryWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.done.emit(self.client.recent_messages(30))
+            self.done.emit(self.client.recent_messages(10))  # 只加载最近 10 条
         except Exception:
             self.done.emit([])
 
@@ -199,6 +228,9 @@ class ChatPanel(QWidget):
             self._history_worker = _HistoryWorker(self.client)
             self._history_worker.done.connect(self._on_history)
             self._history_worker.start()
+        # 每次打开定位到最新消息（不留在旧滚动位置）
+        sb = self.browser.verticalScrollBar()
+        sb.setValue(sb.maximum())
         self.input.setFocus()
 
     def _on_history(self, messages: list) -> None:
@@ -251,7 +283,7 @@ class ChatPanel(QWidget):
         self._run_api("report")
 
     def _run_api(self, mode: str) -> None:
-        """快捷查询统一走后台线程（服务器不可达时不卡 UI）。"""
+        """快捷查询统一走后台线程，结果弹独立窗口（不混入聊天流）。"""
         worker = _ApiWorker(self.client, mode)
         worker.done.connect(self._on_api_done)
         self._api_worker = worker
@@ -262,7 +294,9 @@ class ChatPanel(QWidget):
         self._api_worker = None
         if worker:
             worker.deleteLater()
-        self._append("assistant", text, "", raw=True)
+        title = "📊 今日概览" if mode == "stats" else "📋 周报"
+        dlg = _InfoDialog(title, text, parent=self)
+        dlg.show()
 
     # ── 发送与状态联动 ─────────────────────────────────────
 

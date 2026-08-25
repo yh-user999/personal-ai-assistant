@@ -196,17 +196,23 @@ class FloatingBall(QWidget):
         if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
             new_pos = event.globalPosition().toPoint() - self._drag_offset
             if (new_pos - self.pos()).manhattanLength() > 3:
-                self._moved = True  # 位移超过 3px 判定为拖拽（不是点击）
+                self._moved = True  # 位移超过 3px 判定为拖拽
             self.move(new_pos)
             event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            # 只有"按下→释放基本没动"才算点击（打开面板）
             if not self._moved:
-                self.toggle_panel()
+                # 单击：不弹面板，只快速眨眼一次作为反馈
+                self._blink = 0.01
             self._drag_offset = None
             self._moved = False
+            event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """双击 → 打开/收起聊天面板（v0.6 交互：单击只反馈，双击才聊天）。"""
+        if event.button() == Qt.LeftButton:
+            self.toggle_panel()
             event.accept()
 
     def contextMenuEvent(self, event) -> None:

@@ -24,6 +24,7 @@ $Trigger1.Delay = "PT30S"  # 登录后延迟 30 秒，避开开机高峰
 $Settings1 = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit ([TimeSpan]::Zero)  # 无限期运行
 Register-ScheduledTask -TaskName "PAA-Collector" -Action $Action1 -Trigger $Trigger1 -Settings $Settings1 -Force | Out-Null
 
@@ -35,6 +36,7 @@ $Trigger2.Delay = "PT15S"
 $Settings2 = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 1 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName "PAA-Robot" -Action $Action2 -Trigger $Trigger2 -Settings $Settings2 -Force | Out-Null
 

@@ -33,7 +33,8 @@ class FloatingBall(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.SIZE, self.SIZE)
-        self._drag_pos = None
+        self._drag_offset = None   # 按下时鼠标相对窗口的偏移
+        self._moved = False        # 本次按下是否发生了拖拽
         self.panel: ChatPanel | None = None
         self.state = "idle"
 
@@ -149,17 +150,27 @@ class FloatingBall(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            # 记录按下时鼠标相对窗口左上角的偏移 + 重置移动标记
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._moved = False
+            event.accept()
 
     def mouseMoveEvent(self, event) -> None:
-        if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
+            new_pos = event.globalPosition().toPoint() - self._drag_offset
+            if (new_pos - self.pos()).manhattanLength() > 3:
+                self._moved = True  # 位移超过 3px 判定为拖拽（不是点击）
+            self.move(new_pos)
+            event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            if self._drag_pos is not None and (event.globalPosition().toPoint() - self.frameGeometry().topLeft() - self._drag_pos).manhattanLength() < 5:
+            # 只有"按下→释放基本没动"才算点击（打开面板）
+            if not self._moved:
                 self.toggle_panel()
-            self._drag_pos = None
+            self._drag_offset = None
+            self._moved = False
+            event.accept()
 
     def toggle_panel(self) -> None:
         if self.panel is None or not self.panel.isVisible():

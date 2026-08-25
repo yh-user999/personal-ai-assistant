@@ -52,6 +52,7 @@ python main.py
 让 AI 继续优化的提问模板见 [`docs/AI_OPTIMIZATION_PROMPTS.md`](docs/AI_OPTIMIZATION_PROMPTS.md)。
 部署环境与服务器信息见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 实践日志与踩坑记录见 [`docs/LESSONS.md`](docs/LESSONS.md)。
+六课带教进度账本见 [`docs/LEARNING_PROGRESS.md`](docs/LEARNING_PROGRESS.md)。
 
 ## 安全
 

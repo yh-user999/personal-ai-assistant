@@ -22,6 +22,7 @@ class SchedulerManager:
     async def start(self) -> None:
         from app.services.consolidation import consolidate_recent
         from app.services.weekly_reflect import run_weekly_reflect
+        from app.services.profile import refresh_profile
         from app.services.analyzer import evict_stale
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
@@ -32,6 +33,14 @@ class SchedulerManager:
             "interval",
             hours=settings.consolidation_interval_hours,
             id="consolidation",
+        )
+        # 画像刷新：周报前一小时（周日 20:00），周报生成时能读到最新画像
+        self.scheduler.add_job(
+            lambda: asyncio.create_task(refresh_profile()),
+            "cron",
+            day_of_week=settings.weekly_report_weekday,
+            hour=max(0, settings.weekly_report_hour - 1),
+            id="profile_refresh",
         )
         # 每周反思：周日 21:00（Asia/Shanghai）
         self.scheduler.add_job(

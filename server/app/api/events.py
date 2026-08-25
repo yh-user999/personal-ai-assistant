@@ -25,23 +25,37 @@ class EventBatch(BaseModel):
 
 @router.post("/events")
 async def receive_events(batch: EventBatch, authorization: str | None = Header(default=None)) -> dict:
-    """批量接收行为事件（采集器断网重试时也是整批推送）。"""
+    """批量接收行为事件（采集器断网重试时也是整批推送）。
+
+    幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次。
+    场景：采集器换机器/换目录丢失游标后会补推历史，服务器必须能消化重复。
+    """
     if settings.collector_token:
         if authorization != f"Bearer {settings.collector_token}":
             raise HTTPException(status_code=401, detail="invalid token")
 
     conn = connect()
+    inserted = 0
     try:
         for e in batch.events:
+            detail = e.detail[:200]
+            dup = conn.execute(
+                """SELECT 1 FROM behavior_events
+                   WHERE kind=? AND name=? AND detail=? AND start_ts=? LIMIT 1""",
+                (e.kind, e.name, detail, e.start_ts),
+            ).fetchone()
+            if dup:
+                continue  # 重复事件跳过
             conn.execute(
                 """INSERT INTO behavior_events (kind, name, detail, start_ts, end_ts, meta)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (e.kind, e.name, e.detail[:200], e.start_ts, e.end_ts, str(e.meta)),
+                (e.kind, e.name, detail, e.start_ts, e.end_ts, str(e.meta)),
             )
+            inserted += 1
         conn.commit()
     finally:
         conn.close()
-    return {"received": len(batch.events)}
+    return {"received": len(batch.events), "inserted": inserted}
 
 
 class HeartbeatBody(BaseModel):

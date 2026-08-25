@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     weekly_report_weekday: int = 6       # 0=周一 … 6=周日
     weekly_report_hour: int = 21
 
-    # ── 采集器推送鉴权（简单共享密钥，可选）────────────────
-    collector_token: str = ""
+    # ── API 鉴权（共享密钥，全部端点统一）──────────────────
+    # 留空 = 不鉴权（仅限 Tailscale 内网等已隔离环境）
+    api_token: str = ""
 
     @property
     def db_file(self) -> Path:

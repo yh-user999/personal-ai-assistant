@@ -7,7 +7,7 @@ import httpx
 class ApiClient:
     def __init__(self) -> None:
         self.base_url = os.environ.get("SERVER_URL", "http://127.0.0.1:8000").rstrip("/")
-        self.token = os.environ.get("COLLECTOR_TOKEN", "")
+        self.token = os.environ.get("API_TOKEN", "")
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}

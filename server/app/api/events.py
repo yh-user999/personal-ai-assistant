@@ -1,10 +1,9 @@
 """行为事件接收接口：Windows 采集器推送的事件入库 + 心跳上报。"""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from app.config import settings
 from app.models.database import connect
 
 router = APIRouter()
@@ -24,16 +23,13 @@ class EventBatch(BaseModel):
 
 
 @router.post("/events")
-async def receive_events(batch: EventBatch, authorization: str | None = Header(default=None)) -> dict:
+async def receive_events(batch: EventBatch) -> dict:
     """批量接收行为事件（采集器断网重试时也是整批推送）。
 
     幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次。
     场景：采集器换机器/换目录丢失游标后会补推历史，服务器必须能消化重复。
+    鉴权：由全局 AuthMiddleware 统一处理（API_TOKEN）。
     """
-    if settings.collector_token:
-        if authorization != f"Bearer {settings.collector_token}":
-            raise HTTPException(status_code=401, detail="invalid token")
-
     conn = connect()
     inserted = 0
     try:

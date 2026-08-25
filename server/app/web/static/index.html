@@ -17,7 +17,9 @@
     .user { margin-left: auto; background: #2b5cff; }
     .assistant { background: #1c1f26; }
     .inputbar { display: flex; gap: 8px; padding: 16px; border-top: 1px solid #222; }
+    .tokenbar { display: flex; gap: 8px; padding: 6px 16px; border-top: 1px solid #222; }
     #input { flex: 1; background: #1c1f26; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 10px; }
+    #token { flex: 1; background: #1c1f26; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 6px; font-size: 12px; }
     button { background: #2b5cff; color: #fff; border: none; border-radius: 8px; padding: 0 20px; cursor: pointer; }
     .hint { color: #666; font-size: 12px; text-align: center; padding: 4px; }
   </style>
@@ -35,6 +37,10 @@
       <div class="msg assistant">你好，我是你的个人助手。我可以记住我们的对话、记录你的工作日志，每周生成学习反思。试试说"记录：下午2-5点调RAG性能"。</div>
     </div>
     <div class="hint" id="hint"></div>
+    <div class="tokenbar">
+      <input id="token" type="password" placeholder="API Token（服务器 .env 里的 API_TOKEN）" autocomplete="off">
+      <button onclick="saveToken()">保存</button>
+    </div>
     <div class="inputbar">
       <input id="input" placeholder="说点什么…" autocomplete="off">
       <button onclick="send()">发送</button>
@@ -45,6 +51,19 @@
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
 const hint = document.getElementById('hint');
+const tokenInput = document.getElementById('token');
+
+// Token 存 localStorage（浏览器本地），每次请求带上
+tokenInput.value = localStorage.getItem('api_token') || '';
+function saveToken() {
+  localStorage.setItem('api_token', tokenInput.value.trim());
+  hint.textContent = 'Token 已保存';
+}
+function authHeaders() {
+  const t = localStorage.getItem('api_token') || '';
+  return t ? {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t}
+           : {'Content-Type': 'application/json'};
+}
 
 function addMsg(role, text) {
   const div = document.createElement('div');
@@ -63,9 +82,14 @@ async function send() {
   try {
     const r = await fetch('/api/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({message: msg})
     });
+    if (r.status === 401) {
+      addMsg('assistant', '未授权：请在上方填入 API Token 并保存');
+      hint.textContent = '';
+      return;
+    }
     const data = await r.json();
     addMsg('assistant', data.reply);
     hint.textContent = data.memories_used > 0 ? `召回了 ${data.memories_used} 条记忆` : '';
@@ -78,7 +102,7 @@ async function send() {
 input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
 async function showStats() {
-  const r = await fetch('/api/stats/summary?days=7');
+  const r = await fetch('/api/stats/summary?days=7', {headers: authHeaders()});
   const d = await r.json();
   addMsg('assistant', '📊 近7天统计：\n' +
     `对话 ${d.messages} 条，git 提交 ${d.git_commits} 次，工作日志 ${d.work_logs} 条\n\n` +
@@ -86,11 +110,11 @@ async function showStats() {
 }
 
 async function showReports() {
-  const r = await fetch('/api/reports');
+  const r = await fetch('/api/reports', {headers: authHeaders()});
   const d = await r.json();
   if (!d.reports.length) { addMsg('assistant', '暂无周报，可稍后查看。'); return; }
   const wk = d.reports[0].week;
-  const rr = await fetch('/api/reports/' + wk);
+  const rr = await fetch('/api/reports/' + wk, {headers: authHeaders()});
   const rd = await rr.json();
   addMsg('assistant', `📋 周报 ${wk}：\n` + rd.content);
 }

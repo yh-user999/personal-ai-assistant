@@ -10,8 +10,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from app.api import chat, events, reports, stats
+from app.config import settings
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
 
@@ -35,11 +38,29 @@ async def lifespan(app: FastAPI):
     await app.state.scheduler.stop()
 
 
+class AuthMiddleware(BaseHTTPMiddleware):
+    """API 鉴权：配置 API_TOKEN 后，除白名单外所有请求需 Bearer token。
+
+    白名单：静态页 "/"、健康检查 /api/health（无敏感数据）。
+    每次请求实时读 settings.api_token（测试可 monkeypatch）。
+    """
+
+    PUBLIC_PATHS = {"/", "/api/health"}
+
+    async def dispatch(self, request, call_next):
+        if settings.api_token and request.url.path not in self.PUBLIC_PATHS:
+            auth = request.headers.get("authorization", "")
+            if auth != f"Bearer {settings.api_token}":
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
 app = FastAPI(
     title="Personal AI Assistant",
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(AuthMiddleware)
 
 # ── 路由 ──────────────────────────────────────────────────
 app.include_router(chat.router, prefix="/api", tags=["chat"])

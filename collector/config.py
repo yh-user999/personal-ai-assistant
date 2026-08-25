@@ -14,7 +14,8 @@ class CollectorSettings(BaseSettings):
 
     # 服务器地址（Tailscale 内网地址优先）
     server_url: str = "http://127.0.0.1:8000"
-    collector_token: str = ""
+    # API 鉴权令牌（与服务器 .env 的 API_TOKEN 一致）
+    api_token: str = ""
 
     # 采集开关
     collect_window: bool = True

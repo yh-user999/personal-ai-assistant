@@ -30,7 +30,7 @@ from pusher import EventPusher  # noqa: E402
 async def main() -> None:
     pusher = EventPusher(
         settings.server_url,
-        token=settings.collector_token,
+        token=settings.api_token,
         privacy_filter=settings.privacy_filter,
     )
 

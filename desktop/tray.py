@@ -1,46 +1,83 @@
-"""系统托盘：打开面板 / 今日概览 / 周报 / 退出。"""
-from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+"""系统托盘：自绘机器人图标 + 菜单 + 新周报通知。
+
+v0.5：真正接入桌面端——托盘常驻、打开面板、今日概览（面板内）、新周报弹通知。
+"""
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+
+def make_robot_icon(size: int = 64) -> QIcon:
+    """自绘一个小机器人脸做托盘图标（无外部素材）。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    # 头
+    p.setBrush(QColor("#23262f"))
+    p.setPen(QColor("#3a3f4b"))
+    p.drawRoundedRect(8, 16, size - 16, int(size * 0.55), 10, 10)
+    # 天线
+    p.setPen(QColor("#4d7cff"))
+    p.drawLine(size // 2, 8, size // 2, 16)
+    p.setBrush(QColor("#4d7cff"))
+    p.drawEllipse(size // 2 - 4, 4, 8, 8)
+    # 眼睛
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#4d7cff"))
+    p.drawEllipse(int(size * 0.32), int(size * 0.42), int(size * 0.16), int(size * 0.16))
+    p.drawEllipse(int(size * 0.52), int(size * 0.42), int(size * 0.16), int(size * 0.16))
+    # 微笑
+    p.setPen(QColor("#8b93a3"))
+    p.drawArc(int(size * 0.36), int(size * 0.52), int(size * 0.28), int(size * 0.16), 200 * 16, 140 * 16)
+    p.end()
+    return QIcon(pm)
 
 
 class TrayIcon(QSystemTrayIcon):
-    def __init__(self, parent=None) -> None:
-        super().__init__(QIcon.fromTheme("dialog-information"), parent)
+    def __init__(self, ball, parent=None) -> None:
+        super().__init__(make_robot_icon(), parent)
+        self.ball = ball
         self.setToolTip("Personal AI Assistant")
+        self._known_week = None
+
         menu = QMenu()
-
-        act_open = QAction("打开面板", menu)
-        act_open.triggered.connect(self._on_open)
-        menu.addAction(act_open)
-
-        act_stats = QAction("今日概览", menu)
-        act_stats.triggered.connect(self._on_stats)
-        menu.addAction(act_stats)
-
-        act_quit = QAction("退出", menu)
-        act_quit.triggered.connect(self._on_quit)
-        menu.addAction(act_quit)
-
+        menu.addAction("打开面板", self._open_panel)
+        menu.addAction("今日概览", self._open_stats)
+        menu.addSeparator()
+        menu.addAction("退出", QApplication.quit)
         self.setContextMenu(menu)
         self.activated.connect(self._on_activated)
 
-    def _on_open(self) -> None:
-        parent = self.parent()
-        if parent and hasattr(parent, "open_panel"):
-            parent.open_panel()
+        # 新周报通知：每 30 分钟检查一次
+        self._report_timer = QTimer(self)
+        self._report_timer.timeout.connect(self._check_new_report)
+        self._report_timer.start(30 * 60_000)
+        self._check_new_report()
 
-    def _on_stats(self) -> None:
-        self.showMessage("今日概览", "功能开发中（M2）…", QSystemTrayIcon.Information, 3000)
+    def _open_panel(self) -> None:
+        self.ball.open_panel()
 
-    def _on_quit(self) -> None:
-        QApplication_quit()
+    def _open_stats(self) -> None:
+        self.ball.open_panel()
+        if self.ball.panel:
+            self.ball.panel._show_stats()
 
     def _on_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.Trigger:
-            self._on_open()
+            self._open_panel()
 
-
-def QApplication_quit() -> None:
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.quit()
+    def _check_new_report(self) -> None:
+        """发现新周报 → 托盘通知。"""
+        try:
+            report = self.ball._health_client.latest_report()
+            if report and report.get("week") != self._known_week:
+                self._known_week = report.get("week")
+                self.showMessage(
+                    "📋 新周报已生成",
+                    f"《{report.get('week', '')} 学习进度反思》已就绪，点击托盘菜单查看",
+                    QSystemTrayIcon.Information,
+                    8000,
+                )
+        except Exception:
+            pass  # 网络问题静默，下轮再试

@@ -15,15 +15,20 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from floating_ball import FloatingBall  # noqa: E402
+from tray import TrayIcon  # noqa: E402
 
 
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Personal AI Assistant")
+    app.setQuitOnLastWindowClosed(False)  # 面板关闭不退出，托盘常驻
     # Ctrl+C 干净退出（Windows 控制台场景）：把 SIGINT 转成 Qt 退出
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     ball = FloatingBall()
     ball.show()
+    tray = TrayIcon(ball)
+    tray.show()
+    ball._tray = tray  # 保持引用防止被回收
     sys.exit(app.exec())
 
 

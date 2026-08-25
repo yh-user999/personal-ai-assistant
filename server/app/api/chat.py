@@ -72,3 +72,20 @@ async def chat(req: ChatRequest) -> ChatResponse:
         memory.bump_importance([m["id"] for m in mems])
 
     return ChatResponse(reply=reply, memories_used=len(mems))
+
+
+@router.get("/messages")
+async def recent_messages(limit: int = 30) -> dict:
+    """最近消息（倒序取回后正序返回），供桌面端打开面板时加载历史。"""
+    from app.models.database import connect
+
+    limit = max(1, min(limit, 200))
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, sender, content, ts FROM memories ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"messages": [dict(r) for r in reversed(rows)]}

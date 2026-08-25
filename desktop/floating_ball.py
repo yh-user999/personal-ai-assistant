@@ -8,7 +8,7 @@ import math
 import random
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
@@ -23,6 +23,18 @@ STATE_COLORS = {
 }
 
 ASSET_SVG = Path(__file__).resolve().parent / "assets" / "robot.svg"
+
+
+class _HealthWorker(QThread):
+    """后台健康检查线程：断线时机器人亮红灯。"""
+    result = Signal(bool)
+
+    def __init__(self, client) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        self.result.emit(self.client.health())
 
 
 class FloatingBall(QWidget):
@@ -47,6 +59,16 @@ class FloatingBall(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(50)        # 20fps 足够
 
+        # 断线检测：每 60s 后台 ping 服务器，失败亮红灯
+        from api_client import ApiClient
+
+        self._health_client = ApiClient()
+        self._health_worker = None
+        self._health_timer = QTimer(self)
+        self._health_timer.timeout.connect(self._check_health)
+        self._health_timer.start(60_000)
+        self._check_health()
+
         # 默认位置：屏幕右下角
         screen = self.screen() or QApplication.primaryScreen()
         geo = screen.availableGeometry()
@@ -59,6 +81,21 @@ class FloatingBall(QWidget):
         if state in STATE_COLORS:
             self.state = state
             self.update()
+
+    # ── 健康检查 ───────────────────────────────────────────
+
+    def _check_health(self) -> None:
+        if self._health_worker is not None:
+            return  # 上一次还没跑完，跳过本轮
+        self._health_worker = _HealthWorker(self._health_client)
+        self._health_worker.result.connect(self._on_health)
+        self._health_worker.start()
+
+    def _on_health(self, ok: bool) -> None:
+        self._health_worker = None
+        if self.state == "thinking":
+            return  # 聊天中不打断状态
+        self.set_state("online" if ok else "error")
 
     # ── 动画 ───────────────────────────────────────────────
 

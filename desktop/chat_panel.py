@@ -1,4 +1,13 @@
-"""聊天气泡面板：半透明窗口，接入服务器 /api/chat。"""
+"""聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
+
+v0.5 体验升级：
+- 气泡式消息（用户右/助手左，圆角气泡）+ 时间戳
+- 打开时后台加载最近 30 条历史
+- 快捷按钮：今日概览 / 周报
+- ✕ 按钮与 Esc 关闭；聊天中联动机器人状态灯
+"""
+import html as html_lib
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
@@ -25,8 +34,31 @@ class _ChatWorker(QThread):
             self.done.emit("assistant", f"[连接失败] {e}")
 
 
+class _HistoryWorker(QThread):
+    """后台加载历史消息。"""
+    done = Signal(list)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.client.recent_messages(30))
+        except Exception:
+            self.done.emit([])
+
+
+def _fmt_ts(ts: str) -> str:
+    """ISO 时间 → HH:MM（取 UTC 小时直接显示，个人使用足够）。"""
+    try:
+        return ts[11:16]
+    except Exception:
+        return ""
+
+
 class ChatPanel(QWidget):
-    W, H = 440, 560
+    W, H = 460, 600
 
     def __init__(self, ball=None) -> None:
         super().__init__()
@@ -36,8 +68,12 @@ class ChatPanel(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)  # 无边框窗口需要显式焦点策略才能收 Esc
         self.client = ApiClient()
         self._worker = None
+        self._history_worker = None
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
+        self._history_loaded = False
         self._init_ui()
+
+    # ── UI 构建 ────────────────────────────────────────────
 
     def _init_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -46,7 +82,7 @@ class ChatPanel(QWidget):
         card = QWidget()
         card.setObjectName("card")
         card.setStyleSheet(
-            "#card { background: rgba(28, 31, 38, 235); border-radius: 14px; }"
+            "#card { background: rgba(28, 31, 38, 245); border-radius: 14px; }"
             "QLabel { color: #eee; }"
         )
         outer.addWidget(card)
@@ -54,6 +90,7 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
 
+        # 标题行 + 关闭按钮
         title = QLabel("🤖 Personal AI Assistant")
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(26, 26)
@@ -70,6 +107,7 @@ class ChatPanel(QWidget):
 
         # 消息区
         self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(False)
         self.browser.setStyleSheet(
             "background: transparent; border: none; color: #eee; font-size: 13px;"
         )
@@ -78,6 +116,25 @@ class ChatPanel(QWidget):
         scroll.setWidget(self.browser)
         scroll.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(scroll, 1)
+
+        # 快捷按钮行
+        quick_row = QHBoxLayout()
+        stats_btn = QPushButton("📊 今日")
+        stats_btn.setToolTip("查看近 7 天行为统计")
+        stats_btn.clicked.connect(self._show_stats)
+        report_btn = QPushButton("📋 周报")
+        report_btn.setToolTip("查看最新周报")
+        report_btn.clicked.connect(self._show_report)
+        for b in (stats_btn, report_btn):
+            b.setStyleSheet(
+                "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
+                "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
+                "QPushButton:hover { color: #eee; border-color: #555; }"
+            )
+        quick_row.addWidget(stats_btn)
+        quick_row.addWidget(report_btn)
+        quick_row.addStretch(1)
+        layout.addLayout(quick_row)
 
         # 输入区
         row = QHBoxLayout()
@@ -89,26 +146,99 @@ class ChatPanel(QWidget):
         )
         self.input.returnPressed.connect(self._send)
         send_btn = QPushButton("发送")
-        send_btn.setStyleSheet("background: #2b5cff; color: white; border: none; border-radius: 8px; padding: 0 16px;")
+        send_btn.setStyleSheet(
+            "background: #2b5cff; color: white; border: none; border-radius: 8px; padding: 0 16px;"
+        )
         send_btn.clicked.connect(self._send)
         row.addWidget(self.input, 1)
         row.addWidget(send_btn)
         layout.addLayout(row)
 
-    def keyPressEvent(self, event) -> None:
-        """Esc 关闭面板。"""
-        if event.key() == Qt.Key_Escape:
-            self.hide()
+    # ── 历史加载 ───────────────────────────────────────────
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._history_loaded:
+            self._history_loaded = True
+            self._append("assistant", "正在加载历史…")
+            self._history_worker = _HistoryWorker(self.client)
+            self._history_worker.done.connect(self._on_history)
+            self._history_worker.start()
+        self.input.setFocus()
+
+    def _on_history(self, messages: list) -> None:
+        self._history_worker = None
+        self.browser.clear()
+        if not messages:
+            self._append(
+                "assistant",
+                "你好，我是你的个人助手。我可以记住我们的对话、记录你的工作日志，"
+                "每周生成学习反思。试试说\"记录：下午2-5点调RAG性能\"。",
+            )
             return
-        super().keyPressEvent(event)
+        for m in messages:
+            self._append(m.get("sender", "assistant"), m.get("content", ""), m.get("ts", ""))
+
+    # ── 消息与气泡 ─────────────────────────────────────────
+
+    def _append(self, role: str, text: str, ts: str = "", raw: bool = False) -> None:
+        """气泡式消息：用户右蓝、助手左灰，带时间戳。raw=True 时 text 为可信 HTML。"""
+        text_esc = text if raw else html_lib.escape(text).replace("\n", "<br>")
+        if role == "user":
+            bubble = (
+                f'<div style="text-align:right;margin:6px 0;">'
+                f'<span style="display:inline-block;background:#2b5cff;color:#fff;'
+                f'border-radius:12px;padding:7px 12px;max-width:82%;'
+                f'text-align:left;border-bottom-right-radius:4px;">{text_esc}</span><br>'
+                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
+            )
+        else:
+            bubble = (
+                f'<div style="text-align:left;margin:6px 0;">'
+                f'<span style="display:inline-block;background:#23262f;color:#d8dbe2;'
+                f'border-radius:12px;padding:7px 12px;max-width:82%;'
+                f'border-bottom-left-radius:4px;">{text_esc}</span><br>'
+                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
+            )
+        self.browser.append(bubble)
+        sb = self.browser.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    # ── 快捷功能 ───────────────────────────────────────────
+
+    def _show_stats(self) -> None:
+        try:
+            d = self.client.stats_summary(7)
+            text = (
+                f"📊 近 7 天统计：<br>对话 {d['messages']} 条 · git 提交 {d['git_commits']} 次 · "
+                f"工作日志 {d['work_logs']} 条<br><br><b>应用时长 Top：</b><br>"
+                + "".join(f"· {a['name']}: {a['hours']}h<br>" for a in d.get("top_apps", []))
+                + "<br><b>浏览域名 Top：</b><br>"
+                + "".join(f"· {b['name']}: {b['count']} 次<br>" for b in d.get("top_domains", []))
+            )
+        except Exception as e:
+            text = f"[统计获取失败] {e}"
+        self._append("assistant", text, "", raw=True)
+
+    def _show_report(self) -> None:
+        try:
+            r = self.client.latest_report()
+            if not r:
+                text = "暂无周报。每周日 21:00 自动生成，敬请期待。"
+            else:
+                text = f"📋 周报 {r.get('week', '')}：<br>{r.get('content', '')}"
+        except Exception as e:
+            text = f"[周报获取失败] {e}"
+        self._append("assistant", text, "", raw=True)
+
+    # ── 发送与状态联动 ─────────────────────────────────────
 
     def _send(self) -> None:
         msg = self.input.text().strip()
         if not msg or self._worker is not None:
             return
         self.input.clear()
-        self._append("user", msg)
-        self._append("assistant", "…")
+        self._append("user", msg, "")
         if self.ball:
             self.ball.set_state("thinking")  # 机器人进入思考状态（琥珀灯+圆嘴）
         self._worker = _ChatWorker(self.client, msg)
@@ -117,15 +247,15 @@ class ChatPanel(QWidget):
 
     def _on_done(self, role: str, text: str) -> None:
         self._worker = None
-        self._append(role, text, replace_last=True)
+        self._append(role, text, "")
         if self.ball:
             self.ball.set_state("online")  # 回复完成 → 绿灯
 
-    def _append(self, role: str, text: str, replace_last: bool = False) -> None:
-        html = f"<p><b>{'你' if role == 'user' else '助手'}:</b><br>{text}</p>"
-        if replace_last:
-            # 替换末尾占位（简化：追加）
-            self.browser.append(html)
-        else:
-            self.browser.append(html)
-        self.browser.verticalScrollBar().setValue(self.browser.verticalScrollBar().maximum())
+    # ── 键盘 ───────────────────────────────────────────────
+
+    def keyPressEvent(self, event) -> None:
+        """Esc 关闭面板。"""
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(event)

@@ -12,6 +12,14 @@ class ApiClient:
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
+    def health(self) -> bool:
+        """健康检查（短超时，供断线检测）。"""
+        try:
+            r = httpx.get(f"{self.base_url}/api/health", timeout=4)
+            return r.status_code == 200
+        except Exception:
+            return False
+
     def chat(self, message: str) -> str:
         r = httpx.post(
             f"{self.base_url}/api/chat",
@@ -22,7 +30,35 @@ class ApiClient:
         r.raise_for_status()
         return r.json()["reply"]
 
+    def recent_messages(self, limit: int = 30) -> list:
+        """最近消息（打开面板时加载历史）。"""
+        r = httpx.get(
+            f"{self.base_url}/api/messages",
+            params={"limit": limit},
+            headers=self._headers(),
+            timeout=15,
+        )
+        r.raise_for_status()
+        return r.json().get("messages", [])
+
     def stats_summary(self, days: int = 7) -> dict:
-        r = httpx.get(f"{self.base_url}/api/stats/summary", params={"days": days}, timeout=15)
+        r = httpx.get(
+            f"{self.base_url}/api/stats/summary",
+            params={"days": days},
+            headers=self._headers(),
+            timeout=15,
+        )
         r.raise_for_status()
         return r.json()
+
+    def latest_report(self) -> dict | None:
+        """最新周报（无则返回 None）。"""
+        r = httpx.get(f"{self.base_url}/api/reports", headers=self._headers(), timeout=15)
+        r.raise_for_status()
+        reports = r.json().get("reports", [])
+        if not reports:
+            return None
+        week = reports[0]["week"]
+        rr = httpx.get(f"{self.base_url}/api/reports/{week}", headers=self._headers(), timeout=15)
+        rr.raise_for_status()
+        return rr.json()

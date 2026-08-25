@@ -28,13 +28,14 @@ class _ChatWorker(QThread):
 class ChatPanel(QWidget):
     W, H = 440, 560
 
-    def __init__(self) -> None:
+    def __init__(self, ball=None) -> None:
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.W, self.H)
         self.client = ApiClient()
         self._worker = None
+        self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -89,6 +90,8 @@ class ChatPanel(QWidget):
         self.input.clear()
         self._append("user", msg)
         self._append("assistant", "…")
+        if self.ball:
+            self.ball.set_state("thinking")  # 机器人进入思考状态（琥珀灯+圆嘴）
         self._worker = _ChatWorker(self.client, msg)
         self._worker.done.connect(self._on_done)
         self._worker.start()
@@ -96,6 +99,8 @@ class ChatPanel(QWidget):
     def _on_done(self, role: str, text: str) -> None:
         self._worker = None
         self._append(role, text, replace_last=True)
+        if self.ball:
+            self.ball.set_state("online")  # 回复完成 → 绿灯
 
     def _append(self, role: str, text: str, replace_last: bool = False) -> None:
         html = f"<p><b>{'你' if role == 'user' else '助手'}:</b><br>{text}</p>"

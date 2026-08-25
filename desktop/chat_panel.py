@@ -33,6 +33,7 @@ class ChatPanel(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.W, self.H)
+        self.setFocusPolicy(Qt.StrongFocus)  # 无边框窗口需要显式焦点策略才能收 Esc
         self.client = ApiClient()
         self._worker = None
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
@@ -54,7 +55,18 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         title = QLabel("🤖 Personal AI Assistant")
-        layout.addWidget(title)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(26, 26)
+        close_btn.setToolTip("关闭（Esc）")
+        close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #888; border: none; font-size: 15px; }"
+            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
+        )
+        close_btn.clicked.connect(self.hide)
+        title_row = QHBoxLayout()
+        title_row.addWidget(title, 1)
+        title_row.addWidget(close_btn)
+        layout.addLayout(title_row)
 
         # 消息区
         self.browser = QTextBrowser()
@@ -82,6 +94,13 @@ class ChatPanel(QWidget):
         row.addWidget(self.input, 1)
         row.addWidget(send_btn)
         layout.addLayout(row)
+
+    def keyPressEvent(self, event) -> None:
+        """Esc 关闭面板。"""
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(event)
 
     def _send(self) -> None:
         msg = self.input.text().strip()

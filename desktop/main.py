@@ -1,4 +1,8 @@
-"""桌面悬浮球 · 入口：悬浮球 + 聊天面板 + 托盘。"""
+"""桌面悬浮机器人 · 入口：悬浮球 + 聊天面板。
+
+退出方式：右键机器人 → 退出；或 Ctrl+C（干净退出）。
+"""
+import signal
 import sys
 from pathlib import Path
 
@@ -16,6 +20,8 @@ from floating_ball import FloatingBall  # noqa: E402
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Personal AI Assistant")
+    # Ctrl+C 干净退出（Windows 控制台场景）：把 SIGINT 转成 Qt 退出
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
     ball = FloatingBall()
     ball.show()
     sys.exit(app.exec())

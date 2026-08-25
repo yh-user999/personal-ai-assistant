@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from chat_panel import ChatPanel
 
@@ -171,6 +171,14 @@ class FloatingBall(QWidget):
             self._drag_offset = None
             self._moved = False
             event.accept()
+
+    def contextMenuEvent(self, event) -> None:
+        """右键菜单：打开面板 / 退出。"""
+        menu = QMenu(self)
+        menu.addAction("打开/收起面板", self.toggle_panel)
+        menu.addSeparator()
+        menu.addAction("退出", QApplication.quit)
+        menu.exec(event.globalPos())
 
     def toggle_panel(self) -> None:
         if self.panel is None or not self.panel.isVisible():

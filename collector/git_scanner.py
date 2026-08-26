@@ -6,12 +6,18 @@ import asyncio
 import json
 import logging
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pusher import EventPusher
 
 logger = logging.getLogger("collector.git")
+
+# Windows 下 pythonw（无控制台）启动 git.exe 会闪黑框——显式声明"不创建窗口"
+_SUBPROCESS_KWARGS = {}
+if sys.platform == "win32":
+    _SUBPROCESS_KWARGS = {"creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 class GitScanner:
@@ -60,6 +66,7 @@ class GitScanner:
                 out = subprocess.run(
                     cmd, cwd=repo, capture_output=True,
                     encoding="utf-8", errors="replace", timeout=30,
+                    **_SUBPROCESS_KWARGS,  # Windows: CREATE_NO_WINDOW 防黑框
                 )
                 if out.returncode != 0:
                     continue

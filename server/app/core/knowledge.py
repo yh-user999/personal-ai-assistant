@@ -105,9 +105,18 @@ async def hybrid_search(query: str, top_k: int = 3) -> list[dict]:
         rrf[h["id"]] = rrf.get(h["id"], 0) + 1 / (60 + rank)
     for rank, h in enumerate(bm25_hits, 1):
         rrf[h["id"]] = rrf.get(h["id"], 0) + 1 / (60 + rank)
-    ranked = sorted(rrf.items(), key=lambda kv: -kv[1])[:top_k]
-
+    ranked_raw = sorted(rrf.items(), key=lambda kv: -kv[1])[:top_k]
+    # 并列分 tie-break：rrf 相同 → 向量相似度高者优先（语义更相关）→ id 兜底稳定
     by_id = {h["id"]: h for h in vec_hits + bm25_hits}
+    ranked = sorted(
+        ranked_raw,
+        key=lambda kv: (
+            -kv[1],
+            -(by_id.get(kv[0]) or {}).get("similarity", 0.0),
+            kv[0],
+        ),
+    )[:top_k]
+
     out = []
     for cid, score in ranked:
         h = by_id.get(cid)

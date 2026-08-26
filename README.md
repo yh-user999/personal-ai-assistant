@@ -55,6 +55,7 @@ python main.py
 六课带教进度账本见 [`docs/LEARNING_PROGRESS.md`](docs/LEARNING_PROGRESS.md)。
 组件启停与排查命令见 [`docs/OPS.md`](docs/OPS.md)。
 加"心智功能"的术语地图与检索方法见 [`docs/RESEARCH_GUIDE.md`](docs/RESEARCH_GUIDE.md)。
+记忆/反思/人格/情绪的测试方法见 [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md)。
 
 ## 安全
 

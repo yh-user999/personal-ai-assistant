@@ -238,3 +238,21 @@ def get_facts_injection(limit: int = 10) -> str:
     return "\n".join(
         f"- {r['subject']} {r['predicate']} {r['object']}" for r in reversed(rows)
     )
+
+
+# ── 多轮历史（v0.10：修复"单轮失忆"——"再确认一下"接不上上下文）──
+
+def get_recent_history(limit: int = 8) -> list[dict]:
+    """最近 N 条对话（正序），作为多轮上下文传给 LLM。每条截断 500 字符。"""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT sender, content FROM memories WHERE content != '' ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {"role": r["sender"], "content": r["content"][:500]}
+        for r in reversed(rows)
+    ]

@@ -113,18 +113,21 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{behavior}", behavior or "（暂无行为数据）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
 
-    # 2) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
+    # 2) 多轮上下文：取最近对话历史（在写入当前消息前）
+    history = memory.get_recent_history(8)
+
+    # 3) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     await memory.write_message("user", msg)
 
-    # 3) 调 LLM
-    reply = await llm.chat(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": msg},
-        ]
+    # 4) 调 LLM（system + 历史 + 当前消息——"再确认一下"类消息能接上上下文）
+    llm_messages = (
+        [{"role": "system", "content": system}]
+        + history
+        + [{"role": "user", "content": msg}]
     )
+    reply = await llm.chat(llm_messages)
 
-    # 4) 记录回复 + 提升被引用记忆的重要性 + 术语建档
+    # 5) 记录回复 + 提升被引用记忆的重要性 + 术语建档
     await memory.write_message("assistant", reply)
     if mems:
         memory.bump_importance([m["id"] for m in mems])

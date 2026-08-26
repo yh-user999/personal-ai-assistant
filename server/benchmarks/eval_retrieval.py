@@ -62,52 +62,17 @@ async def evaluate(name: str, search_fn, top_k: int = 5) -> dict:
     }
 
 
-# ── BM25 简化版（字符 2-gram，无外部依赖）──────────────────
-
-def bm25_rank(query: str, top_k: int = 10) -> list[dict]:
-    """关键词匹配排名：query 的字符 2-gram 在块中的出现次数加权。"""
-    grams = [query[i:i + 2] for i in range(max(1, len(query) - 1))]
-    conn = connect()
-    try:
-        rows = conn.execute("SELECT id, doc_name, chunk_index, content FROM knowledge_chunks").fetchall()
-    finally:
-        conn.close()
-    scored = []
-    for r in rows:
-        score = sum(r["content"].count(g) for g in grams)
-        if score > 0:
-            scored.append((score, dict(r)))
-    scored.sort(key=lambda x: -x[0])
-    return [c for _, c in scored[:top_k]]
-
-
-async def hybrid_search(query: str, top_k: int = 5) -> list[dict]:
-    """RRF 融合：向量检索 + BM25 的排名取倒数融合（k=60 经典参数）。"""
-    vec_hits = await knowledge.search_knowledge(query, top_k=10)
-    bm25_hits = bm25_rank(query, 10)
-    rrf: dict[int, float] = {}
-    for rank, h in enumerate(vec_hits, 1):
-        rrf[h["id"]] = rrf.get(h["id"], 0) + 1 / (60 + rank)
-    for rank, h in enumerate(bm25_hits, 1):
-        rrf[h["id"]] = rrf.get(h["id"], 0) + 1 / (60 + rank)
-    ranked = sorted(rrf.items(), key=lambda kv: -kv[1])[:top_k]
-    # 补回内容
-    by_id = {h["id"]: h for h in vec_hits + bm25_hits}
-    out = []
-    for cid, score in ranked:
-        if cid in by_id:
-            h = by_id[cid]
-            h["rrf"] = round(score, 4)
-            out.append(h)
-    return out
-
+# ── 混合检索引用正式实现（评测脚本不再自带逻辑）───────────
 
 async def main() -> None:
     print("=" * 60)
     print("检索评测：基线（纯向量） vs 混合（向量+BM25 RRF）")
     print("=" * 60)
-    base = await evaluate("基线·纯向量", lambda q, k: knowledge.search_knowledge(q, top_k=k))
-    hybrid = await evaluate("混合·RRF", lambda q, k: hybrid_search(q, top_k=k))
+    base = await evaluate(
+        "基线·纯向量",
+        lambda q, k: knowledge.search_knowledge(q, top_k=k, method="vector"),
+    )
+    hybrid = await evaluate("混合·RRF", lambda q, k: knowledge.search_knowledge(q, top_k=k))
 
     print(f"\n{'指标':<10}{base['name']:<20}{hybrid['name']}")
     for key in ("hit_at_1", "hit_at_5", "mrr"):

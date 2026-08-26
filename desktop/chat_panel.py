@@ -132,7 +132,9 @@ class ChatPanel(QWidget):
 
     def __init__(self, ball=None) -> None:
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        # Dialog 而非 Tool：面板出现在任务栏（被覆盖时可一键找回）；
+        # 去掉 WindowStaysOnTopHint：默认不置顶不挡路，📌 按钮可手动钉住
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.W, self.H)
         self.setFocusPolicy(Qt.StrongFocus)  # 无边框窗口需要显式焦点策略才能收 Esc
@@ -140,6 +142,7 @@ class ChatPanel(QWidget):
         self._worker = None
         self._history_worker = None
         self._api_worker = None
+        self._pinned = False
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
         self._init_ui()
@@ -161,8 +164,19 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
 
-        # 标题行 + 关闭按钮
+        # 标题行 + 图钉 + 关闭按钮
         title = QLabel("🤖 Personal AI Assistant")
+        pin_btn = QPushButton("📌")
+        pin_btn.setFixedSize(26, 26)
+        pin_btn.setToolTip("钉住窗口（始终置顶）")
+        pin_btn.setCheckable(True)
+        pin_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #888; border: none; font-size: 14px; }"
+            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
+            "QPushButton:checked { color: #fbbf24; background: #2a2d35; border-radius: 13px; }"
+        )
+        pin_btn.clicked.connect(self._toggle_pin)
+        self._pin_btn = pin_btn
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(26, 26)
         close_btn.setToolTip("关闭（Esc）")
@@ -173,6 +187,7 @@ class ChatPanel(QWidget):
         close_btn.clicked.connect(self.hide)
         title_row = QHBoxLayout()
         title_row.addWidget(title, 1)
+        title_row.addWidget(pin_btn)
         title_row.addWidget(close_btn)
         layout.addLayout(title_row)
 
@@ -365,3 +380,11 @@ class ChatPanel(QWidget):
             self.hide()
             return
         super().keyPressEvent(event)
+
+    def _toggle_pin(self, checked: bool) -> None:
+        """图钉开关：置顶/取消置顶（setWindowFlag 后需 show 刷新）。"""
+        self._pinned = checked
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, checked)
+        self.show()
+        self.raise_()
+        self._pin_btn.setToolTip("已钉住（始终置顶）" if checked else "钉住窗口（始终置顶）")

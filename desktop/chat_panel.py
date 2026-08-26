@@ -12,7 +12,7 @@ import markdown as md_lib
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -234,7 +234,11 @@ class ChatPanel(QWidget):
         history_btn = QPushButton("🕘 历史")
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
-        for b in (stats_btn, report_btn, daily_btn, history_btn):
+        voice_btn = QPushButton("🎙 语音")
+        voice_btn.setToolTip("切换语音角色（女声/男声），选中即试听")
+        voice_btn.clicked.connect(self._show_voice_menu)
+        self._voice_btn = voice_btn
+        for b in (stats_btn, report_btn, daily_btn, history_btn, voice_btn):
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
@@ -244,6 +248,7 @@ class ChatPanel(QWidget):
         quick_row.addWidget(report_btn)
         quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
+        quick_row.addWidget(voice_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -366,6 +371,30 @@ class ChatPanel(QWidget):
 
     def _show_stats(self) -> None:
         self._run_api("stats")
+
+    def _show_voice_menu(self) -> None:
+        """语音角色选择菜单：列出系统语音，选中即试听并记住。"""
+        from tts import get_current_voice, list_installed_voices, set_voice, speak
+
+        menu = QMenu(self)
+        current = get_current_voice()
+        voices = list_installed_voices()
+        if not voices:
+            act = menu.addAction("（未检测到语音包）")
+            act.setEnabled(False)
+        else:
+            for v in voices:
+                act = menu.addAction(v)
+                act.setCheckable(True)
+                act.setChecked(v == current)
+                act.triggered.connect(lambda checked, name=v: self._set_voice(name))
+        menu.exec(self._voice_btn.mapToGlobal(self._voice_btn.rect().bottomLeft()))
+
+    def _set_voice(self, name: str) -> None:
+        from tts import set_voice, speak
+
+        set_voice(name)
+        speak("你好，我是小月，以后就用这个声音和你说话")  # 试听新角色
 
     def _show_report(self) -> None:
         self._run_api("report")

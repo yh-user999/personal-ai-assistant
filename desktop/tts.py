@@ -1,21 +1,22 @@
 """语音播报：Windows 自带 SAPI——零依赖、离线。
 
-多样性设计（解决"单调"）：
-- 自动枚举系统已安装语音，问候时随机轮换（女声 Huihui / 男声 Kangkang 等）
-- 语速在 -2~+1 间随机微调
-- .env 可配置：VOICE_NAME（固定语音）/ VOICE_RANDOM（随机，默认开）
+角色切换设计（用户可控，非随机）：
+- 面板「🎙 语音」按钮列出系统已装语音角色，选中即试听并持久化
+- 优先级：运行时选择（voice_config.json）> .env VOICE_NAME > 系统默认
 """
+import json
 import os
-import random
 import subprocess
 import sys
+from pathlib import Path
 
 VOICE_GREETING = os.environ.get("VOICE_GREETING", "true").lower() == "true"
 VOICE_REPLY = os.environ.get("VOICE_REPLY", "false").lower() == "true"
-VOICE_RANDOM = os.environ.get("VOICE_RANDOM", "true").lower() == "true"
 VOICE_NAME = os.environ.get("VOICE_NAME", "").strip()
 
-_voices_cache: list[str] | None = None  # None=未查询；[]=查询过但无结果
+_CONFIG_FILE = Path(__file__).resolve().parent / "voice_config.json"
+
+_voices_cache: list[str] | None = None  # None=未查询
 
 
 def list_installed_voices() -> list[str]:
@@ -37,7 +38,6 @@ def list_installed_voices() -> list[str]:
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             all_names = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-            # 中文优先，其余垫后
             names = sorted(all_names, key=lambda n: (0 if "Chinese" in n else 1, n))
         except Exception:
             names = []
@@ -45,17 +45,30 @@ def list_installed_voices() -> list[str]:
     return names
 
 
-def _pick_voice() -> str:
-    """按配置选语音：指定名 > 随机 > 默认。"""
-    voices = list_installed_voices()
+def get_current_voice() -> str:
+    """当前选定语音：运行时选择 > .env 指定 > ''（系统默认）。"""
     if VOICE_NAME:
-        # 支持部分名匹配
-        for v in voices:
-            if VOICE_NAME.lower() in v.lower():
-                return v
-    if VOICE_RANDOM and voices:
-        return random.choice(voices)
-    return ""  # 不指定 = 系统默认
+        return VOICE_NAME
+    try:
+        cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+        name = cfg.get("voice", "")
+        # 名字需存在于系统语音列表，否则回退默认
+        if name and name in list_installed_voices():
+            return name
+        if name:  # 存了但系统里没了（部分名匹配一次）
+            for v in list_installed_voices():
+                if name.lower() in v.lower():
+                    return v
+    except Exception:
+        pass
+    return ""
+
+
+def set_voice(name: str) -> None:
+    """持久化用户选择的语音角色。"""
+    _CONFIG_FILE.write_text(
+        json.dumps({"voice": name}, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def speak(text: str) -> None:
@@ -65,13 +78,12 @@ def speak(text: str) -> None:
     clean = text.replace("'", "").replace('"', "")[:200]
     if not clean.strip():
         return
-    voice = _pick_voice()
-    rate = random.randint(-2, 1)  # 语速微调：-2 ~ +1
+    voice = get_current_voice()
     ps = "Add-Type -AssemblyName System.Speech; "
     ps += "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
     if voice:
         ps += f"$s.SelectVoice('{voice}'); "
-    ps += f"$s.Rate = {rate}; $s.Speak('{clean}')"
+    ps += f"$s.Speak('{clean}')"
     try:
         subprocess.Popen(
             ["powershell", "-NoProfile", "-Command", ps],

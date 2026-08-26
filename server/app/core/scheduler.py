@@ -25,6 +25,7 @@ class SchedulerManager:
         from app.services.daily_summary import run_daily_summary
         from app.services.profile import refresh_profile
         from app.services.analyzer import evict_stale
+        from app.services.backup import run_daily_backup
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self.scheduler.add_job(
@@ -64,6 +65,13 @@ class SchedulerManager:
             "interval",
             hours=6,
             id="eviction",
+        )
+        # 每日备份：凌晨 3:00（避开周报/整合高峰；热备份+滚动保留 7 份）
+        self.scheduler.add_job(
+            lambda: asyncio.create_task(run_daily_backup()),
+            "cron",
+            hour=3,
+            id="daily_backup",
         )
 
         self.scheduler.start()

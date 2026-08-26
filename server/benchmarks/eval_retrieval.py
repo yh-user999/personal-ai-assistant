@@ -35,13 +35,13 @@ def _hit_rank(hits: list[dict], expect: str) -> int:
     return 0
 
 
-def evaluate(name: str, search_fn, top_k: int = 5) -> dict:
+async def evaluate(name: str, search_fn, top_k: int = 5) -> dict:
     """跑一遍测试集，输出指标。search_fn 需为 async (q, top_k) -> hits。"""
     hit1 = hitk = 0
     rr_sum = 0.0
     detail = []
     for case in TEST_SET:
-        hits = asyncio.run(search_fn(case["q"], top_k))
+        hits = await search_fn(case["q"], top_k)
         rank = _hit_rank(hits, case["expect"])
         if rank == 1:
             hit1 += 1
@@ -103,8 +103,8 @@ async def main() -> None:
     print("=" * 60)
     print("检索评测：基线（纯向量） vs 混合（向量+BM25 RRF）")
     print("=" * 60)
-    base = evaluate("基线·纯向量", lambda q, k: knowledge.search_knowledge(q, top_k=k))
-    hybrid = evaluate("混合·RRF", lambda q, k: hybrid_search(q, top_k=k))
+    base = await evaluate("基线·纯向量", lambda q, k: knowledge.search_knowledge(q, top_k=k))
+    hybrid = await evaluate("混合·RRF", lambda q, k: hybrid_search(q, top_k=k))
 
     print(f"\n{'指标':<10}{base['name']:<20}{hybrid['name']}")
     for key in ("hit_at_1", "hit_at_5", "mrr"):

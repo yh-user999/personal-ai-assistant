@@ -19,6 +19,28 @@ _CONFIG_FILE = Path(__file__).resolve().parent / "voice_config.json"
 _voices_cache: list[str] | None = None  # None=未查询
 
 
+def _load_config() -> dict:
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def greeting_enabled() -> bool:
+    """问候语音开关：运行时开关（voice_config.json）> .env VOICE_GREETING。"""
+    cfg = _load_config()
+    if "greeting_enabled" in cfg:
+        return bool(cfg["greeting_enabled"])
+    return VOICE_GREETING
+
+
+def set_greeting_enabled(enabled: bool) -> None:
+    """持久化问候语音开关。"""
+    cfg = _load_config()
+    cfg["greeting_enabled"] = bool(enabled)
+    _CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+
 def list_installed_voices() -> list[str]:
     """枚举系统已安装语音（中文优先）。"""
     global _voices_cache
@@ -94,8 +116,8 @@ def speak(text: str) -> None:
 
 
 def speak_greeting(greeting_text: str) -> None:
-    """播报问候语的主句（"|"分隔的第一段）。"""
-    if not VOICE_GREETING:
+    """播报问候语的主句（"|"分隔的第一段）。开关由 greeting_enabled() 控制。"""
+    if not greeting_enabled():
         return
     main = greeting_text.split("|")[0].strip()
     speak(main)

@@ -238,17 +238,28 @@ class ChatPanel(QWidget):
         voice_btn.setToolTip("切换语音角色（女声/男声），选中即试听")
         voice_btn.clicked.connect(self._show_voice_menu)
         self._voice_btn = voice_btn
-        for b in (stats_btn, report_btn, daily_btn, history_btn, voice_btn):
+        # 问候语音开关（🔊/🔇 切换，持久化）
+        from tts import greeting_enabled
+
+        self._voice_toggle_btn = QPushButton()
+        self._voice_toggle_btn.setCheckable(True)
+        self._voice_toggle_btn.setChecked(greeting_enabled())
+        self._update_voice_toggle_label()
+        self._voice_toggle_btn.clicked.connect(self._toggle_voice)
+        for b in (stats_btn, report_btn, daily_btn, history_btn, voice_btn,
+                  self._voice_toggle_btn):
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
                 "QPushButton:hover { color: #eee; border-color: #555; }"
+                "QPushButton:checked { color: #34d399; border-color: #34d399; }"
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
         quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
         quick_row.addWidget(voice_btn)
+        quick_row.addWidget(self._voice_toggle_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -395,6 +406,20 @@ class ChatPanel(QWidget):
 
         set_voice(name)
         speak("你好，我是小月，以后就用这个声音和你说话")  # 试听新角色
+
+    def _toggle_voice(self, checked: bool) -> None:
+        """问候语音开关。"""
+        from tts import set_greeting_enabled
+
+        set_greeting_enabled(checked)
+        self._update_voice_toggle_label()
+
+    def _update_voice_toggle_label(self) -> None:
+        on = self._voice_toggle_btn.isChecked()
+        self._voice_toggle_btn.setText("🔊 语音开" if on else "🔇 语音关")
+        self._voice_toggle_btn.setToolTip(
+            "点击关闭问候语音" if on else "点击开启问候语音"
+        )
 
     def _show_report(self) -> None:
         self._run_api("report")

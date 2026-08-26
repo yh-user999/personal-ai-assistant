@@ -48,7 +48,10 @@ async def evaluate(name: str, search_fn, top_k: int = 5) -> dict:
         if rank:
             hitk += 1
             rr_sum += 1.0 / rank
-        detail.append((case["q"], rank, [round(h["similarity"], 3) for h in hits[:3]]))
+        detail.append((
+            case["q"], rank,
+            [round(h.get("similarity") or h.get("rrf") or 0.0, 3) for h in hits[:3]],
+        ))
     n = len(TEST_SET)
     return {
         "name": name,

@@ -96,7 +96,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # 1) 检索：记忆 + 知识库双通道
     mems = await memory.search(msg)
     injections = memory.format_injection(mems)
-    knowledge_hits = await knowledge.search_knowledge(msg, top_k=3)
+    knowledge_hits = await knowledge.search_knowledge(msg, top_k=5)
     knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
     profile = get_profile_injection()
     lessons = get_lessons_injection()

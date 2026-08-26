@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.core import knowledge, llm, memory
 from app.config import settings
 from app.models.database import connect
-from app.services import behavior_context, documents, worklog
+from app.services import behavior_context, documents, resume, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -85,6 +85,19 @@ async def chat(req: ChatRequest) -> ChatResponse:
         return ChatResponse(
             reply=f"📄 文档已保存（#{result['id']}）：《{result['title']}》，"
                   f"{result['words']} 字，已同步进知识库可检索",
+            memories_used=0,
+        )
+
+    # 简历命令："优化简历：目标岗位=XX" → 生成优化版 + 导出 .docx
+    resume_target = resume.parse_resume_command(msg)
+    if resume_target is not None:
+        result = await resume.optimize_resume(target_job=resume_target)
+        if "error" in result:
+            return ChatResponse(reply=result["error"], memories_used=0)
+        docx = result.get("docx", "")
+        return ChatResponse(
+            reply=f"📄 简历优化完成（#{result['id']}）：《{result['title']}》\n"
+                  f"Word 文件：{docx}\n（用 scp 或 SFTP 从服务器取回；内容也已同步知识库可对话修改）",
             memories_used=0,
         )
 

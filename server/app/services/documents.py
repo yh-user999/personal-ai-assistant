@@ -95,3 +95,47 @@ def get_document(doc_id: int) -> dict | None:
     finally:
         conn.close()
     return dict(row) if row else None
+
+
+def export_docx(doc_id: int, out_dir: str = "") -> str:
+    """把文档导出为 .docx（基础排版：标题居中加粗，## 转小标题）。
+
+    返回文件绝对路径。依赖 python-docx。
+    """
+    from docx import Document as DocxDocument
+    from docx.shared import Pt
+
+    doc = get_document(doc_id)
+    if not doc:
+        raise FileNotFoundError(f"document {doc_id} not found")
+
+    out_dir = Path(out_dir) if out_dir else Path(__file__).resolve().parents[2] / "data" / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"doc-{doc_id}-{doc['title'][:20]}.docx"
+
+    d = DocxDocument()
+    title_p = d.add_paragraph()
+    title_p.alignment = 1  # 居中
+    run = title_p.add_run(doc["title"])
+    run.bold = True
+    run.font.size = Pt(16)
+
+    for line in doc["content"].splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            p = d.add_paragraph()
+            r = p.add_run(line[3:])
+            r.bold = True
+            r.font.size = Pt(13)
+        elif line.startswith("# "):
+            continue  # 大标题已由 title 呈现
+        elif line.startswith("- ") or line.startswith("* "):
+            d.add_paragraph(line[2:], style="List Bullet")
+        elif re.match(r"^\d+[.、]", line):
+            d.add_paragraph(re.sub(r"^\d+[.、]\s*", "", line), style="List Number")
+        else:
+            d.add_paragraph(line)
+    d.save(str(out_path))
+    return str(out_path)

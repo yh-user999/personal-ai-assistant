@@ -54,6 +54,7 @@ python main.py
 实践日志与踩坑记录见 [`docs/LESSONS.md`](docs/LESSONS.md)。
 六课带教进度账本见 [`docs/LEARNING_PROGRESS.md`](docs/LEARNING_PROGRESS.md)。
 组件启停与排查命令见 [`docs/OPS.md`](docs/OPS.md)。
+加"心智功能"的术语地图与检索方法见 [`docs/RESEARCH_GUIDE.md`](docs/RESEARCH_GUIDE.md)。
 
 ## 安全
 

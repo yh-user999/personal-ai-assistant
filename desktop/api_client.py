@@ -20,6 +20,12 @@ class ApiClient:
         except Exception:
             return False
 
+    def greeting(self) -> str:
+        """个性化问候（打开面板时刷新）。"""
+        r = httpx.get(f"{self.base_url}/api/greeting", headers=self._headers(), timeout=8)
+        r.raise_for_status()
+        return r.json().get("greeting", "")
+
     def chat(self, message: str) -> str:
         r = httpx.post(
             f"{self.base_url}/api/chat",

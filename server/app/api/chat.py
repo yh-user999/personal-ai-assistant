@@ -174,6 +174,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
     return ChatResponse(reply=reply, memories_used=len(mems))
 
 
+@router.get("/greeting")
+async def greeting() -> dict:
+    """个性化问候（面板打开时实时刷新）。"""
+    from app.services.greeting import get_greeting
+
+    return {"greeting": get_greeting()}
+
+
 @router.get("/messages")
 async def recent_messages(limit: int = 30) -> dict:
     """最近消息（倒序取回后正序返回），供桌面端打开面板时加载历史。"""

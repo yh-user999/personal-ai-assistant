@@ -65,6 +65,21 @@ class _ChatWorker(QThread):
             self.done.emit("assistant", f"[连接失败] {e}")
 
 
+class _GreetingWorker(QThread):
+    """后台拉个性化问候。"""
+    done = Signal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.client.greeting())
+        except Exception:
+            self.done.emit("")  # 失败静默，保留默认问候
+
+
 class _HistoryWorker(QThread):
     """后台加载历史消息。"""
     done = Signal(list)
@@ -250,17 +265,38 @@ class ChatPanel(QWidget):
         row.addWidget(send_btn)
         layout.addLayout(row)
 
-        # 初始欢迎语：历史默认折叠，点「🕘 历史」才展开
-        self._append(
-            "assistant",
-            "你好，我是你的个人助手。聊天记录默认收起，点下方「🕘 历史」可展开最近 10 条对话。",
+        # 问候标签（个性化+时效，每次打开面板刷新；独立于消息流）
+        self._greeting_label = QLabel("你好，我是你的个人助手")
+        self._greeting_label.setWordWrap(True)
+        self._greeting_label.setStyleSheet(
+            "QLabel { color: #9aa3b2; font-size: 12px; padding: 6px 2px;"
+            "border-bottom: 1px solid #23262f; }"
         )
+        layout.addWidget(self._greeting_label)
+        self._greeting_worker = None
 
-    # ── 历史（默认折叠，手动展开）─────────────────────────
+    # ── 问候刷新（每次打开）───────────────────────────────
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.input.setFocus()
+        self._refresh_greeting()
+
+    def _refresh_greeting(self) -> None:
+        if self._greeting_worker is not None:
+            return
+        self._greeting_worker = _GreetingWorker(self.client)
+        self._greeting_worker.done.connect(self._on_greeting)
+        self._greeting_worker.start()
+
+    def _on_greeting(self, text: str) -> None:
+        worker = self._greeting_worker
+        self._greeting_worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
+        if text:
+            self._greeting_label.setText(f"👋 {text}")
+            self._greeting_label.setToolTip("双击机器人随时重新打招呼（每次打开自动刷新）")
 
     def _load_history(self) -> None:
         """点「🕘 历史」按钮才加载最近 10 条。"""

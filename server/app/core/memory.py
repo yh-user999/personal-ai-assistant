@@ -261,7 +261,8 @@ def get_recent_history(limit: int = 8) -> list[dict]:
 def get_older_summaries(window_size: int = 8, limit: int = 4) -> list[str]:
     """窗口之外更早对话的摘要（正序），把"顺序感"续到 8 轮以后。
 
-    零额外 LLM 成本：直接复用 consolidation（每 4h）已提炼的 summary 字段。
+    优先级：summary（consolidation 已提炼）→ 原文短截断（4h 内尚未提炼的兜底）。
+    零额外 LLM 成本。
     """
     conn = connect()
     try:
@@ -277,6 +278,9 @@ def get_older_summaries(window_size: int = 8, limit: int = 4) -> list[str]:
         s = (r["summary"] or "").strip()
         if s and s != "__merged__":
             summaries.append(s)
+        elif r["content"]:
+            # 兜底：4h 内未提炼的消息用原文短截断续上
+            summaries.append(r["content"][:120])
         if len(summaries) >= limit:
             break
     return list(reversed(summaries))  # 正序（老→新）

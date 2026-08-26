@@ -73,3 +73,18 @@ def test_older_summaries_picked():
         _seed("user", f"窗口消息{i}")
     summaries = memory.get_older_summaries(window_size=8, limit=4)
     assert any("RAG调优" in s for s in summaries)  # __merged__ 被跳过，真摘要被取到
+
+
+def test_older_fallback_to_raw_content():
+    """4h 内未提炼的消息（summary 空）→ 用原文短截断兜底，不断链。"""
+    conn = connect()
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, ts) VALUES "
+        "('user', '未提炼的超长话题起点内容', '', '2026-08-26T02:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+    for i in range(10):
+        _seed("user", f"窗口消息{i}")
+    summaries = memory.get_older_summaries(window_size=8, limit=4)
+    assert any("超长话题" in s for s in summaries)  # 原文兜底生效

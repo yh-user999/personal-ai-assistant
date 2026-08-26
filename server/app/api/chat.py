@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core import knowledge, llm, memory
+from app.config import settings
 from app.models.database import connect
 from app.services import behavior_context, worklog
 from app.services.concern_tracker import get_concerns_injection
@@ -50,6 +51,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
 {behavior}
+
+{older}
 """
 
 
@@ -113,8 +116,16 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{behavior}", behavior or "（暂无行为数据）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
 
-    # 2) 多轮上下文：取最近对话历史（在写入当前消息前）
-    history = memory.get_recent_history(8)
+    # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感）
+    history = memory.get_recent_history(settings.history_limit)
+    older = memory.get_older_summaries(window_size=settings.history_limit)
+    if older:
+        system = system.replace(
+            "{older}",
+            "更早对话摘要（保持话题连续性）：\n- " + "\n- ".join(older),
+        )
+    else:
+        system = system.replace("{older}", "（无更早对话）")
 
     # 3) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     await memory.write_message("user", msg)

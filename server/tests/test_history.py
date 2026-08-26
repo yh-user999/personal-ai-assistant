@@ -53,3 +53,23 @@ def test_history_limit_and_truncate():
     _seed("assistant", long_msg)
     hist2 = memory.get_recent_history(3)
     assert len(hist2[-1]["content"]) <= 500  # 截断生效
+
+
+def test_older_summaries_picked():
+    """窗口外的对话摘要被提取（复用 consolidation 的 summary 字段）。"""
+    conn = connect()
+    # 窗口外（更早）的对话带摘要
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, ts) VALUES "
+        "('user', '早话题A', '用户在讨论RAG调优', '2026-08-26T01:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, ts) VALUES "
+        "('assistant', '早回复', '__merged__', '2026-08-26T01:01:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+    for i in range(10):  # 窗口内 10 条无摘要
+        _seed("user", f"窗口消息{i}")
+    summaries = memory.get_older_summaries(window_size=8, limit=4)
+    assert any("RAG调优" in s for s in summaries)  # __merged__ 被跳过，真摘要被取到

@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     min_similarity: float = 0.35
     importance_decay_days: float = 30.0  # importance 半衰期
 
+    # ── 多轮上下文 ──────────────────────────────────────────
+    history_limit: int = 8  # 携带最近 N 轮原文；更早的用摘要续接
+
     # ── 定时任务 ────────────────────────────────────────────
     consolidation_interval_hours: float = 4.0
     weekly_report_weekday: int = 6       # 0=周一 … 6=周日

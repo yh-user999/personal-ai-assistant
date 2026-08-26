@@ -256,3 +256,27 @@ def get_recent_history(limit: int = 8) -> list[dict]:
         {"role": r["sender"], "content": r["content"][:500]}
         for r in reversed(rows)
     ]
+
+
+def get_older_summaries(window_size: int = 8, limit: int = 4) -> list[str]:
+    """窗口之外更早对话的摘要（正序），把"顺序感"续到 8 轮以后。
+
+    零额外 LLM 成本：直接复用 consolidation（每 4h）已提炼的 summary 字段。
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT content, summary FROM memories
+               WHERE content != '' ORDER BY id DESC LIMIT ?""",
+            (window_size + limit * 6,),  # 多取一些，summary 可能为空/__merged__
+        ).fetchall()
+    finally:
+        conn.close()
+    summaries = []
+    for r in rows[window_size:]:
+        s = (r["summary"] or "").strip()
+        if s and s != "__merged__":
+            summaries.append(s)
+        if len(summaries) >= limit:
+            break
+    return list(reversed(summaries))  # 正序（老→新）

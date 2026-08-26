@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.api import chat, events, knowledge, reports, stats
+from app.api import chat, documents, events, knowledge, reports, stats
 from app.config import settings
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
@@ -68,6 +68,7 @@ app.include_router(events.router, prefix="/api", tags=["events"])
 app.include_router(stats.router, prefix="/api", tags=["stats"])
 app.include_router(reports.router, prefix="/api", tags=["reports"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
+app.include_router(documents.router, prefix="/api", tags=["documents"])
 
 
 @app.get("/api/health")

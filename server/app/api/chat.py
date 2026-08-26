@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.core import knowledge, llm, memory
 from app.config import settings
 from app.models.database import connect
-from app.services import behavior_context, worklog
+from app.services import behavior_context, documents, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -74,6 +74,19 @@ async def chat(req: ChatRequest) -> ChatResponse:
         content = re.sub(r"^记录[:：]\s*", "", msg)
         worklog.add_log(content)
         return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
+
+    # 文档命令："写文档：标题XXX，内容：YYY" → LLM 生成 + 保存 + 进知识库
+    doc_cmd = documents.parse_doc_command(msg)
+    if doc_cmd:
+        title, requirement = doc_cmd
+        result = await documents.generate_and_save(title, requirement)
+        if "error" in result:
+            return ChatResponse(reply=result["error"], memories_used=0)
+        return ChatResponse(
+            reply=f"📄 文档已保存（#{result['id']}）：《{result['title']}》，"
+                  f"{result['words']} 字，已同步进知识库可检索",
+            memories_used=0,
+        )
 
     # 0) 思维模块：检测与存储（用上一条 AI 回复做上下文）
     last_ai = None

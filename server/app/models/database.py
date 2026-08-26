@@ -128,6 +128,14 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON knowledge_chunks(doc_name);
+
+-- ⑬ 生成的文档（对话式"写文档"保存的产物，同时同步进知识库）
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 # 向量表（sqlite-vec 虚拟表）。

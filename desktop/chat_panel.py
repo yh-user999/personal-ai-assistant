@@ -297,6 +297,10 @@ class ChatPanel(QWidget):
         if text:
             self._greeting_label.setText(f"👋 {text}")
             self._greeting_label.setToolTip("双击机器人随时重新打招呼（每次打开自动刷新）")
+            # 语音播报问候主句（Windows SAPI，开关见 .env VOICE_GREETING）
+            from tts import speak_greeting
+
+            speak_greeting(text)
 
     def _load_history(self) -> None:
         """点「🕘 历史」按钮才加载最近 10 条。"""

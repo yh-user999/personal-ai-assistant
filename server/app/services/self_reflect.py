@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from app.models.database import connect
 
 # 纠正信号（中文口语常见表达；命中任一词即判定）
+# 含身份设定类："给你起名 X / 你叫 X / 你的名字是 X"
 CORRECTION_PATTERNS = (
     "不对", "错了", "不是这样", "应该是", "记住", "以后", "纠正",
     "别说", "不要再", "别再说", "你应该", "要记住",
+    "起名", "名字叫", "就叫你", "你的名字", "叫你",
 )
 
 

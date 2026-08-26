@@ -31,6 +31,9 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 {profile}
 
+关于用户的持久事实（身份/项目/偏好，务必记住并使用）：
+{facts}
+
 用户过往的纠正与偏好（务必遵守，违反即违背用户明确指示）：
 {lessons}
 
@@ -94,9 +97,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
     concerns = get_concerns_injection()
     jargon = get_jargon_injection(msg)
     style_examples = get_examples_injection()
+    facts = memory.get_facts_injection()
 
     system = SYSTEM_PROMPT.replace("{injections}", injections or "（暂无相关记忆）")
     system = system.replace("{profile}", profile or "（画像未建立，通过对话逐步了解用户）")
+    system = system.replace("{facts}", facts or "（暂无）")
     system = system.replace("{lessons}", lessons or "（暂无）")
     system = system.replace("{concerns}", concerns or "（暂无）")
     system = system.replace("{jargon}", jargon or "")

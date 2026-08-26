@@ -219,3 +219,22 @@ def bump_importance(memory_ids: list[int]) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ── 事实注入（v0.9：facts 三元组纳入每次聊天——"小月"失忆 bug 的系统性修复）──
+
+def get_facts_injection(limit: int = 10) -> str:
+    """最近 N 条持久事实（三元组），注入 prompt。身份/偏好/项目事实都在这里。"""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT subject, predicate, object FROM facts ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return ""
+    return "\n".join(
+        f"- {r['subject']} {r['predicate']} {r['object']}" for r in reversed(rows)
+    )

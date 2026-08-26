@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from app.core import knowledge, llm, memory
 from app.models.database import connect
-from app.services import worklog
+from app.services import behavior_context, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -47,6 +47,9 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
 {knowledge}
+
+用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
+{behavior}
 """
 
 
@@ -98,6 +101,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     jargon = get_jargon_injection(msg)
     style_examples = get_examples_injection()
     facts = memory.get_facts_injection()
+    behavior = behavior_context.get_behavior_injection()
 
     system = SYSTEM_PROMPT.replace("{injections}", injections or "（暂无相关记忆）")
     system = system.replace("{profile}", profile or "（画像未建立，通过对话逐步了解用户）")
@@ -106,6 +110,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{concerns}", concerns or "（暂无）")
     system = system.replace("{jargon}", jargon or "")
     system = system.replace("{style_examples}", style_examples or "（暂无）")
+    system = system.replace("{behavior}", behavior or "（暂无行为数据）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
 
     # 2) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）

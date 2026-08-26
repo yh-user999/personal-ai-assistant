@@ -16,7 +16,7 @@ def test_api_key_masked():
 
 
 def test_email_masked():
-    assert "[EMAIL]" in sanitize("联系 wfy3366@163.com 处理")
+    assert "[EMAIL]" in sanitize("联系 test@example.com 处理")
 
 
 def test_phone_masked():

@@ -3,10 +3,14 @@
 数据源：当天 memories 摘要 + behavior_events 统计 + work_log。
 原则：事实由 SQL 算、解读由 LLM 做（与周报一致）。
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.core import llm
 from app.models.database import connect
+
+# 按用户本地时区（北京时间）算"今天"，不用 UTC——凌晨 0-8 点会算错日子
+TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _stale_concerns_text(days: int = 3) -> str:
@@ -42,9 +46,9 @@ DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据�
 
 async def run_daily_summary() -> dict:
     """生成今天的每日小结并存储。返回 {date, content} 或 {'skipped': True}。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(TZ)
     today = now.date().isoformat()
-    day_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).isoformat()
+    day_start = datetime(now.year, now.month, now.day, tzinfo=TZ).isoformat()
 
     conn = connect()
     try:

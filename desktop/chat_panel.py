@@ -99,6 +99,13 @@ class _ApiWorker(QThread):
                     + "".join(f"· {b['name']}: {b['count']} 次<br>" for b in d.get("top_domains", []))
                 )
                 self.done.emit("stats", text)
+            elif self.mode == "daily":
+                d = self.client.latest_daily()
+                if not d:
+                    text = "暂无今日小结。每晚 22:00 自动生成。"
+                else:
+                    text = f"🌙 {d['date']} 小结：<br>" + d["content"].replace("\n", "<br>")
+                self.done.emit("daily", text)
             else:  # report
                 r = self.client.latest_report()
                 if not r:
@@ -189,10 +196,13 @@ class ChatPanel(QWidget):
         report_btn = QPushButton("📋 周报")
         report_btn.setToolTip("查看最新周报")
         report_btn.clicked.connect(self._show_report)
+        daily_btn = QPushButton("🌙 小结")
+        daily_btn.setToolTip("查看今日小结（每晚 22:00 生成）")
+        daily_btn.clicked.connect(self._show_daily)
         history_btn = QPushButton("🕘 历史")
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
-        for b in (stats_btn, report_btn, history_btn):
+        for b in (stats_btn, report_btn, daily_btn, history_btn):
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
@@ -200,6 +210,7 @@ class ChatPanel(QWidget):
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
+        quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
@@ -293,6 +304,9 @@ class ChatPanel(QWidget):
     def _show_report(self) -> None:
         self._run_api("report")
 
+    def _show_daily(self) -> None:
+        self._run_api("daily")
+
     def _run_api(self, mode: str) -> None:
         """快捷查询统一走后台线程，结果弹独立窗口（不混入聊天流）。"""
         worker = _ApiWorker(self.client, mode)
@@ -305,7 +319,7 @@ class ChatPanel(QWidget):
         self._api_worker = None
         if worker:
             worker.deleteLater()
-        title = "📊 今日概览" if mode == "stats" else "📋 周报"
+        title = {"stats": "📊 今日概览", "report": "📋 周报", "daily": "🌙 今日小结"}.get(mode, "信息")
         dlg = _InfoDialog(title, text, parent=self)
         dlg.show()
 

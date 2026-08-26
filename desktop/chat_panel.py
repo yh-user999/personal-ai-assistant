@@ -234,32 +234,16 @@ class ChatPanel(QWidget):
         history_btn = QPushButton("🕘 历史")
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
-        voice_btn = QPushButton("🎙 语音")
-        voice_btn.setToolTip("切换语音角色（女声/男声），选中即试听")
-        voice_btn.clicked.connect(self._show_voice_menu)
-        self._voice_btn = voice_btn
-        # 问候语音开关（🔊/🔇 切换，持久化）
-        from tts import greeting_enabled
-
-        self._voice_toggle_btn = QPushButton()
-        self._voice_toggle_btn.setCheckable(True)
-        self._voice_toggle_btn.setChecked(greeting_enabled())
-        self._update_voice_toggle_label()
-        self._voice_toggle_btn.clicked.connect(self._toggle_voice)
-        for b in (stats_btn, report_btn, daily_btn, history_btn, voice_btn,
-                  self._voice_toggle_btn):
+        for b in (stats_btn, report_btn, daily_btn, history_btn):
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
                 "QPushButton:hover { color: #eee; border-color: #555; }"
-                "QPushButton:checked { color: #34d399; border-color: #34d399; }"
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
         quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
-        quick_row.addWidget(voice_btn)
-        quick_row.addWidget(self._voice_toggle_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -313,10 +297,6 @@ class ChatPanel(QWidget):
         if text:
             self._greeting_label.setText(f"👋 {text}")
             self._greeting_label.setToolTip("双击机器人随时重新打招呼（每次打开自动刷新）")
-            # 语音播报问候主句（Windows SAPI，开关见 .env VOICE_GREETING）
-            from tts import speak_greeting
-
-            speak_greeting(text)
 
     def _load_history(self) -> None:
         """点「🕘 历史」按钮才加载最近 10 条。"""
@@ -382,44 +362,6 @@ class ChatPanel(QWidget):
 
     def _show_stats(self) -> None:
         self._run_api("stats")
-
-    def _show_voice_menu(self) -> None:
-        """语音角色选择菜单：列出系统语音，选中即试听并记住。"""
-        from tts import get_current_voice, list_installed_voices, set_voice, speak
-
-        menu = QMenu(self)
-        current = get_current_voice()
-        voices = list_installed_voices()
-        if not voices:
-            act = menu.addAction("（未检测到语音包）")
-            act.setEnabled(False)
-        else:
-            for v in voices:
-                act = menu.addAction(v)
-                act.setCheckable(True)
-                act.setChecked(v == current)
-                act.triggered.connect(lambda checked, name=v: self._set_voice(name))
-        menu.exec(self._voice_btn.mapToGlobal(self._voice_btn.rect().bottomLeft()))
-
-    def _set_voice(self, name: str) -> None:
-        from tts import set_voice, speak
-
-        set_voice(name)
-        speak("你好，我是小月，以后就用这个声音和你说话")  # 试听新角色
-
-    def _toggle_voice(self, checked: bool) -> None:
-        """问候语音开关。"""
-        from tts import set_greeting_enabled
-
-        set_greeting_enabled(checked)
-        self._update_voice_toggle_label()
-
-    def _update_voice_toggle_label(self) -> None:
-        on = self._voice_toggle_btn.isChecked()
-        self._voice_toggle_btn.setText("🔊 语音开" if on else "🔇 语音关")
-        self._voice_toggle_btn.setToolTip(
-            "点击关闭问候语音" if on else "点击开启问候语音"
-        )
 
     def _show_report(self) -> None:
         self._run_api("report")

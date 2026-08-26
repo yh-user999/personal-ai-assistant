@@ -15,11 +15,28 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def ingest_document(name: str, content: str) -> dict:
-    """文档入库：切块 → 批量向量化 → 存 knowledge_chunks + chunk_vectors。"""
+async def ingest_document(name: str, content: str, replace: bool = True) -> dict:
+    """文档入库：切块 → 批量向量化 → 存 knowledge_chunks + chunk_vectors。
+
+    replace=True（默认）：同 doc_name 先删旧块再入库（同步更新不产生重复）。
+    """
     chunks = chunk_text(content)
     if not chunks:
         return {"chunks": 0, "error": "文档为空或无可切分内容"}
+
+    conn = connect()
+    try:
+        if replace:
+            # 删除同文档旧块及其向量（sqlite-vec 虚拟表按 chunk_id 删除）
+            old = conn.execute(
+                "SELECT id FROM knowledge_chunks WHERE doc_name=?", (name,)
+            ).fetchall()
+            for r in old:
+                conn.execute("DELETE FROM chunk_vectors WHERE chunk_id=?", (r["id"],))
+            conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
+            conn.commit()
+    finally:
+        conn.close()
 
     # 批量向量化（一次 API 调用处理所有块）
     vectors = await embedding.embed(chunks)

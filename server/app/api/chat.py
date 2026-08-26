@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.core import llm, memory
+from app.core import knowledge, llm, memory
 from app.models.database import connect
 from app.services import worklog
 from app.services.concern_tracker import get_concerns_injection
@@ -41,6 +41,9 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 用户认可过的回复风格（参照其形式，不必逐字模仿）：
 {style_examples}
+
+知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
+{knowledge}
 """
 
 
@@ -81,9 +84,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
         save_example(last_ai)
     definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
 
-    # 1) 检索相关记忆并注入
+    # 1) 检索：记忆 + 知识库双通道
     mems = await memory.search(msg)
     injections = memory.format_injection(mems)
+    knowledge_hits = await knowledge.search_knowledge(msg, top_k=3)
+    knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
     profile = get_profile_injection()
     lessons = get_lessons_injection()
     concerns = get_concerns_injection()
@@ -96,6 +101,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{concerns}", concerns or "（暂无）")
     system = system.replace("{jargon}", jargon or "")
     system = system.replace("{style_examples}", style_examples or "（暂无）")
+    system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
 
     # 2) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     await memory.write_message("user", msg)

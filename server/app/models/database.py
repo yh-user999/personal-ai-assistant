@@ -118,14 +118,28 @@ CREATE TABLE IF NOT EXISTS style_examples (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- ⑫ 知识库块（RAG：文档切块后的文本，与 chunk_vectors 一一对应）
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_name TEXT NOT NULL,           -- 来源文档名
+  chunk_index INTEGER NOT NULL,     -- 在文档中的块序号
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc ON knowledge_chunks(doc_name);
 """
 
-# 向量表（sqlite-vec 虚拟表，与 memories.id 关联）。
+# 向量表（sqlite-vec 虚拟表）。
 # 单独拆分：扩展不可用时 init_db 跳过此段，基础功能不受影响。
 # 维度跟随 .env 的 EMBEDDING_DIMENSION（不同向量模型维度不同：1024 / 2048）。
 VEC_TABLE_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
   memory_id INTEGER PRIMARY KEY,
+  embedding FLOAT[{settings.embedding_dimension}] distance_metric=cosine
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
+  chunk_id INTEGER PRIMARY KEY,
   embedding FLOAT[{settings.embedding_dimension}] distance_metric=cosine
 );
 """

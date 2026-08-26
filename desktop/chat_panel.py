@@ -8,6 +8,8 @@ v0.6 体验修正：
 """
 import html as html_lib
 
+import markdown as md_lib
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
@@ -274,14 +276,23 @@ class ChatPanel(QWidget):
     # ── 消息与气泡 ─────────────────────────────────────────
 
     def _append(self, role: str, text: str, ts: str = "", raw: bool = False) -> None:
-        """气泡式消息：用户右蓝、助手左灰，带时间戳。raw=True 时 text 为可信 HTML。"""
-        text_esc = text if raw else html_lib.escape(text).replace("\n", "<br>")
+        """气泡式消息：用户右蓝、助手左灰，带时间戳。raw=True 时 text 为可信 HTML。
+
+        助手消息按 Markdown 渲染（加粗/表格/列表/链接），解决"输出凌乱"。
+        """
+        if raw:
+            rendered = text
+        elif role == "assistant":
+            # Markdown → HTML（表格/加粗/代码块/列表均可渲染）
+            rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
+        else:
+            rendered = html_lib.escape(text).replace("\n", "<br>")
         if role == "user":
             bubble = (
                 f'<div style="text-align:right;margin:6px 0;">'
                 f'<span style="display:inline-block;background:#2b5cff;color:#fff;'
                 f'border-radius:12px;padding:7px 12px;max-width:82%;'
-                f'text-align:left;border-bottom-right-radius:4px;">{text_esc}</span><br>'
+                f'text-align:left;border-bottom-right-radius:4px;">{rendered}</span><br>'
                 f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
             )
         else:
@@ -289,7 +300,7 @@ class ChatPanel(QWidget):
                 f'<div style="text-align:left;margin:6px 0;">'
                 f'<span style="display:inline-block;background:#23262f;color:#d8dbe2;'
                 f'border-radius:12px;padding:7px 12px;max-width:82%;'
-                f'border-bottom-left-radius:4px;">{text_esc}</span><br>'
+                f'border-bottom-left-radius:4px;">{rendered}</span><br>'
                 f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
             )
         self.browser.append(bubble)

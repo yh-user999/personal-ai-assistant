@@ -6,12 +6,30 @@
 - 轮询间隔 5s；失败回传 failed（服务器会记录，不会重试同一指令）
 """
 import asyncio
+import ctypes
 import logging
 import os
+import re
 
 import httpx
 
 logger = logging.getLogger("collector.executor")
+
+MAX_LIST = 300  # 单次最多列出的条目数（防病态大目录刷屏）
+
+
+def _natural_key(name: str) -> list:
+    """自然排序键：大小写不敏感 + 数字按数值比（f2 < f10）。"""
+    return [int(t) if t.isdigit() else t.casefold() for t in re.split(r"(\d+)", name)]
+
+
+def _is_hidden_system(path: str) -> bool:
+    """Windows 隐藏/系统属性判断（Explorer 默认不显示）；非 Windows 恒为 False。"""
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        return attrs != 0xFFFFFFFF and bool(attrs & (0x2 | 0x4))  # HIDDEN|SYSTEM
+    except Exception:
+        return False
 
 
 class Executor:
@@ -57,21 +75,32 @@ class Executor:
                 os.startfile(target)
                 return True, f"已打开 {target}"
             if action == "list_dir":
-                entries = sorted(os.listdir(target))
-                dirs = [e for e in entries if os.path.isdir(os.path.join(target, e))]
-                files = [e for e in entries if not os.path.isdir(os.path.join(target, e))]
-                shown_dirs, shown_files = dirs[:20], files[:20]
-                lines = [f"- 📁 {d}/" for d in shown_dirs]
-                lines += [f"- 📄 {f}" for f in shown_files]
-                shown = len(shown_dirs) + len(shown_files)
-                text = "\n".join(lines)
-                if len(entries) > shown:
-                    text += f"\n… 其余 {len(entries) - shown} 项"
-                return (
-                    True,
-                    f"{target} 共 {len(entries)} 项"
-                    f"（📁 {len(dirs)} 文件夹 / 📄 {len(files)} 文件）：\n{text}",
-                )
+                if not os.path.isdir(target):
+                    return False, f"目录不存在：{target}"
+                hidden = 0
+                entries: list[tuple[str, bool]] = []  # (name, is_dir)
+                for name in os.listdir(target):
+                    full = os.path.join(target, name)
+                    if _is_hidden_system(full):
+                        hidden += 1
+                        continue
+                    entries.append((name, os.path.isdir(full)))
+                # 自然排序：大小写不敏感、数字按数值、文件夹在前（Explorer 习惯）
+                entries.sort(key=lambda it: _natural_key(it[0]))
+                dirs = [n for n, d in entries if d]
+                files = [n for n, d in entries if not d]
+                total = len(entries)
+                lines = [f"- 📁 {n}/" for n, d in entries[:MAX_LIST] if d]
+                lines += [f"- 📄 {n}" for n, d in entries[:MAX_LIST] if not d]
+                if not lines:
+                    lines = ["（空目录）"]
+                if total > MAX_LIST:
+                    lines.append(f"… 其余 {total - MAX_LIST} 项")
+                header = f"共 {total} 项（📁 {len(dirs)} 文件夹 / 📄 {len(files)} 文件"
+                if hidden:
+                    header += f"，已隐藏 {hidden} 个系统/隐藏项"
+                header += "）："
+                return True, header + "\n" + "\n".join(lines)
             if action == "read_file":
                 if not os.path.isfile(target):
                     return False, f"文件不存在：{target}"

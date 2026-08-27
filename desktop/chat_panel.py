@@ -7,6 +7,7 @@ v0.6 体验修正：
 - ✕ 按钮与 Esc 关闭；聊天中联动机器人状态灯
 """
 import html as html_lib
+import re
 
 import markdown as md_lib
 
@@ -391,6 +392,9 @@ class ChatPanel(QWidget):
         elif role == "assistant":
             # Markdown → HTML（表格/加粗/代码块/列表均可渲染）
             rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
+            # Qt 富文本会把 <p> 文本内的换行压成空格（多行回复变成一行流）。
+            # 仅把文本内容里的换行换成 <br> 保留 LLM 的段落结构（标签之间的换行不动）
+            rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
         else:
             rendered = html_lib.escape(text).replace("\n", "<br>")
         if role == "user":

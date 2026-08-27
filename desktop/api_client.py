@@ -1,4 +1,8 @@
-"""服务器 API 客户端（httpx 同步，供 QThread 使用）。"""
+"""服务器 API 客户端（httpx 同步，供 QThread 使用）。
+
+所有请求 trust_env=False：服务器是 Tailscale 内网地址，直连即可；
+不继承系统代理设置（代理连不上内网会把聊天长请求搞成 502）。
+"""
 import os
 
 import httpx
@@ -15,7 +19,7 @@ class ApiClient:
     def health(self) -> bool:
         """健康检查（短超时，供断线检测）。"""
         try:
-            r = httpx.get(f"{self.base_url}/api/health", timeout=4)
+            r = httpx.get(f"{self.base_url}/api/health", timeout=4, trust_env=False)
             return r.status_code == 200
         except Exception:
             return False
@@ -27,13 +31,16 @@ class ApiClient:
             params={"since_id": since_id},
             headers=self._headers(),
             timeout=8,
+            trust_env=False,
         )
         r.raise_for_status()
         return r.json().get("results", [])
 
     def greeting(self) -> str:
         """个性化问候（打开面板时刷新）。"""
-        r = httpx.get(f"{self.base_url}/api/greeting", headers=self._headers(), timeout=8)
+        r = httpx.get(
+            f"{self.base_url}/api/greeting", headers=self._headers(), timeout=8, trust_env=False
+        )
         r.raise_for_status()
         return r.json().get("greeting", "")
 
@@ -43,6 +50,7 @@ class ApiClient:
             json={"message": message},
             headers=self._headers(),
             timeout=60,
+            trust_env=False,
         )
         r.raise_for_status()
         return r.json()["reply"]
@@ -54,6 +62,7 @@ class ApiClient:
             params={"limit": limit},
             headers=self._headers(),
             timeout=15,
+            trust_env=False,
         )
         r.raise_for_status()
         return r.json().get("messages", [])
@@ -64,25 +73,28 @@ class ApiClient:
             params={"days": days},
             headers=self._headers(),
             timeout=15,
+            trust_env=False,
         )
         r.raise_for_status()
         return r.json()
 
     def latest_report(self) -> dict | None:
         """最新周报（无则返回 None）。"""
-        r = httpx.get(f"{self.base_url}/api/reports", headers=self._headers(), timeout=15)
+        r = httpx.get(f"{self.base_url}/api/reports", headers=self._headers(), timeout=15, trust_env=False)
         r.raise_for_status()
         reports = r.json().get("reports", [])
         if not reports:
             return None
         week = reports[0]["week"]
-        rr = httpx.get(f"{self.base_url}/api/reports/{week}", headers=self._headers(), timeout=15)
+        rr = httpx.get(f"{self.base_url}/api/reports/{week}", headers=self._headers(), timeout=15, trust_env=False)
         rr.raise_for_status()
         return rr.json()
 
     def latest_daily(self) -> dict | None:
         """最新每日小结（无则返回 None）。"""
-        r = httpx.get(f"{self.base_url}/api/daily/latest", headers=self._headers(), timeout=15)
+        r = httpx.get(
+            f"{self.base_url}/api/daily/latest", headers=self._headers(), timeout=15, trust_env=False
+        )
         r.raise_for_status()
         d = r.json()
         return d if d.get("exists") else None

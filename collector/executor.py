@@ -59,7 +59,7 @@ class Executor:
             await asyncio.sleep(self.interval)
 
     async def _poll_once(self) -> None:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
             r = await client.get(
                 f"{self.base_url}/api/executor/pending", headers=self._headers()
             )

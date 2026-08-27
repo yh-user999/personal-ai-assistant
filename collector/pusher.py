@@ -109,7 +109,7 @@ class EventPusher:
 
     async def _push_batch(self, batch: list[dict]) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
                 r = await client.post(
                     f"{self.server_url}/api/events",
                     json={"events": batch},
@@ -125,7 +125,7 @@ class EventPusher:
     async def _send_heartbeat(self) -> None:
         payload = {"client": "collector", "channels": dict(self._health)}
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
                 r = await client.post(
                     f"{self.server_url}/api/heartbeat",
                     json=payload,

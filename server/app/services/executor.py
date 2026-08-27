@@ -83,8 +83,15 @@ def mark_result(cmd_id: int, ok: bool, result: str) -> None:
 
 
 def check_roots(target: str) -> bool:
-    """白名单检查：list_dir/read_file 目标须在允许根目录内。未配置=全禁止。"""
-    roots = [r.strip() for r in (settings.executor_roots or "").split(",") if r.strip()]
+    """白名单检查：list_dir/read_file 目标须在允许根目录内。未配置=全禁止。
+
+    分隔符：分号或逗号均可（.env 建议分号——逗号会被 pydantic-settings 误解析）。
+    """
+    roots = [
+        r.strip()
+        for r in settings.executor_roots.replace(",", ";").split(";")
+        if r.strip()
+    ]
     if not roots:
         return False
     norm = target.replace("\\", "/").lower()

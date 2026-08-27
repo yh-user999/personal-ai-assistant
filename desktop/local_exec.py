@@ -9,12 +9,14 @@
 import os
 import re
 
-# 白名单根目录（与服务器 .env 同名的环境变量，Windows .env 里配置）
-_ALLOWED_ROOTS = [
-    r.strip().replace("\\", "/").lower()
-    for r in os.environ.get("EXECUTOR_ALLOWED_ROOTS", "").replace(",", ";").split(";")
-    if r.strip()
-]
+
+def _get_roots() -> list[str]:
+    """实时读白名单（每次执行时读，避免 load_dotenv 时序问题）。"""
+    return [
+        r.strip().replace("\\", "/").lower()
+        for r in os.environ.get("EXECUTOR_ALLOWED_ROOTS", "").replace(",", ";").split(";")
+        if r.strip()
+    ]
 
 
 def _normalize(target: str) -> str:
@@ -42,10 +44,11 @@ def _parse(msg: str) -> tuple[str, str] | None:
 
 def _allowed(target: str) -> bool:
     """白名单：list_dir/read_file 须在允许根目录内；未配置=全禁止。"""
-    if not _ALLOWED_ROOTS:
+    roots = _get_roots()
+    if not roots:
         return False
     norm = target.replace("\\", "/").lower()
-    return any(norm.startswith(r) for r in _ALLOWED_ROOTS)
+    return any(norm.startswith(r) for r in roots)
 
 
 def _execute(action: str, target: str) -> tuple[bool, str]:
@@ -78,7 +81,7 @@ def try_execute(msg: str) -> tuple[bool, str]:
         return (False, "")
     action, target = parsed
     if action in ("list_dir", "read_file"):
-        if not _ALLOWED_ROOTS:
+        if not _get_roots():
             return (
                 True,
                 "🔒 未配置白名单：请在项目根 .env 加一行\n"

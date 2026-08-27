@@ -83,11 +83,11 @@ def test_executor_drive_normalize():
 def test_executor_whitelist(monkeypatch):
     from app.config import settings
 
-    monkeypatch.setattr(settings, "executor_roots", "F:/, C:/Users/wfy33")
+    monkeypatch.setattr(settings, "executor_allowed_roots", "F:/, C:/Users/wfy33")
     assert executor.check_roots("F:/Projects/a") is True
     assert executor.check_roots("C:/Users/wfy33/Desktop") is True
     assert executor.check_roots("D:/secret") is False
-    monkeypatch.setattr(settings, "executor_roots", "")
+    monkeypatch.setattr(settings, "executor_allowed_roots", "")
     assert executor.check_roots("F:/anything") is False  # 未配置=全禁止
 
 

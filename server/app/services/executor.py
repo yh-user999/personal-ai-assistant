@@ -89,7 +89,7 @@ def check_roots(target: str) -> bool:
     """
     roots = [
         r.strip()
-        for r in settings.executor_roots.replace(",", ";").split(";")
+        for r in settings.executor_allowed_roots.replace(",", ";").split(";")
         if r.strip()
     ]
     if not roots:

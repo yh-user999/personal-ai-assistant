@@ -1,9 +1,8 @@
 """配置加载：读取环境变量 / .env，集中管理所有可调参数。"""
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
 
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -41,8 +40,8 @@ class Settings(BaseSettings):
 
     # ── 执行器白名单（第 11 课）────────────────────────────
     # list_dir/read_file 允许的根目录（逗号分隔）；留空=禁止这两类操作
-    # NoDecode：值含逗号时 pydantic-settings 会误当 JSON 解析（失败回退默认）
-    executor_roots: Annotated[str, NoDecode] = ""
+    # 字段名必须与环境变量名一致（pydantic-settings 大小写不敏感映射）
+    executor_allowed_roots: str = ""
 
     # ── 定时任务 ────────────────────────────────────────────
     consolidation_interval_hours: float = 4.0

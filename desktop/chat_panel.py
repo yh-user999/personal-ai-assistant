@@ -400,12 +400,15 @@ class ChatPanel(QWidget):
                 f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
             )
         else:
+            # 助手气泡带 🤖 头像：聊天应用的标配，一眼区分双方
             bubble = (
                 f'<div style="text-align:left;margin:6px 0;">'
+                f'<span style="font-size:18px;line-height:1;">🤖</span>'
                 f'<span style="display:inline-block;background:#23262f;color:#d8dbe2;'
-                f'border-radius:12px;padding:7px 12px;max-width:82%;'
-                f'border-bottom-left-radius:4px;">{rendered}</span><br>'
-                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
+                f'border-radius:12px;padding:7px 12px;max-width:70%;'
+                f'text-align:left;border-bottom-left-radius:4px;'
+                f'vertical-align:top;">{rendered}</span><br>'
+                f'<span style="font-size:10px;color:#5b6270;margin-left:26px;">{_fmt_ts(ts)}</span></div>'
             )
         self.browser.append(bubble)
         sb = self.browser.verticalScrollBar()

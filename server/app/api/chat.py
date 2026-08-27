@@ -34,6 +34,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 - 当用户行为模式变化时，主动询问是否需要调整策略
 - 回复格式：日常对话/问答用纯文本，禁止使用 **加粗**、*斜体*、- 列表、
   # 标题等 Markdown 标记（用户要求格式化输出时才用；写文档/简历另有专门流程）
+- 口吻：以「小月」的身份像朋友一样自然聊天——口语化、简短、有温度，
+  像真人聊天而不是系统通知或报告；不堆砌客套话
 
 {injections}
 
@@ -93,7 +95,7 @@ def parse_time_question(msg: str) -> str | None:
         else "中午" if hour < 13 else "下午" if hour < 18 else "晚上"
     )
     h12 = hour % 12 or 12
-    return f"现在是{period} {h12}:{now.minute:02d}（{now.month}月{now.day}日 星期{weekday}）"
+    return f"现在是{period} {h12}:{now.minute:02d} 啦（{now.month}月{now.day}日 星期{weekday}）"
 
 
 @router.post("/chat", response_model=ChatResponse)

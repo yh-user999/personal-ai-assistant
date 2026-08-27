@@ -14,7 +14,7 @@ import random
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from chat_panel import ChatPanel
@@ -172,12 +172,27 @@ class FloatingBall(QWidget):
 
     @staticmethod
     def _shell_gradient(x: float, y: float, w: float, h: float) -> QLinearGradient:
-        """机身渐变：左上亮 → 右下暗（模拟立体受光）。"""
+        """机身渐变：金属灰——左上亮 → 右下暗（班德式机械质感）。"""
         g = QLinearGradient(x, y, x + w, y + h)
-        g.setColorAt(0.0, QColor("#4a5266"))
-        g.setColorAt(0.45, QColor("#2c313d"))
-        g.setColorAt(1.0, QColor("#1a1d24"))
+        g.setColorAt(0.0, QColor("#a9b2c4"))
+        g.setColorAt(0.45, QColor("#6b7488"))
+        g.setColorAt(1.0, QColor("#3a414e"))
         return g
+
+    @staticmethod
+    def _head_path() -> QPainterPath:
+        """班德式头部：圆顶窄顶 + 底部外扩（桶形）。"""
+        p = QPainterPath()
+        p.moveTo(18, 34)
+        p.quadTo(18, 14, 40, 14)   # 左侧弧 → 顶中点
+        p.quadTo(62, 14, 62, 34)   # 顶中点 → 右侧弧
+        p.lineTo(66, 48)           # 右侧外扩
+        p.quadTo(66, 52, 60, 52)
+        p.lineTo(20, 52)
+        p.quadTo(14, 52, 14, 48)
+        p.lineTo(18, 34)
+        p.closeSubpath()
+        return p
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -205,8 +220,8 @@ class FloatingBall(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(10, 12, self.W - 20, self.W - 20)
 
-        limb_color = QColor("#3f4654")
-        stroke = QColor("#4a5264")
+        limb_color = QColor("#4a5160")
+        stroke = QColor("#565e70")
 
         # ── 腿（先画，被身体压住根部）──
         l_leg, r_leg = leg_angles(self._phase, self._dragging)
@@ -227,16 +242,16 @@ class FloatingBall(QWidget):
             painter.setBrush(limb_color)
             painter.drawEllipse(int(hx - 2.5), int(hy - 2.5), 5, 5)
 
-        # ── 耳朵（头部两侧的小侧板）──
-        painter.setBrush(self._shell_gradient(10, 26, 9, 13))
+        # ── 耳朵（头部两侧的金属侧板）──
+        painter.setBrush(self._shell_gradient(5, 28, 9, 14))
         painter.setPen(QPen(stroke, 1))
-        painter.drawRoundedRect(11, 26, 8, 13, 4, 4)
-        painter.drawRoundedRect(61, 26, 8, 13, 4, 4)
+        painter.drawRoundedRect(6, 29, 8, 14, 4, 4)
+        painter.drawRoundedRect(66, 29, 8, 14, 4, 4)
 
-        # ── 身体（渐变）──
-        painter.setBrush(self._shell_gradient(28, 50, 24, 14))
+        # ── 身体（金属渐变）──
+        painter.setBrush(self._shell_gradient(26, 50, 28, 14))
         painter.setPen(QPen(stroke, 1))
-        painter.drawRoundedRect(28, 50, 24, 14, 7, 7)
+        painter.drawRoundedRect(26, 50, 28, 14, 6, 6)
 
         # 胸口小屏：深色底 + 状态色脉冲点
         painter.setBrush(QColor("#14161c"))
@@ -247,8 +262,8 @@ class FloatingBall(QWidget):
         painter.setBrush(pulse)
         painter.drawEllipse(39, 56, 3, 3)
 
-        # ── 天线（脉冲光点）──
-        painter.setPen(QPen(QColor("#4b5563"), 2))
+        # ── 天线（金属杆 + 脉冲光点）──
+        painter.setPen(QPen(QColor("#565e70"), 2))
         painter.drawLine(40, 14, 40, 7)
         glow = QColor(accent)
         glow.setAlpha(int(70 + 70 * math.sin(self._phase * 2)))
@@ -258,59 +273,41 @@ class FloatingBall(QWidget):
         painter.setBrush(accent)
         painter.drawEllipse(37, 2, 6, 6)
 
-        # ── 头部（渐变）──
-        painter.setBrush(self._shell_gradient(18, 14, 44, 38))
-        painter.setPen(QPen(stroke, 1))
-        painter.drawRoundedRect(18, 14, 44, 38, 12, 12)
+        # ── 头部：班德式桶形（圆顶窄顶 + 底部外扩）+ 金属渐变 ──
+        painter.setBrush(self._shell_gradient(14, 14, 52, 38))
+        painter.setPen(QPen(stroke, 1.2))
+        painter.drawPath(self._head_path())
 
-        # 顶部高光弧（左上受光）
-        painter.setPen(QPen(QColor(255, 255, 255, 34), 3, Qt.SolidLine, Qt.RoundCap))
-        painter.drawArc(24, 18, 20, 12, 180 * 16, 180 * 16)
+        # 顶部高光弧（金属受光）
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 3, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(26, 17, 28, 14, 180 * 16, 180 * 16)
 
-        # ── 眼睛（LED 大眼 + 光晕 + 高光；眨眼 = 高度压扁）──
-        eye_h = 11.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
-        eye_w = 11.0
-        eye_color = QColor(accent)
-        # 外发光
+        # ── 视窗单眼（宽屏幕眼，状态色发光；眨眼 = 高度压扁）──
+        visor_h = 10.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
         outer = QColor(accent)
-        outer.setAlpha(55)
+        outer.setAlpha(50)
         painter.setBrush(outer)
         painter.setPen(Qt.NoPen)
-        for ex in (26, 43):
-            painter.drawEllipse(int(ex - 3), int(24 + (11 - eye_h) / 2), int(eye_w + 6), int(eye_h + 6))
-        painter.setBrush(eye_color)
-        for ex in (26, 43):
-            painter.drawEllipse(int(ex), int(27 + (11 - eye_h) / 2), int(eye_w), max(2, int(eye_h)))
-        # 高光
-        if self._blink == 0:
-            painter.setBrush(QColor(255, 255, 255, 170))
-            for ex in (29, 46):
-                painter.drawEllipse(ex, 29, 3, 3)
+        painter.drawRoundedRect(20, 28 - 3, 40, 16, 8, 8)
+        # 视窗框（深色金属框）
+        painter.setBrush(QColor("#20242c"))
+        painter.drawRoundedRect(24, int(32 - visor_h / 2) + 1, 32, int(visor_h) - 2, 5, 5)
+        # 发光屏
+        painter.setBrush(QColor(accent))
+        painter.drawRoundedRect(25, int(32 - visor_h / 2) + 2, 30, max(2, int(visor_h)) - 4, 4, 4)
 
-        # ── 腮红（error 时消失）──
-        if self.state != "error":
-            painter.setBrush(QColor(255, 122, 156, 74))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(22, 40, 6, 3.5)
-            painter.drawEllipse(52, 40, 6, 3.5)
-
-        # ── 嘴巴（分状态表情：微笑 / 思考圆 / 难过）──
-        painter.setPen(QPen(QColor("#9aa3b5"), 2, Qt.SolidLine, Qt.RoundCap))
-        painter.setBrush(Qt.NoBrush)
-        if self.state == "thinking":
-            painter.drawEllipse(37, 42, 6, 6)
-        elif self.state == "error":
-            painter.drawArc(34, 40, 12, 9, 20 * 16, 140 * 16)  # 嘴角向下
-        else:
-            painter.drawArc(34, 39, 12, 9, 200 * 16, 140 * 16)
+        # ── 格栅嘴（3 条横槽，机械感）──
+        painter.setPen(QPen(QColor("#565e70"), 1.6, Qt.SolidLine, Qt.RoundCap))
+        for gy in (43.5, 46.0, 48.5):
+            painter.drawLine(28, int(gy), 52, int(gy))
 
         # ── 思考时环绕粒子（3 个小光点绕头转）──
         if self.state == "thinking":
             painter.setPen(Qt.NoPen)
             for i in range(3):
                 ang = self._phase * 1.8 + i * 2.094
-                px = 40 + 15 * math.cos(ang)
-                py = 33 + 15 * math.sin(ang)
+                px = 40 + 16 * math.cos(ang)
+                py = 33 + 16 * math.sin(ang)
                 a = int(110 + 90 * math.sin(self._phase * 3 + i))
                 dot = QColor(accent)
                 dot.setAlpha(max(0, a))

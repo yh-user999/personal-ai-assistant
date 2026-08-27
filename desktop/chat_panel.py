@@ -15,7 +15,7 @@ import markdown as md_lib
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (
-    QColor, QLinearGradient, QPainter, QPen,
+    QColor, QLinearGradient, QPainter, QPainterPath, QPen,
 )
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
@@ -71,34 +71,49 @@ class RobotAvatar(QWidget):
 
         accent = QColor("#fbbf24") if self._thinking else QColor("#4d7cff")
 
-        # 头（渐变立体）
+        # 金属渐变（班德式机械灰）
         g = QLinearGradient(3, 3, 33, 33)
-        g.setColorAt(0.0, QColor("#4a5266"))
-        g.setColorAt(1.0, QColor("#1a1d24"))
+        g.setColorAt(0.0, QColor("#a9b2c4"))
+        g.setColorAt(0.5, QColor("#6b7488"))
+        g.setColorAt(1.0, QColor("#3a414e"))
+
+        # 头：圆顶窄顶 + 底部外扩（桶形）
+        head = QPainterPath()
+        head.moveTo(8, 15)
+        head.quadTo(8, 6, 18, 6)
+        head.quadTo(28, 6, 28, 15)
+        head.lineTo(31, 25)
+        head.quadTo(31, 28, 27, 28)
+        head.lineTo(9, 28)
+        head.quadTo(5, 28, 5, 25)
+        head.lineTo(8, 15)
+        head.closeSubpath()
         painter.setBrush(g)
-        painter.setPen(QPen(QColor("#4a5264"), 1))
-        painter.drawRoundedRect(4, 4, 28, 26, 9, 9)
+        painter.setPen(QPen(QColor("#565e70"), 1))
+        painter.drawPath(head)
 
         # 天线
-        painter.setPen(QPen(QColor("#4b5563"), 2))
-        painter.drawLine(18, 4, 18, 1)
+        painter.setPen(QPen(QColor("#565e70"), 2))
+        painter.drawLine(18, 6, 18, 2)
         painter.setPen(Qt.NoPen)
         painter.setBrush(accent)
         painter.drawEllipse(16, 0, 4, 4)
 
-        # 眼睛（LED，眨眼 = 高度压扁）
-        eye_h = 6.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
-        painter.setBrush(accent)
-        for ex in (10, 21):
-            painter.drawEllipse(ex, int(12 + (6 - eye_h) / 2), 5, max(1, int(eye_h)))
+        # 视窗单眼（发光屏；眨眼 = 高度压扁）
+        visor_h = 5.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
+        glow = QColor(accent)
+        glow.setAlpha(55)
+        painter.setBrush(glow)
+        painter.drawRoundedRect(7, 12, 22, 10, 5, 5)
+        painter.setBrush(QColor("#20242c"))
+        painter.drawRoundedRect(9, int(16 - visor_h / 2) + 1, 18, int(visor_h) - 2, 3, 3)
+        painter.setBrush(QColor(accent))
+        painter.drawRoundedRect(10, int(16 - visor_h / 2) + 2, 16, max(1, int(visor_h)) - 4, 2, 2)
 
-        # 嘴巴：思考 O / 微笑
-        painter.setPen(QPen(QColor("#9aa3b5"), 1.5, Qt.SolidLine, Qt.RoundCap))
-        painter.setBrush(Qt.NoBrush)
-        if self._thinking:
-            painter.drawEllipse(16, 24, 4, 4)
-        else:
-            painter.drawArc(14, 22, 8, 6, 200 * 16, 140 * 16)
+        # 格栅嘴（2 条横槽）
+        painter.setPen(QPen(QColor("#565e70"), 1.2, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(12, 23, 24, 23)
+        painter.drawLine(12, 25, 24, 25)
 
         # 思考环绕粒子
         if self._thinking:
@@ -292,7 +307,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v4.2")
+        title = QLabel("🤖 Personal AI Assistant v4.3")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")

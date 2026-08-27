@@ -24,28 +24,46 @@ class _ReportWorker(QThread):
 
 
 def make_robot_icon(size: int = 64) -> QIcon:
-    """自绘一个小机器人脸做托盘图标（无外部素材）。"""
+    """自绘班德式机器人头像做托盘图标（金属灰 + 视窗眼 + 格栅嘴）。"""
+    from PySide6.QtGui import QLinearGradient, QPainterPath
+
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    # 头
-    p.setBrush(QColor("#23262f"))
-    p.setPen(QColor("#3a3f4b"))
-    p.drawRoundedRect(8, 16, size - 16, int(size * 0.55), 10, 10)
+    # 头：圆顶窄顶 + 底部外扩（桶形）
+    head = QPainterPath()
+    head.moveTo(size * 0.22, size * 0.40)
+    head.quadTo(size * 0.22, size * 0.14, size * 0.50, size * 0.14)
+    head.quadTo(size * 0.78, size * 0.14, size * 0.78, size * 0.40)
+    head.lineTo(size * 0.86, size * 0.72)
+    head.quadTo(size * 0.86, size * 0.78, size * 0.76, size * 0.78)
+    head.lineTo(size * 0.24, size * 0.78)
+    head.quadTo(size * 0.14, size * 0.78, size * 0.14, size * 0.72)
+    head.lineTo(size * 0.22, size * 0.40)
+    head.closeSubpath()
+    g = QLinearGradient(0, 0, size, size)
+    g.setColorAt(0.0, QColor("#a9b2c4"))
+    g.setColorAt(0.5, QColor("#6b7488"))
+    g.setColorAt(1.0, QColor("#3a414e"))
+    p.setBrush(g)
+    p.setPen(QColor("#565e70"))
+    p.drawPath(head)
     # 天线
-    p.setPen(QColor("#4d7cff"))
-    p.drawLine(size // 2, 8, size // 2, 16)
-    p.setBrush(QColor("#4d7cff"))
-    p.drawEllipse(size // 2 - 4, 4, 8, 8)
-    # 眼睛
+    p.setPen(QColor("#565e70"))
+    p.drawLine(size // 2, int(size * 0.14), size // 2, int(size * 0.04))
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#4d7cff"))
-    p.drawEllipse(int(size * 0.32), int(size * 0.42), int(size * 0.16), int(size * 0.16))
-    p.drawEllipse(int(size * 0.52), int(size * 0.42), int(size * 0.16), int(size * 0.16))
-    # 微笑
-    p.setPen(QColor("#8b93a3"))
-    p.drawArc(int(size * 0.36), int(size * 0.52), int(size * 0.28), int(size * 0.16), 200 * 16, 140 * 16)
+    p.drawEllipse(int(size * 0.44), 0, int(size * 0.12), int(size * 0.12))
+    # 视窗眼（发光屏）
+    p.setBrush(QColor("#20242c"))
+    p.drawRoundedRect(int(size * 0.30), int(size * 0.40), int(size * 0.40), int(size * 0.18), 4, 4)
+    p.setBrush(QColor("#4d7cff"))
+    p.drawRoundedRect(int(size * 0.33), int(size * 0.43), int(size * 0.34), int(size * 0.12), 3, 3)
+    # 格栅嘴（2 条横槽）
+    p.setPen(QColor("#565e70"))
+    p.drawLine(int(size * 0.32), int(size * 0.64), int(size * 0.68), int(size * 0.64))
+    p.drawLine(int(size * 0.32), int(size * 0.70), int(size * 0.68), int(size * 0.70))
     p.end()
     return QIcon(pm)
 

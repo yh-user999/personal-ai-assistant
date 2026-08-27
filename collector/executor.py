@@ -58,11 +58,20 @@ class Executor:
                 return True, f"已打开 {target}"
             if action == "list_dir":
                 entries = sorted(os.listdir(target))
-                shown, rest = entries[:30], entries[30:]
-                text = "\n".join(shown)
-                if rest:
-                    text += f"\n… 其余 {len(rest)} 项"
-                return True, f"{target} 内容（{len(entries)} 项）：\n{text}"
+                dirs = [e for e in entries if os.path.isdir(os.path.join(target, e))]
+                files = [e for e in entries if not os.path.isdir(os.path.join(target, e))]
+                shown_dirs, shown_files = dirs[:20], files[:20]
+                lines = [f"- 📁 {d}/" for d in shown_dirs]
+                lines += [f"- 📄 {f}" for f in shown_files]
+                shown = len(shown_dirs) + len(shown_files)
+                text = "\n".join(lines)
+                if len(entries) > shown:
+                    text += f"\n… 其余 {len(entries) - shown} 项"
+                return (
+                    True,
+                    f"{target} 共 {len(entries)} 项"
+                    f"（📁 {len(dirs)} 文件夹 / 📄 {len(files)} 文件）：\n{text}",
+                )
             if action == "read_file":
                 if not os.path.isfile(target):
                     return False, f"文件不存在：{target}"

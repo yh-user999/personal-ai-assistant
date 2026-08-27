@@ -198,8 +198,8 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
 
-        # 标题行 + 图钉 + 关闭按钮
-        title = QLabel("🤖 Personal AI Assistant")
+        # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
+        title = QLabel("🤖 Personal AI Assistant v3.1")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")
@@ -390,11 +390,14 @@ class ChatPanel(QWidget):
         if raw:
             rendered = text
         elif role == "assistant":
-            # Markdown → HTML（表格/加粗/代码块/列表均可渲染）
-            rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
-            # Qt 富文本会把 <p> 文本内的换行压成空格（多行回复变成一行流）。
-            # 仅把文本内容里的换行换成 <br> 保留 LLM 的段落结构（标签之间的换行不动）
-            rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
+            if re.search(r"[*#`>\[\]|]", text):
+                # 有 Markdown 语法的回复：渲染后把文本内换行转 <br>（Qt 会压成空格）
+                rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
+                rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
+            else:
+                # 纯文本回复：直接转义 + 换行转 <br>，绕开 Markdown 的 <p> 包装
+                # （<p> 在 Qt/Windows 下的渲染表现是历次排版问题的头号嫌疑）
+                rendered = html_lib.escape(text).replace("\n", "<br>")
         else:
             rendered = html_lib.escape(text).replace("\n", "<br>")
         if role == "user":

@@ -438,6 +438,18 @@ class ChatPanel(QWidget):
             return
         self.input.clear()
         self._append("user", msg, "")
+
+        # 本地执行器优先：执行类命令在本地直行，不经过服务器
+        # （零延迟 + 文件内容不出本机 + 服务器挂机也可用）
+        from local_exec import try_execute
+
+        handled, text = try_execute(msg)
+        if handled:
+            self._append("assistant", text, "")
+            if self.ball:
+                self.ball.set_state("online")
+            return
+
         if self.ball:
             self.ball.set_state("thinking")  # 机器人进入思考状态（琥珀灯+圆嘴）
         self._worker = _ChatWorker(self.client, msg)

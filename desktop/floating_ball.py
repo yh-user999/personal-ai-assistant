@@ -67,6 +67,12 @@ class FloatingBall(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(50)        # 20fps 足够
 
+        # 窗口丢失自愈：Windows 在 Explorer 重启/睡眠唤醒/全屏切换后可能
+        # 让无边框半透明小窗消失而进程存活——每 10s 自查，丢了就自动恢复
+        self._restore_timer = QTimer(self)
+        self._restore_timer.timeout.connect(self._ensure_visible)
+        self._restore_timer.start(10_000)
+
         # 断线检测：每 60s 后台 ping 服务器，失败亮红灯
         from api_client import ApiClient
 
@@ -94,6 +100,12 @@ class FloatingBall(QWidget):
         """招手问好一次（约 1.2s）。"""
         self._wave = 0.0
         self.update()
+
+    def _ensure_visible(self) -> None:
+        """窗口丢失自愈：进程活着但窗口不见时自动恢复显示（10s 内自愈）。"""
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     # ── 健康检查 ───────────────────────────────────────────
 

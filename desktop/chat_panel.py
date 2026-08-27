@@ -12,6 +12,9 @@ import re
 import markdown as md_lib
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QTextBlockFormat, QTextCursor,
+)
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -199,7 +202,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v3.1")
+        title = QLabel("🤖 Personal AI Assistant v3.2")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")
@@ -381,12 +384,14 @@ class ChatPanel(QWidget):
     # ── 消息与气泡 ─────────────────────────────────────────
 
     def _append(self, role: str, text: str, ts: str = "", raw: bool = False) -> None:
-        """气泡式消息：用户右蓝、助手左灰，带时间戳。raw=True 时 text 为可信 HTML。
+        """气泡式消息：你右蓝、小月左灰（对齐用 Qt 块格式 API 设置，不依赖 CSS）。
 
-        助手消息按 Markdown 渲染（加粗/表格/列表/链接），解决"输出凌乱"。
-        统一 strip 首尾空白：前导空格会被 Markdown 当成缩进代码块渲染，走样。
+        CSS text-align 在 Qt/Windows 下表现不稳定——历次"左右不对"都出在它身上。
+        这里改用 QTextBlockFormat.setAlignment 程序化设置，跨平台 100% 确定。
         """
         text = (text or "").strip()
+        if not text and not raw:
+            return
         if raw:
             rendered = text
         elif role == "assistant":
@@ -396,28 +401,35 @@ class ChatPanel(QWidget):
                 rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
             else:
                 # 纯文本回复：直接转义 + 换行转 <br>，绕开 Markdown 的 <p> 包装
-                # （<p> 在 Qt/Windows 下的渲染表现是历次排版问题的头号嫌疑）
                 rendered = html_lib.escape(text).replace("\n", "<br>")
         else:
             rendered = html_lib.escape(text).replace("\n", "<br>")
+
         if role == "user":
             bubble = (
-                f'<div style="text-align:right;margin:6px 0;">'
-                f'<span style="display:inline-block;background:#2b5cff;color:#fff;'
-                f'border-radius:12px;padding:7px 12px;max-width:82%;'
-                f'text-align:left;border-bottom-right-radius:4px;">{rendered}</span><br>'
-                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
+                f'<span style="background:#2b5cff;color:#fff;border-radius:12px;'
+                f'padding:7px 12px;">{rendered}</span><br>'
+                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span>'
             )
+            align = Qt.AlignRight
         else:
-            # 助手气泡：左对齐灰色（emoji 头像在 Windows 字体下渲染不可靠，已撤）
             bubble = (
-                f'<div style="text-align:left;margin:6px 0;">'
-                f'<span style="display:inline-block;background:#23262f;color:#d8dbe2;'
-                f'border-radius:12px;padding:7px 12px;max-width:82%;'
-                f'text-align:left;border-bottom-left-radius:4px;">{rendered}</span><br>'
-                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span></div>'
+                f'<span style="background:#23262f;color:#d8dbe2;border-radius:12px;'
+                f'padding:7px 12px;">{rendered}</span><br>'
+                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span>'
             )
-        self.browser.append(bubble)
+            align = Qt.AlignLeft
+
+        cursor = self.browser.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextBlockFormat()
+        fmt.setAlignment(align)
+        fmt.setTopMargin(6)
+        fmt.setBottomMargin(6)
+        # 统一 insertBlock 创建带对齐格式的新块（顶部会留一个空块，无碍观感）
+        cursor.insertBlock(fmt)
+        cursor.insertHtml(bubble)
+        self.browser.setTextCursor(cursor)
         sb = self.browser.verticalScrollBar()
         sb.setValue(sb.maximum())
 

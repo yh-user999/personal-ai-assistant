@@ -1,5 +1,8 @@
 """聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 思维模块（自省/关切/术语/风格）。"""
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -15,6 +18,8 @@ from app.services.self_reflect import detect_correction, get_lessons_injection, 
 
 router = APIRouter()
 
+TZ = ZoneInfo("Asia/Shanghai")
+
 SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工作风格、问题偏好和行为特征。
 
 核心职责：
@@ -27,6 +32,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 行为规范：
 - 禁止忽视用户的历史选择和风格偏好
 - 当用户行为模式变化时，主动询问是否需要调整策略
+- 回复格式：日常对话/问答用纯文本，禁止使用 **加粗**、*斜体*、- 列表、
+  # 标题等 Markdown 标记（用户要求格式化输出时才用；写文档/简历另有专门流程）
 
 {injections}
 
@@ -71,6 +78,24 @@ class ChatResponse(BaseModel):
     memories_used: int
 
 
+TIME_QUESTION = re.compile(r"几点了|现在几点|今天星期几|今天几号|今天几月几号|今天日期|现在时间|什么时间了")
+
+
+def parse_time_question(msg: str) -> str | None:
+    """"几点了/今天星期几/今天几号" → 按北京时间直答（格式确定、不烧 LLM）。"""
+    if not TIME_QUESTION.search(msg):
+        return None
+    now = datetime.now(TZ)
+    weekday = "一二三四五六日"[now.weekday()]
+    hour = now.hour
+    period = (
+        "凌晨" if hour < 5 else "早上" if hour < 9 else "上午" if hour < 12
+        else "中午" if hour < 13 else "下午" if hour < 18 else "晚上"
+    )
+    h12 = hour % 12 or 12
+    return f"现在是{period} {h12}:{now.minute:02d}（{now.month}月{now.day}日 星期{weekday}）"
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
     msg = req.message.strip()
@@ -80,6 +105,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
         content = re.sub(r"^记录[:：]\s*", "", msg)
         worklog.add_log(content)
         return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
+
+    # 时间/日期快速问答（零成本规则：不烧 LLM，格式确定不兜圈子）
+    time_reply = parse_time_question(msg)
+    if time_reply:
+        return ChatResponse(reply=time_reply, memories_used=0)
 
     # 文档命令："写文档：标题XXX，内容：YYY" → LLM 生成 + 保存 + 进知识库
     doc_cmd = documents.parse_doc_command(msg)

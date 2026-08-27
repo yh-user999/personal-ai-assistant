@@ -187,7 +187,9 @@ class ChatPanel(QWidget):
         card = QWidget()
         card.setObjectName("card")
         card.setStyleSheet(
-            "#card { background: rgba(28, 31, 38, 245); border-radius: 14px; }"
+            # 完全不透明（alpha=255）：背后窗口内容不会再透进来造成"叠字"，
+            # 这是"面板排版看着乱"的隐藏元凶（之前 245≈96% 不透明）
+            "#card { background: #1c1f26; border-radius: 14px; }"
             "QLabel { color: #eee; }"
         )
         outer.addWidget(card)

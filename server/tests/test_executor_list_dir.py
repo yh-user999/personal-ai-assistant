@@ -32,22 +32,22 @@ def test_list_dir_format_and_sort():
         ok, text = local_exec._execute("list_dir", td)
         assert ok
         lines = text.splitlines()
-        assert lines[0] == "共 5 项（📁 2 文件夹 / 📄 3 文件）："
-        # 文件夹在前、组内自然排序；文件组内 a2 < a10 < b
-        assert lines[1:] == [
-            "- 📁 aaa/",
-            "- 📁 zzz/",
-            "- 📄 a2.txt",
-            "- 📄 a10.txt",
-            "- 📄 b.txt",
-        ]
+        assert lines[0] == "共 5 项"
+        assert "📁 文件夹（2）：" in lines
+        assert "📄 文件（3）：" in lines
+        # 分段式：文件夹段在前，组内自然排序（a2 < a10 < b）
+        dirs_line = lines[lines.index("📁 文件夹（2）：") + 2]
+        assert dirs_line == "aaa/ · zzz/"
+        files_line = lines[lines.index("📄 文件（3）：") + 2]
+        assert files_line == "a2.txt · a10.txt · b.txt"
+        assert text.index("📁 文件夹") < text.index("📄 文件")
 
 
 def test_list_dir_empty():
     with tempfile.TemporaryDirectory() as td:
         ok, text = local_exec._execute("list_dir", td)
         assert ok
-        assert text.endswith("\n（空目录）")
+        assert text.splitlines() == ["共 0 项", "（空目录）"]
 
 
 def test_list_dir_missing_dir():
@@ -63,8 +63,8 @@ def test_list_dir_truncation():
         assert ok
         assert f"共 {local_exec.MAX_LIST + 2} 项" in text
         assert f"… 其余 2 项" in text
-        # 实际条目行数 = MAX_LIST + 1（… 行）
-        assert len(text.splitlines()) == 1 + local_exec.MAX_LIST + 1
+        # 文件段只列出 MAX_LIST 个（分隔符数量 = MAX_LIST - 1）
+        assert text.count(" · ") == local_exec.MAX_LIST - 1
 
 
 def test_hidden_filter_non_windows_is_noop():

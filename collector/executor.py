@@ -93,21 +93,32 @@ class Executor:
                 dirs = [n for n, d in entries if d]
                 files = [n for n, d in entries if not d]
                 total = len(entries)
-                lines = [f"- 📁 {n}/" for n, d in entries[:MAX_LIST] if d]
-                lines += [f"- 📄 {n}" for n, d in entries[:MAX_LIST] if not d]
-                if not lines:
-                    lines = ["（空目录）"]
+                shown = entries[:MAX_LIST]
+                body = [f"共 {total} 项"]
+                if hidden:
+                    body[-1] += f"（已隐藏 {hidden} 个系统/隐藏项）"
+                if not dirs and not files:
+                    body.append("（空目录）")
+                else:
+                    if dirs:
+                        body.append("")
+                        body.append(f"📁 文件夹（{len(dirs)}）：")
+                        body.append("")
+                        body.append(" · ".join(f"{n}/" for n, d in shown if d))
+                    if files:
+                        body.append("")
+                        body.append(f"📄 文件（{len(files)}）：")
+                        body.append("")
+                        body.append(" · ".join(n for n, d in shown if not d))
                 if total > MAX_LIST:
-                    lines.append(f"… 其余 {total - MAX_LIST} 项")
+                    body.append("")
+                    body.append(f"… 其余 {total - MAX_LIST} 项（可进入子目录继续查看）")
+                text = "\n".join(body)
                 sensitive = [n for n, _ in entries if SENSITIVE_PATTERN.search(n)]
                 if sensitive:
                     names = "、".join(sensitive[:3])
-                    lines.append(f"⚠️ 发现疑似敏感名称：{names} —— 建议改名或移入 KeePassXC 加密保险库")
-                header = f"共 {total} 项（📁 {len(dirs)} 文件夹 / 📄 {len(files)} 文件"
-                if hidden:
-                    header += f"，已隐藏 {hidden} 个系统/隐藏项"
-                header += "）："
-                return True, header + "\n" + "\n".join(lines)
+                    text += f"\n⚠️ 发现疑似敏感名称：{names} —— 建议改名或移入 KeePassXC 加密保险库"
+                return True, text
             if action == "read_file":
                 if not os.path.isfile(target):
                     return False, f"文件不存在：{target}"

@@ -136,6 +136,37 @@ CREATE TABLE IF NOT EXISTS documents (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- ⑭ 目标（Goal 系统：用户的目标与进度，周报核对）
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  status TEXT DEFAULT 'active',    -- active / done / paused
+  progress TEXT DEFAULT '',        -- 进度备注
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ⑮ 未解决问题（unresolved：聊到一半被打断的话题）
+CREATE TABLE IF NOT EXISTS unresolved_issues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic TEXT NOT NULL,
+  context TEXT DEFAULT '',
+  status TEXT DEFAULT 'open',      -- open / resolved
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+-- ⑯ 执行器指令队列（第 11 课：机器人操作 Windows 的通道）
+CREATE TABLE IF NOT EXISTS executor_commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,            -- open / list_dir / read_file
+  target TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',   -- pending / done / failed
+  result TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  executed_at TEXT
+);
 """
 
 # 向量表（sqlite-vec 虚拟表）。

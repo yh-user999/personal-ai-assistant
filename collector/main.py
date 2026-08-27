@@ -36,6 +36,7 @@ from window_monitor import WindowMonitor  # noqa: E402
 from browser_history import BrowserHistoryCollector  # noqa: E402
 from git_scanner import GitScanner  # noqa: E402
 from pusher import EventPusher  # noqa: E402
+from executor import Executor  # noqa: E402
 
 
 async def main() -> None:
@@ -61,6 +62,8 @@ async def main() -> None:
     tasks = [
         asyncio.create_task(pusher.run()),
         asyncio.create_task(pusher.heartbeat()),
+        # 执行器（第 11 课）：轮询服务器指令 → 执行"打开/列目录/读文件"
+        asyncio.create_task(Executor(settings.server_url, token=settings.api_token).run()),
         *[asyncio.create_task(c.run()) for c in collectors],
     ]
     try:

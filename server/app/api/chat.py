@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.core import knowledge, llm, memory
 from app.config import settings
 from app.models.database import connect
-from app.services import behavior_context, documents, resume, worklog
+from app.services import behavior_context, documents, executor, goals, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -53,6 +53,12 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 {behavior}
 
 {older}
+
+用户的活跃目标（回答相关问题时主动关联）：
+{goals}
+
+用户尚未解决的问题（适时温和提醒续上）：
+{unresolved}
 """
 
 
@@ -101,6 +107,47 @@ async def chat(req: ChatRequest) -> ChatResponse:
             memories_used=0,
         )
 
+    # 目标命令（第 12 课）："目标：XXX" / "目标完成：XXX" / "目标进度：XXX"
+    goal_cmd = goals.parse_goal_command(msg)
+    if goal_cmd:
+        action, payload = goal_cmd
+        if action == "create":
+            goals.add_goal(payload)
+            return ChatResponse(reply=f"🎯 目标已记录：{payload}", memories_used=0)
+        if action == "done":
+            ok = goals.complete_goal(payload)
+            return ChatResponse(
+                reply=f"🎉 目标已标记完成：{payload}" if ok else f"未找到匹配的活跃目标：{payload}",
+                memories_used=0,
+            )
+        ok = goals.update_progress(payload)
+        return ChatResponse(
+            reply=f"📈 进度已更新：{payload}" if ok else "暂无活跃目标可更新（先说\"目标：XXX\"创建）",
+            memories_used=0,
+        )
+
+    # 执行器命令（第 11 课）："帮我打开XX" / "看看XX目录" / "读一下XX文件"
+    exec_cmd = executor.parse_executor_command(msg)
+    if exec_cmd:
+        action, target = exec_cmd
+        if action in ("list_dir", "read_file") and not executor.check_roots(target):
+            return ChatResponse(
+                reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
+                memories_used=0,
+            )
+        cmd_id = executor.enqueue(action, target)
+        return ChatResponse(
+            reply=f"🤖 已收到指令（#{cmd_id}）：{action} → {target}\n"
+                  f"电脑上的执行器会处理，完成后我会在对话里告诉你结果",
+            memories_used=0,
+        )
+
+    # unresolved 追踪（第 12 课）：解决/未解决信号
+    if unresolved.detect_resolved(msg):
+        unresolved.resolve_latest()
+    elif unresolved.detect_unresolved(msg):
+        unresolved.add_issue(msg)
+
     # 0) 思维模块：检测与存储（用上一条 AI 回复做上下文）
     last_ai = None
     conn = connect()
@@ -131,6 +178,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
     style_examples = get_examples_injection()
     facts = memory.get_facts_injection()
     behavior = behavior_context.get_behavior_injection()
+    goals_text = goals.get_goals_injection()
+    open_issues = unresolved.get_open_issues_injection()
 
     system = SYSTEM_PROMPT.replace("{injections}", injections or "（暂无相关记忆）")
     system = system.replace("{profile}", profile or "（画像未建立，通过对话逐步了解用户）")
@@ -140,6 +189,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{jargon}", jargon or "")
     system = system.replace("{style_examples}", style_examples or "（暂无）")
     system = system.replace("{behavior}", behavior or "（暂无行为数据）")
+    system = system.replace("{goals}", goals_text or "（暂无活跃目标）")
+    system = system.replace("{unresolved}", open_issues or "（无）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
 
     # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感）

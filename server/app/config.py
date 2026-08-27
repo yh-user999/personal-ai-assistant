@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # ── 多轮上下文 ──────────────────────────────────────────
     history_limit: int = 8  # 携带最近 N 轮原文；更早的用摘要续接
 
+    # ── 执行器白名单（第 11 课）────────────────────────────
+    # list_dir/read_file 允许的根目录（逗号分隔）；留空=禁止这两类操作
+    executor_roots: str = ""
+
     # ── 定时任务 ────────────────────────────────────────────
     consolidation_interval_hours: float = 4.0
     weekly_report_weekday: int = 6       # 0=周一 … 6=周日

@@ -77,8 +77,16 @@ def try_execute(msg: str) -> tuple[bool, str]:
     if not parsed:
         return (False, "")
     action, target = parsed
-    if action in ("list_dir", "read_file") and not _allowed(target):
-        return (True, f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝")
+    if action in ("list_dir", "read_file"):
+        if not _ALLOWED_ROOTS:
+            return (
+                True,
+                "🔒 未配置白名单：请在项目根 .env 加一行\n"
+                "EXECUTOR_ALLOWED_ROOTS=C:/Users/wfy33;F:/\n"
+                "（分号分隔多个根目录）",
+            )
+        if not _allowed(target):
+            return (True, f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝")
     ok, text = _execute(action, target)
     mark = "✅" if ok else "❌"
     return (True, f"{mark} [{action}] {target}\n{text}")

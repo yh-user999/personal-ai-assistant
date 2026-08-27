@@ -32,3 +32,22 @@ def test_event_detail_sanitized_and_truncated():
 
 def test_plain_text_untouched():
     assert sanitize("正常的中文内容没有敏感信息") == "正常的中文内容没有敏感信息"
+
+
+def test_public_ip_masked_in_name():
+    assert sanitize("101.33.229.73:8082") == "101.33.*.*:8082"
+    assert sanitize("117.72.11.59:8000") == "117.72.*.*:8000"
+
+
+def test_private_ip_kept():
+    assert sanitize("127.0.0.1:8000") == "127.0.0.1:8000"
+    assert sanitize("192.168.1.100") == "192.168.1.100"
+    assert sanitize("10.0.0.5") == "10.0.0.5"
+
+
+def test_event_name_sanitized():
+    ev = {"kind": "browser", "name": "101.33.229.73:8082", "detail": "面板"}
+    sanitize_event(ev)
+    assert ev["name"] == "101.33.*.*:8082"
+    assert ev["detail"] == "面板"
+

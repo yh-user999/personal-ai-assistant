@@ -25,7 +25,10 @@ RESUME_PROMPT = """你是资深简历优化专家，服务过阿里云/字节等
 输出格式：直接输出优化后的简历 Markdown（# 开头为姓名+岗位定位）。"""
 
 
-def _get_resume_text(doc_name: str = "简历-韦飞宇") -> str:
+RESUME_DOC_DEFAULT = "简历（脱敏版）"  # 知识库中的脱敏简历文档名（不含任何个人信息）
+
+
+def _get_resume_text(doc_name: str = RESUME_DOC_DEFAULT) -> str:
     """从知识库取简历全部块（按块序拼接原文）。"""
     conn = connect()
     try:
@@ -53,7 +56,7 @@ def parse_resume_command(msg: str) -> str | None:
     return rest[:40] if rest else ""
 
 
-async def optimize_resume(target_job: str = "", resume_doc: str = "简历-韦飞宇") -> dict:
+async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEFAULT) -> dict:
     """生成优化简历 → 存 documents → 导出 .docx。返回 {id, title, docx}。"""
     original = _get_resume_text(resume_doc)
     if not original:

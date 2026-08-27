@@ -19,7 +19,12 @@ async def ingest_document(name: str, content: str, replace: bool = True) -> dict
     """文档入库：切块 → 批量向量化 → 存 knowledge_chunks + chunk_vectors。
 
     replace=True（默认）：同 doc_name 先删旧块再入库（同步更新不产生重复）。
+    入库前统一脱敏（第 6.14 课）：敏感信息明文不进向量库。
     """
+    from app.services.sanitize import sanitize
+
+    name = sanitize(name)
+    content = sanitize(content)
     chunks = chunk_text(content)
     if not chunks:
         return {"chunks": 0, "error": "文档为空或无可切分内容"}

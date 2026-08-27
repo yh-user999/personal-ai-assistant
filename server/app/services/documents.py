@@ -42,7 +42,12 @@ def parse_doc_command(msg: str) -> tuple[str, str] | None:
 
 
 async def generate_and_save(title: str, requirement: str) -> dict:
-    """LLM 生成文档 → 存 documents 表 → 同步知识库。返回 {id, title, words}。"""
+    """LLM 生成文档 → 存 documents 表 → 同步知识库。返回 {id, title, words}。
+
+    入库前统一脱敏（第 6.14 课）。
+    """
+    from app.services.sanitize import sanitize
+
     content = await llm.chat(
         [
             {"role": "system", "content": DOC_PROMPT},
@@ -51,9 +56,10 @@ async def generate_and_save(title: str, requirement: str) -> dict:
         temperature=0.4,
         max_tokens=3000,
     )
-    content = content.strip()
+    content = sanitize(content.strip())
     if not content:
         return {"error": "生成失败：LLM 未返回内容"}
+    title = sanitize(title)
 
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()

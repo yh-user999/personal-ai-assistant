@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # 字段名必须与环境变量名一致（pydantic-settings 大小写不敏感映射）
     executor_allowed_roots: str = ""
 
+    # ── 脱敏（第 6.14 课：入库前统一脱敏）──────────────────
+    # 自定义敏感词（分号/逗号分隔），入库文本命中即替换为"已脱敏"；
+    # 手机号/邮箱/公网IP/身份证号由 sanitize 模块自动识别，无需配置
+    sensitive_terms: str = ""
+
     # ── 定时任务 ────────────────────────────────────────────
     consolidation_interval_hours: float = 4.0
     weekly_report_weekday: int = 6       # 0=周一 … 6=周日

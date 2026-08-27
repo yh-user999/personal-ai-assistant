@@ -26,7 +26,14 @@ def _now() -> str:
 # ── 写入 ──────────────────────────────────────────────────
 
 async def write_message(sender: str, content: str) -> int | None:
-    """写入一条对话记忆并向量化。返回 memory_id（重复时返回 None）。"""
+    """写入一条对话记忆并向量化。返回 memory_id（重复时返回 None）。
+
+    入库前统一脱敏（手机号/邮箱/公网IP/自定义敏感词）——
+    服务器不保存用户明文敏感信息。
+    """
+    from app.services.sanitize import sanitize
+
+    content = sanitize(content)
     conn = connect()
     try:
         # 精确去重：24h 内完全相同内容不重复入库

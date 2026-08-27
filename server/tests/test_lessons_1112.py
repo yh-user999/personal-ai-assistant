@@ -70,6 +70,27 @@ def test_executor_parse():
     assert executor.parse_executor_command("今天吃什么") is None
 
 
+def test_executor_parse_file_ops():
+    """第 13 课：文件手解析（双路径 JSON 打包）+ 脚本脚远程禁用。"""
+    action, target = executor.parse_executor_command("帮我复制F:/a.txt到F:/b.txt")
+    assert action == "copy"
+    assert executor.unpack_paths(action, target) == ["F:/a.txt", "F:/b.txt"]
+    action, target = executor.parse_executor_command("把F:/a移动到F:/b")
+    assert action == "move"
+    assert executor.unpack_paths(action, target) == ["F:/a", "F:/b"]
+    assert executor.parse_executor_command("帮我运行F:/x.py") is None  # 脚本不允许远程执行
+
+
+def test_executor_whitelist_dual(monkeypatch):
+    """双路径操作：任一路径出白名单即拒绝。"""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "executor_allowed_roots", "F:/")
+    action, target = executor.parse_executor_command("帮我复制F:/a.txt到D:/b.txt")
+    paths = executor.unpack_paths(action, target)
+    assert [executor.check_roots(p) for p in paths] == [True, False]
+
+
 def test_executor_drive_normalize():
     """口语盘符规范化：F盘→F:/，能过白名单。"""
     assert executor.normalize_target("F盘") == "F:/"

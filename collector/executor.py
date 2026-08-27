@@ -7,18 +7,23 @@
 """
 import asyncio
 import ctypes
+import json
 import logging
 import os
 import re
+import shutil
+import time
 
 import httpx
 
 logger = logging.getLogger("collector.executor")
 
 MAX_LIST = 300  # 单次最多列出的条目数（防病态大目录刷屏）
+# 双路径操作：target 为 JSON 数组（服务器打包）
+TWO_PATH_ACTIONS = ("copy", "backup", "move", "rename")
 SENSITIVE_PATTERN = re.compile(
     r"(恢复码|密码|口令|密钥|私钥|token|secret|password|api[_\-]?key)", re.IGNORECASE
-)  # 目录名疑似含敏感信息的预警（脱敏原则）
+)
 
 
 def _natural_key(name: str) -> list:
@@ -125,9 +130,61 @@ class Executor:
                 with open(target, encoding="utf-8", errors="replace") as f:
                     content = f.read(2000)
                 return True, content
+            # ── 第 13 课：文件手（双路径操作；脚本脚不支持远程执行——安全分级③）──
+            if action in TWO_PATH_ACTIONS:
+                try:
+                    parts = json.loads(target)
+                    src, dst = str(parts[0]), str(parts[1])
+                except Exception:
+                    return False, "指令格式错误（需要 JSON 双路径）"
+                return self._file_op(action, src, dst)
             return False, f"未知指令类型：{action}"
         except Exception as e:
             return False, f"执行出错：{e}"
+
+    @staticmethod
+    def _resolve_dst(src: str, dst: str, backup: bool = False) -> str:
+        if backup:
+            sub = "backup-" + time.strftime("%Y%m%d-%H%M%S")
+            base = dst if (dst.endswith(("/", "\\")) or os.path.isdir(dst)) else os.path.dirname(dst) or dst
+            return os.path.join(base, sub)
+        if os.path.isdir(dst) or dst.endswith(("/", "\\")):
+            return os.path.join(dst, os.path.basename(src.rstrip("/\\")))
+        return dst
+
+    def _file_op(self, action: str, src: str, dst: str) -> tuple[bool, str]:
+        """文件手：copy / backup / move / rename（与桌面执行器同格式）。"""
+        if not os.path.exists(src):
+            return False, f"源不存在：{src}"
+        if action in ("copy", "backup"):
+            dst = self._resolve_dst(src, dst, backup=(action == "backup"))
+            if os.path.isdir(src):
+                existed = os.path.exists(dst)
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                note = "（目标已存在，已合并内容）" if existed else ""
+                verb = "已备份" if action == "backup" else "已复制"
+                return True, f"{verb}文件夹：{src} → {dst}{note}"
+            if action == "backup":
+                os.makedirs(dst, exist_ok=True)
+                dst = os.path.join(dst, os.path.basename(src))
+            existed = os.path.isfile(dst)
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            shutil.copy2(src, dst)
+            note = "（已覆盖同名文件）" if existed else ""
+            verb = "已备份" if action == "backup" else "已复制"
+            size = os.path.getsize(dst)
+            return True, f"{verb}：{src} → {dst}{note}（{size} B）"
+        # move / rename
+        dst = self._resolve_dst(src, dst)
+        if action == "rename" and not os.path.dirname(dst):
+            dst = os.path.join(os.path.dirname(src) or ".", dst)
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        try:
+            shutil.move(src, dst)
+        except (FileExistsError, shutil.Error) as e:
+            return False, f"操作失败（目标已存在同名项）：{e}"
+        verb = "已重命名" if action == "rename" else "已移动"
+        return True, f"{verb}：{src} → {dst}"
 
     def stop(self) -> None:
         self._running = False

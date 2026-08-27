@@ -10,7 +10,7 @@ import html as html_lib
 
 import markdown as md_lib
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -78,6 +78,22 @@ class _GreetingWorker(QThread):
             self.done.emit(self.client.greeting())
         except Exception:
             self.done.emit("")  # 失败静默，保留默认问候
+
+
+class _ExecResultWorker(QThread):
+    """后台轮询执行器结果（since_id 之后的已执行指令）。"""
+    done = Signal(int, list)
+
+    def __init__(self, client: ApiClient, since_id: int) -> None:
+        super().__init__()
+        self.client = client
+        self.since_id = since_id
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.since_id, self.client.executor_results(self.since_id))
+        except Exception:
+            self.done.emit(self.since_id, [])
 
 
 class _HistoryWorker(QThread):
@@ -274,6 +290,12 @@ class ChatPanel(QWidget):
         )
         layout.addWidget(self._greeting_label)
         self._greeting_worker = None
+        # 执行器结果轮询：每 10s 检查新结果，主动显示到聊天流
+        self._last_executor_id = 0
+        self._exec_worker = None
+        self._exec_timer = QTimer(self)
+        self._exec_timer.timeout.connect(self._poll_executor_results)
+        self._exec_timer.start(10_000)
 
     # ── 问候刷新（每次打开）───────────────────────────────
 
@@ -281,6 +303,29 @@ class ChatPanel(QWidget):
         super().showEvent(event)
         self.input.setFocus()
         self._refresh_greeting()
+
+    def _poll_executor_results(self) -> None:
+        """轮询执行器新结果（有 worker 防重入）。"""
+        if self._exec_worker is not None:
+            return
+        self._exec_worker = _ExecResultWorker(self.client, self._last_executor_id)
+        self._exec_worker.done.connect(self._on_exec_results)
+        self._exec_worker.start()
+
+    def _on_exec_results(self, since_id: int, results: list) -> None:
+        worker = self._exec_worker
+        self._exec_worker = None
+        if worker:
+            worker.deleteLater()  # 防 QThread 慢性泄漏
+        for r in results:
+            self._last_executor_id = max(self._last_executor_id, r["id"])
+            mark = "✅" if r["status"] == "done" else "❌"
+            self._append(
+                "assistant",
+                f"{mark} 执行完成：{r['action']} {r['target']}\n{r['result']}",
+            )
+            if self.ball:
+                self.ball._blink = 0.01  # 机器人眨眼提示有结果
 
     def _refresh_greeting(self) -> None:
         if self._greeting_worker is not None:

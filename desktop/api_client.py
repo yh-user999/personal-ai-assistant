@@ -20,6 +20,17 @@ class ApiClient:
         except Exception:
             return False
 
+    def executor_results(self, since_id: int = 0) -> list:
+        """id > since_id 的已执行指令结果（面板轮询显示）。"""
+        r = httpx.get(
+            f"{self.base_url}/api/executor/results",
+            params={"since_id": since_id},
+            headers=self._headers(),
+            timeout=8,
+        )
+        r.raise_for_status()
+        return r.json().get("results", [])
+
     def greeting(self) -> str:
         """个性化问候（打开面板时刷新）。"""
         r = httpx.get(f"{self.base_url}/api/greeting", headers=self._headers(), timeout=8)

@@ -30,6 +30,23 @@ async def pending() -> dict:
     return {"command": cmd}  # null = 无待执行
 
 
+@router.get("/executor/results")
+async def results(since_id: int = 0) -> dict:
+    """id > since_id 的已执行指令（桌面端轮询显示执行结果）。"""
+    from app.models.database import connect
+
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT id, action, target, status, result FROM executor_commands
+               WHERE id > ? AND status != 'pending' ORDER BY id""",
+            (since_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"results": [dict(r) for r in rows]}
+
+
 @router.post("/executor/result")
 async def result(req: ResultRequest) -> dict:
     executor.mark_result(req.id, req.ok, req.result)

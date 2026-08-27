@@ -381,7 +381,9 @@ class ChatPanel(QWidget):
         """气泡式消息：用户右蓝、助手左灰，带时间戳。raw=True 时 text 为可信 HTML。
 
         助手消息按 Markdown 渲染（加粗/表格/列表/链接），解决"输出凌乱"。
+        统一 strip 首尾空白：前导空格会被 Markdown 当成缩进代码块渲染，走样。
         """
+        text = (text or "").strip()
         if raw:
             rendered = text
         elif role == "assistant":

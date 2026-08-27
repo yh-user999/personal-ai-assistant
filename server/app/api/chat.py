@@ -216,7 +216,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         + history
         + [{"role": "user", "content": msg}]
     )
-    reply = await llm.chat(llm_messages)
+    reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
 
     # 5) 记录回复 + 提升被引用记忆的重要性 + 术语建档
     await memory.write_message("assistant", reply)

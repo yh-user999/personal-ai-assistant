@@ -7,13 +7,15 @@ v0.6 体验修正：
 - ✕ 按钮与 Esc 关闭；聊天中联动机器人状态灯
 """
 import html as html_lib
+import math
+import random
 import re
 
 import markdown as md_lib
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (
-    QTextBlockFormat, QTextCursor,
+    QColor, QLinearGradient, QPainter, QPen,
 )
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
@@ -21,6 +23,94 @@ from PySide6.QtWidgets import (
 )
 
 from api_client import ApiClient
+
+
+class RobotAvatar(QWidget):
+    """聊天框里的动画头像：迷你版小月（会眨眼/呼吸，思考时琥珀眼+环绕粒子）。"""
+
+    SIZE = 36
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self._phase = 0.0
+        self._blink = 0.0
+        self._blink_cd = random.uniform(2.0, 4.0)
+        self._thinking = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(80)  # ~12fps：动画流畅且省电
+
+    def set_thinking(self, on: bool) -> None:
+        if self._thinking != on:
+            self._thinking = on
+            self.update()
+
+    def _tick(self) -> None:
+        self._phase += 0.06
+        self._blink_cd -= 0.08
+        if self._blink_cd <= 0 and self._blink == 0:
+            self._blink = 0.01
+        if self._blink > 0:
+            self._blink += 0.09
+            if self._blink >= 1:
+                self._blink = 0
+                self._blink_cd = random.uniform(2.0, 4.0)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 呼吸微缩放
+        scale = 1 + 0.02 * math.sin(self._phase)
+        cx = self.SIZE / 2
+        painter.translate(cx, cx)
+        painter.scale(scale, scale)
+        painter.translate(-cx, -cx)
+
+        accent = QColor("#fbbf24") if self._thinking else QColor("#4d7cff")
+
+        # 头（渐变立体）
+        g = QLinearGradient(3, 3, 33, 33)
+        g.setColorAt(0.0, QColor("#4a5266"))
+        g.setColorAt(1.0, QColor("#1a1d24"))
+        painter.setBrush(g)
+        painter.setPen(QPen(QColor("#4a5264"), 1))
+        painter.drawRoundedRect(4, 4, 28, 26, 9, 9)
+
+        # 天线
+        painter.setPen(QPen(QColor("#4b5563"), 2))
+        painter.drawLine(18, 4, 18, 1)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(accent)
+        painter.drawEllipse(16, 0, 4, 4)
+
+        # 眼睛（LED，眨眼 = 高度压扁）
+        eye_h = 6.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
+        painter.setBrush(accent)
+        for ex in (10, 21):
+            painter.drawEllipse(ex, int(12 + (6 - eye_h) / 2), 5, max(1, int(eye_h)))
+
+        # 嘴巴：思考 O / 微笑
+        painter.setPen(QPen(QColor("#9aa3b5"), 1.5, Qt.SolidLine, Qt.RoundCap))
+        painter.setBrush(Qt.NoBrush)
+        if self._thinking:
+            painter.drawEllipse(16, 24, 4, 4)
+        else:
+            painter.drawArc(14, 22, 8, 6, 200 * 16, 140 * 16)
+
+        # 思考环绕粒子
+        if self._thinking:
+            painter.setPen(Qt.NoPen)
+            for i in range(3):
+                ang = self._phase * 1.8 + i * 2.094
+                px = 18 + 9 * math.cos(ang)
+                py = 15 + 9 * math.sin(ang)
+                dot = QColor(accent)
+                dot.setAlpha(150)
+                painter.setBrush(dot)
+                painter.drawEllipse(int(px), int(py), 2, 2)
 
 
 class _InfoDialog(QDialog):
@@ -202,7 +292,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v3.2")
+        title = QLabel("🤖 Personal AI Assistant v4.0")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")
@@ -228,19 +318,20 @@ class ChatPanel(QWidget):
         title_row.addWidget(close_btn)
         layout.addLayout(title_row)
 
-        # 消息区
-        self.browser = QTextBrowser()
-        self.browser.setOpenExternalLinks(False)
-        # 防内存无限增长：最多保留 500 段，超出自动丢弃最早内容
-        self.browser.document().setMaximumBlockCount(500)
-        self.browser.setStyleSheet(
-            "background: transparent; border: none; color: #eee; font-size: 13px;"
-        )
+        # 消息区：滚动容器 + 垂直布局（每条消息 = 一行部件，左右由布局保证）
+        self._avatars: list[RobotAvatar] = []   # 所有小月头像（统一动画，防内存泄漏引用）
+        self._typing_row: QWidget | None = None  # "正在想"临时行（带思考动画头像）
+        self._msg_container = QWidget()
+        self._msg_layout = QVBoxLayout(self._msg_container)
+        self._msg_layout.setContentsMargins(0, 0, 0, 0)
+        self._msg_layout.setSpacing(0)
+        self._msg_layout.addStretch(1)  # 底部弹簧：消息从顶部往下排
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setWidget(self.browser)
+        scroll.setWidget(self._msg_container)
         scroll.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(scroll, 1)
+        self._msg_scroll = scroll
 
         # 快捷按钮行
         quick_row = QHBoxLayout()
@@ -370,7 +461,7 @@ class ChatPanel(QWidget):
         self._history_worker = None
         if worker:
             worker.deleteLater()  # 防 QThread 慢性泄漏
-        self.browser.clear()
+        self._clear_messages()
         if not messages:
             self._append(
                 "assistant",
@@ -383,54 +474,116 @@ class ChatPanel(QWidget):
 
     # ── 消息与气泡 ─────────────────────────────────────────
 
-    def _append(self, role: str, text: str, ts: str = "", raw: bool = False) -> None:
-        """气泡式消息：你右蓝、小月左灰（对齐用 Qt 块格式 API 设置，不依赖 CSS）。
+    def _render(self, role: str, text: str) -> str:
+        """文本 → 富文本 HTML（沿用 Markdown 渲染管线）。"""
+        if role == "assistant" and re.search(r"[*#`>\[\]|]", text):
+            rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
+            rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
+            return rendered
+        return html_lib.escape(text).replace("\n", "<br>")
 
-        CSS text-align 在 Qt/Windows 下表现不稳定——历次"左右不对"都出在它身上。
-        这里改用 QTextBlockFormat.setAlignment 程序化设置，跨平台 100% 确定。
+    def _make_msg_row(self, role: str, rendered: str, ts: str = "") -> QWidget:
+        """一条消息 = 一行部件：你右（蓝气泡）、小月左（灰气泡 + 动画头像）。
+
+        左右完全由 QHBoxLayout 保证——不再依赖任何 CSS 对齐。
         """
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(8)
+
+        if role == "user":
+            bg, fg = "#2b5cff", "#fff"
+            align_side = Qt.AlignRight
+            lay.addStretch(1)
+        else:
+            bg, fg = "#23262f", "#d8dbe2"
+            align_side = Qt.AlignLeft
+            avatar = RobotAvatar()
+            self._avatars.append(avatar)
+            lay.addWidget(avatar, 0, Qt.AlignTop)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        bubble = QLabel(rendered)
+        bubble.setWordWrap(True)
+        bubble.setTextFormat(Qt.RichText)
+        bubble.setMaximumWidth(320)
+        bubble.setContentsMargins(10, 7, 10, 7)
+        bubble.setStyleSheet(
+            f"QLabel {{ background: {bg}; color: {fg}; border-radius: 12px; font-size: 13px; }}"
+        )
+        col.addWidget(bubble, 0, align_side)
+        if ts:
+            ts_label = QLabel(_fmt_ts(ts))
+            ts_label.setStyleSheet("QLabel { color: #5b6270; font-size: 10px; }")
+            col.addWidget(ts_label, 0, align_side)
+        lay.addLayout(col)
+        if role != "user":
+            lay.addStretch(1)
+        return row
+
+    def _append(self, role: str, text: str, ts: str = "", raw: bool = False) -> None:
+        """往聊天流追加一条消息（你右蓝、小月左灰带动画头像）。"""
         text = (text or "").strip()
         if not text and not raw:
             return
-        if raw:
-            rendered = text
-        elif role == "assistant":
-            if re.search(r"[*#`>\[\]|]", text):
-                # 有 Markdown 语法的回复：渲染后把文本内换行转 <br>（Qt 会压成空格）
-                rendered = md_lib.markdown(text, extensions=["tables", "fenced_code"])
-                rendered = re.sub(r"(?<=[^>])\n(?=[^<])", "<br>", rendered)
-            else:
-                # 纯文本回复：直接转义 + 换行转 <br>，绕开 Markdown 的 <p> 包装
-                rendered = html_lib.escape(text).replace("\n", "<br>")
-        else:
-            rendered = html_lib.escape(text).replace("\n", "<br>")
+        rendered = text if raw else self._render(role, text)
+        row = self._make_msg_row(role, rendered, ts)
+        self._msg_layout.insertWidget(self._msg_layout.count() - 1, row)
+        self._trim_messages()
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
-        if role == "user":
-            bubble = (
-                f'<span style="background:#2b5cff;color:#fff;border-radius:12px;'
-                f'padding:7px 12px;">{rendered}</span><br>'
-                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span>'
-            )
-            align = Qt.AlignRight
-        else:
-            bubble = (
-                f'<span style="background:#23262f;color:#d8dbe2;border-radius:12px;'
-                f'padding:7px 12px;">{rendered}</span><br>'
-                f'<span style="font-size:10px;color:#5b6270;">{_fmt_ts(ts)}</span>'
-            )
-            align = Qt.AlignLeft
+    def _show_typing(self) -> None:
+        """等待回复时显示"正在想"行：思考动画头像 + …气泡（头像动起来的展示位）。"""
+        if self._typing_row is not None:
+            return
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(8)
+        avatar = RobotAvatar()
+        avatar.set_thinking(True)
+        lay.addWidget(avatar, 0, Qt.AlignTop)
+        bubble = QLabel("…")
+        bubble.setContentsMargins(14, 7, 14, 7)
+        bubble.setStyleSheet(
+            "QLabel { background: #23262f; color: #d8dbe2; border-radius: 12px; font-size: 13px; }"
+        )
+        lay.addWidget(bubble, 0, Qt.AlignTop)
+        lay.addStretch(1)
+        self._msg_layout.insertWidget(self._msg_layout.count() - 1, row)
+        self._typing_row = row
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
-        cursor = self.browser.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        fmt = QTextBlockFormat()
-        fmt.setAlignment(align)
-        fmt.setTopMargin(6)
-        fmt.setBottomMargin(6)
-        # 统一 insertBlock 创建带对齐格式的新块（顶部会留一个空块，无碍观感）
-        cursor.insertBlock(fmt)
-        cursor.insertHtml(bubble)
-        self.browser.setTextCursor(cursor)
-        sb = self.browser.verticalScrollBar()
+    def _remove_typing(self) -> None:
+        if self._typing_row is not None:
+            self._typing_row.deleteLater()
+            self._typing_row = None
+
+    def _clear_messages(self) -> None:
+        """清空消息区（保留底部弹簧）。"""
+        self._remove_typing()
+        while self._msg_layout.count() > 1:
+            item = self._msg_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._avatars.clear()
+
+    def _trim_messages(self) -> None:
+        """防内存无限增长：最多保留 500 条消息，超出删除最早的。"""
+        while self._msg_layout.count() > 501:  # 500 条消息 + 底部弹簧
+            item = self._msg_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+                # 同步清理被删消息占用的头像引用
+                if self._avatars and self._avatars[0] is not w:
+                    self._avatars.pop(0)
+
+    def _scroll_to_bottom(self) -> None:
+        sb = self._msg_scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     # ── 快捷功能 ───────────────────────────────────────────
@@ -482,6 +635,7 @@ class ChatPanel(QWidget):
 
         if self.ball:
             self.ball.set_state("thinking")  # 机器人进入思考状态（琥珀灯+圆嘴）
+        self._show_typing()  # 聊天流里出现"正在想"动画头像行
         self._worker = _ChatWorker(self.client, msg)
         self._worker.done.connect(self._on_done)
         self._worker.start()
@@ -491,6 +645,7 @@ class ChatPanel(QWidget):
         self._worker = None
         if worker:
             worker.deleteLater()  # 防 QThread 慢性泄漏
+        self._remove_typing()  # 撤下"正在想"行，换上真实回复
         self._append(role, text, "")
         if self.ball:
             self.ball.set_state("online")  # 回复完成 → 绿灯

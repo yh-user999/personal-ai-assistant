@@ -16,6 +16,9 @@ import httpx
 logger = logging.getLogger("collector.executor")
 
 MAX_LIST = 300  # 单次最多列出的条目数（防病态大目录刷屏）
+SENSITIVE_PATTERN = re.compile(
+    r"(恢复码|密码|口令|密钥|私钥|token|secret|password|api[_\-]?key)", re.IGNORECASE
+)  # 目录名疑似含敏感信息的预警（脱敏原则）
 
 
 def _natural_key(name: str) -> list:
@@ -96,6 +99,10 @@ class Executor:
                     lines = ["（空目录）"]
                 if total > MAX_LIST:
                     lines.append(f"… 其余 {total - MAX_LIST} 项")
+                sensitive = [n for n, _ in entries if SENSITIVE_PATTERN.search(n)]
+                if sensitive:
+                    names = "、".join(sensitive[:3])
+                    lines.append(f"⚠️ 发现疑似敏感名称：{names} —— 建议改名或移入 KeePassXC 加密保险库")
                 header = f"共 {total} 项（📁 {len(dirs)} 文件夹 / 📄 {len(files)} 文件"
                 if hidden:
                     header += f"，已隐藏 {hidden} 个系统/隐藏项"

@@ -73,3 +73,20 @@ def test_hidden_filter_non_windows_is_noop():
         p = os.path.join(td, "normal.txt")
         open(p, "w", encoding="utf-8").close()
         assert local_exec._is_hidden_system(p) is False
+
+
+def test_list_dir_sensitive_warning():
+    with tempfile.TemporaryDirectory() as td:
+        _make_tree(td, dirs=["githu恢复码"], files=["notes.txt"])
+        ok, text = local_exec._execute("list_dir", td)
+        assert ok
+        assert "⚠️ 发现疑似敏感名称" in text
+        assert "githu恢复码" in text
+
+
+def test_list_dir_no_warning_when_clean():
+    with tempfile.TemporaryDirectory() as td:
+        _make_tree(td, files=["notes.txt", "f2.txt"])
+        ok, text = local_exec._execute("list_dir", td)
+        assert ok
+        assert "⚠️" not in text

@@ -292,7 +292,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v4.1")
+        title = QLabel("🤖 Personal AI Assistant v4.2")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")
@@ -510,6 +510,7 @@ class ChatPanel(QWidget):
         bubble.setTextFormat(Qt.RichText)
         bubble.setMaximumWidth(320)
         bubble.setContentsMargins(10, 7, 10, 7)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 支持选中复制
         bubble.setStyleSheet(
             f"QLabel {{ background: {bg}; color: {fg}; border-radius: 12px; font-size: 13px; }}"
         )
@@ -547,6 +548,7 @@ class ChatPanel(QWidget):
         lay.addWidget(avatar, 0, Qt.AlignTop)
         bubble = QLabel("…")
         bubble.setContentsMargins(14, 7, 14, 7)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
         bubble.setStyleSheet(
             "QLabel { background: #23262f; color: #d8dbe2; border-radius: 12px; font-size: 13px; }"
         )

@@ -35,8 +35,8 @@ def test_plain_text_untouched():
 
 
 def test_public_ip_masked_in_name():
-    assert sanitize("101.33.229.73:8082") == "101.33.*.*:8082"
-    assert sanitize("117.72.11.59:8000") == "117.72.*.*:8000"
+    assert sanitize("8.8.8.8:8082") == "8.8.*.*:8082"
+    assert sanitize("1.2.3.4:8000") == "1.2.*.*:8000"
 
 
 def test_private_ip_kept():
@@ -46,8 +46,8 @@ def test_private_ip_kept():
 
 
 def test_event_name_sanitized():
-    ev = {"kind": "browser", "name": "101.33.229.73:8082", "detail": "面板"}
+    ev = {"kind": "browser", "name": "8.8.8.8:8082", "detail": "面板"}
     sanitize_event(ev)
-    assert ev["name"] == "101.33.*.*:8082"
+    assert ev["name"] == "8.8.*.*:8082"
     assert ev["detail"] == "面板"
 

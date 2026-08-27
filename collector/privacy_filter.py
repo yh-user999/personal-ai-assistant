@@ -20,7 +20,7 @@ RE_PUBLIC_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
 def _mask_public_ip(m: re.Match) -> str:
-    """公网 IP 打码（101.33.229.73 → 101.33.*.*）；内网/本机地址保持原样。"""
+    """公网 IP 打码（如 1.2.3.4 → 1.2.*.*）；内网/本机地址保持原样。"""
     parts = m.group(0).split(".")
     a = int(parts[0])
     b = int(parts[1]) if len(parts) > 1 else 0

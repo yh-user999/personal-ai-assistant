@@ -13,16 +13,16 @@ from app.services.sanitize import sanitize  # noqa: E402
 
 
 def test_phone_masked():
-    assert sanitize("联系电话：13135582351") == "联系电话：131****2351"
+    assert sanitize("联系电话：13812345678") == "联系电话：138****5678"
 
 
 def test_email_masked():
-    assert sanitize("邮箱 wfy3366@163.com 收件") == "邮箱 wfy***@163.com 收件"
+    assert sanitize("邮箱 test@example.com 收件") == "邮箱 tes***@example.com 收件"
 
 
 def test_public_ip_masked():
-    assert sanitize("访问 101.33.229.73:8082") == "访问 101.33.*.*:8082"
-    assert sanitize("117.72.11.59") == "117.72.*.*"
+    assert sanitize("访问 8.8.8.8:8082") == "访问 8.8.*.*:8082"
+    assert sanitize("1.2.3.4") == "1.2.*.*"
 
 
 def test_private_ip_kept():
@@ -38,8 +38,8 @@ def test_idcard_masked():
 def test_custom_terms(monkeypatch):
     from app.config import settings
 
-    monkeypatch.setattr(settings, "sensitive_terms", "韦飞宇;桂林电子科技大学")
-    text = sanitize("韦飞宇毕业于桂林电子科技大学")
+    monkeypatch.setattr(settings, "sensitive_terms", "张三;示例大学")
+    text = sanitize("张三毕业于示例大学")
     assert text == "已脱敏毕业于已脱敏"
     monkeypatch.setattr(settings, "sensitive_terms", "")
     assert sanitize("普通内容") == "普通内容"
@@ -52,6 +52,6 @@ def test_empty_untouched():
 
 def test_masked_output_is_stable():
     """脱敏结果本身不再命中任何规则（幂等）。"""
-    once = sanitize("电话13135582351 邮箱wfy3366@163.com 服务器101.33.229.73")
+    once = sanitize("电话13812345678 邮箱test@example.com 服务器8.8.8.8")
     twice = sanitize(once)
     assert once == twice

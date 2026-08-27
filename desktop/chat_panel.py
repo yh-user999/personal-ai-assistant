@@ -10,7 +10,7 @@ import html as html_lib
 
 import markdown as md_lib
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -290,8 +290,11 @@ class ChatPanel(QWidget):
         )
         layout.addWidget(self._greeting_label)
         self._greeting_worker = None
-        # 执行器结果轮询：每 10s 检查新结果，主动显示到聊天流
-        self._last_executor_id = 0
+        # 执行器结果轮询：每 10s 检查新结果，主动显示到聊天流。
+        # last_executor_id 持久化（QSettings）：面板重启后不重复播报历史执行结果
+        self._last_executor_id = int(
+            QSettings("PersonalAI", "Assistant").value("executor_last_id", 0) or 0
+        )
         self._exec_worker = None
         self._exec_timer = QTimer(self)
         self._exec_timer.timeout.connect(self._poll_executor_results)
@@ -326,6 +329,9 @@ class ChatPanel(QWidget):
             )
             if self.ball:
                 self.ball._blink = 0.01  # 机器人眨眼提示有结果
+        QSettings("PersonalAI", "Assistant").setValue(
+            "executor_last_id", self._last_executor_id
+        )
 
     def _refresh_greeting(self) -> None:
         if self._greeting_worker is not None:

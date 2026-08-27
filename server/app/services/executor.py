@@ -20,6 +20,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+STALE_SECONDS = 30 * 60  # pending 指令 30 分钟未被领取 = 过期（防僵尸指令隔天突然执行）
+
+
 def normalize_target(target: str) -> str:
     """口语盘符规范化：'F盘'→'F:/'、'c盘/xx'→'C:/xx'、'F盘的目录x'→'F:/目录x'。"""
     m = re.match(r"^([A-Za-z])\s*盘[:：]?的?\s*(.*)$", target.strip())
@@ -58,15 +61,31 @@ def enqueue(action: str, target: str) -> int:
 
 
 def get_pending() -> dict | None:
-    """取队首 pending 指令（executor 轮询）。"""
+    """取队首 pending 指令（executor 轮询）。
+
+    超时未领取的指令自动标记 failed（过期），不再返回——
+    否则旧指令会在采集器重启后突然被执行，用户看到"延迟的惊喜"。
+    """
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT id, action, target FROM executor_commands WHERE status='pending' ORDER BY id LIMIT 1"
+            "SELECT id, action, target, created_at FROM executor_commands "
+            "WHERE status='pending' ORDER BY id LIMIT 1"
         ).fetchone()
+        if row is None:
+            return None
+        created = datetime.fromisoformat(row["created_at"])
+        if (datetime.now(timezone.utc) - created).total_seconds() > STALE_SECONDS:
+            conn.execute(
+                "UPDATE executor_commands SET status='failed', "
+                "result='指令已过期（超时未执行）', executed_at=? WHERE id=?",
+                (_now(), row["id"]),
+            )
+            conn.commit()
+            return None
+        return dict(row)
     finally:
         conn.close()
-    return dict(row) if row else None
 
 
 def mark_result(cmd_id: int, ok: bool, result: str) -> None:

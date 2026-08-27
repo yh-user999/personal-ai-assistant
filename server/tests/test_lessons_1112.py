@@ -98,3 +98,29 @@ def test_executor_queue():
     assert pending["action"] == "open"
     executor.mark_result(cmd_id, True, "已打开 notepad")
     assert executor.get_pending() is None  # 已完成不再出现
+
+
+def test_executor_stale_expiry():
+    """僵尸指令防护：pending 超过 30 分钟自动标记失败，不再返回执行。"""
+    conn = connect()
+    conn.execute(
+        "INSERT INTO executor_commands (action, target, status, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("list_dir", "F:/", "pending", "2020-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+    assert executor.get_pending() is None  # 过期指令不派发
+    conn = connect()
+    row = conn.execute(
+        "SELECT status, result FROM executor_commands WHERE action='list_dir'"
+    ).fetchone()
+    conn.close()
+    assert row["status"] == "failed"
+    assert "过期" in row["result"]
+
+
+def test_executor_fresh_pending_ok():
+    """刚入队的指令不受过期逻辑影响。"""
+    cmd_id = executor.enqueue("open", "notepad")
+    assert executor.get_pending()["id"] == cmd_id

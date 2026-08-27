@@ -20,17 +20,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_target(target: str) -> str:
+    """口语盘符规范化：'F盘'→'F:/'、'c盘/xx'→'C:/xx'、'F盘的目录x'→'F:/目录x'。"""
+    m = re.match(r"^([A-Za-z])\s*盘[:：]?的?\s*(.*)$", target.strip())
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2).strip().lstrip("/\\")
+        return f"{drive}:/" + (rest if rest else "")
+    return target.strip()
+
+
 def parse_executor_command(msg: str) -> tuple[str, str] | None:
     """解析操作命令 → (action, target)。action: open/list_dir/read_file。"""
     m = re.match(r"^(?:帮我|请)?打开(?:文件夹|目录|应用|软件)?[:：]?\s*(.+)$", msg.strip())
     if m:
-        return ("open", m.group(1).strip()[:200])
+        return ("open", normalize_target(m.group(1))[:200])
     m = re.match(r"^(?:列出|看看|查看)(.+?)(?:目录|文件夹)(?:里)?(?:有什么|的内容)?$", msg.strip())
     if m:
-        return ("list_dir", m.group(1).strip()[:200])
+        return ("list_dir", normalize_target(m.group(1))[:200])
     m = re.match(r"^(?:帮我|请)?(?:看看|查看|读一下|读取)(?:文件)?[:：]?\s*(.+)$", msg.strip())
     if m and not m.group(1).endswith(("目录", "文件夹")):
-        return ("read_file", m.group(1).strip()[:200])
+        return ("read_file", normalize_target(m.group(1))[:200])
     return None
 
 

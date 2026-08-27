@@ -70,6 +70,16 @@ def test_executor_parse():
     assert executor.parse_executor_command("今天吃什么") is None
 
 
+def test_executor_drive_normalize():
+    """口语盘符规范化：F盘→F:/，能过白名单。"""
+    assert executor.normalize_target("F盘") == "F:/"
+    assert executor.normalize_target("c盘/项目") == "C:/项目"
+    assert executor.normalize_target("F盘的目录x") == "F:/目录x"
+    action, target = executor.parse_executor_command("看看F盘的目录里有什么")
+    assert action == "list_dir"
+    assert target.startswith("F:/")
+
+
 def test_executor_whitelist(monkeypatch):
     from app.config import settings
 

@@ -16,20 +16,26 @@ def _now() -> str:
 
 
 async def ingest_document(
-    name: str, content: str, replace: bool = True, sanitize_content: bool = True
+    name: str,
+    content: str,
+    replace: bool = True,
+    sanitize_content: bool = True,
+    chunk_size: int = 500,
+    overlap: int = 50,
 ) -> dict:
     """文档入库：切块 → 分批向量化 → 存 knowledge_chunks + chunk_vectors。
 
     replace=True（默认）：同 doc_name 先删旧块再入库（同步更新不产生重复）。
     入库前统一脱敏（第 6.14 课）；sanitize_content=False 跳过脱敏——
     用于小说等长文本（避免形似手机号的数字串被误打码）。
+    chunk_size/overlap：小说知识库建议 1500/150——一场戏完整落进一块。
     """
     if sanitize_content:
         from app.services.sanitize import sanitize
 
         name = sanitize(name)
         content = sanitize(content)
-    chunks = chunk_text(content)
+    chunks = chunk_text(content, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
         return {"chunks": 0, "error": "文档为空或无可切分内容"}
 
@@ -163,10 +169,11 @@ async def search_knowledge(query: str, top_k: int = 3, method: str = "hybrid") -
     return await hybrid_search(query, top_k)
 
 
-def expand_chunks(hits: list[dict], radius: int = 2, max_chars: int = 2800) -> list[dict]:
+def expand_chunks(hits: list[dict], radius: int = 1, max_chars: int = 4000) -> list[dict]:
     """把首条命中扩展为连续剧情段（同文档邻域块拼接），其余命中保持单块。
 
-    零成本提升小说问答的"情节完整性"：500 字单块太碎，±2 邻域 ≈ 一整场戏。
+    零成本提升小说问答的"情节完整性"。半径与上限按 1500 字/块调校：
+    ±1 邻域 = 3 块 ≈ 4500 字的一整场戏，足够回答剧情因果类问题。
     落在扩展区间内的后续命中自动去重，避免重复注入。
     """
     if not hits:

@@ -7,9 +7,38 @@ worker 用完必须走 retire()——wait() 收尸后再 deleteLater()。
 原因：QThread 的 C++ 对象在线程真正退出前就被 deleteLater 销毁时，
 Qt 内部分配的线程栈/事件结构会被二次释放，崩溃点固定在
 QtPrivate::sizedFree（生产 minidump 五份同址实锤）。
+
+周报/小结展示统一走 render_report_html()：Markdown → 主题化 HTML。
 """
+import html as html_lib
+
+import markdown as md_lib
+import theme
 from api_client import ApiClient
 from PySide6.QtCore import QThread, Signal
+
+
+def render_report_html(subtitle: str, markdown_text: str) -> str:
+    """周报/小结统一渲染：Markdown → HTML，带主题化排版。
+
+    安全：先转义 & 与 <（与聊天气泡同策略，阻断 HTML 注入，保留 > 供
+    Markdown 引用语法），再走 markdown 渲染。
+    """
+    safe = markdown_text.replace("&", "&amp;").replace("<", "&lt;")
+    body = md_lib.markdown(safe, extensions=["tables", "fenced_code"])
+    accent = theme.token("accent")
+    border = theme.token("border")
+    body = body.replace("<h2>", f"<h2 style='color:{accent};font-size:15px;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid {border};'>")
+    body = body.replace("<h3>", f"<h3 style='color:{theme.token('text_main')};font-size:13px;margin:12px 0 4px;'>")
+    body = body.replace("<hr", f"<hr style='border:none;border-top:1px solid {border};margin:14px 0'")
+    body = body.replace("<li>", "<li style='margin:3px 0;'>")
+    body = body.replace("<table", "<table style='border-collapse:collapse;'")
+    body = body.replace("<th", f"<th style='border:1px solid {border};padding:4px 8px;background:{theme.token('btn_bg')};'")
+    body = body.replace("<td", f"<td style='border:1px solid {border};padding:4px 8px;'")
+    return (
+        f"<div style='color:{theme.token('text_sub')};font-size:12px;margin-bottom:10px;'>{html_lib.escape(subtitle)}</div>"
+        f"<div style='font-size:13px;line-height:1.8;color:{theme.token('text_main')};'>{body}</div>"
+    )
 
 
 def retire(worker: QThread) -> None:
@@ -108,17 +137,21 @@ class _ApiWorker(QThread):
                 self.done.emit("stats", text)
             elif self.mode == "daily":
                 d = self.client.latest_daily()
-                if not d:
+                if not d or not d.get("content"):
                     text = "暂无今日小结。每晚 22:00 自动生成。"
                 else:
-                    text = f"🌙 {d['date']} 小结：<br>" + d["content"].replace("\n", "<br>")
+                    text = render_report_html(
+                        f"🌙 {d['date']} 今日小结", d["content"]
+                    )
                 self.done.emit("daily", text)
             else:  # report
                 r = self.client.latest_report()
-                if not r:
+                if not r or not r.get("content"):
                     text = "暂无周报。每周日 21:00 自动生成，敬请期待。"
                 else:
-                    text = f"📋 周报 {r.get('week', '')}：<br>{r.get('content', '')}"
+                    text = render_report_html(
+                        f"📋 周报 {r.get('week', '')}", r["content"]
+                    )
                 self.done.emit("report", text)
         except Exception as e:
             self.done.emit(self.mode, f"[获取失败] {e}")

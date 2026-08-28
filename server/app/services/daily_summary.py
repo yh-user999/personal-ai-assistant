@@ -22,9 +22,15 @@ def _stale_concerns_text(days: int = 3) -> str:
         return "（无）"
     return "、".join(f"{s['topic']}（{s['mention_count']} 次）" for s in stale)
 
-DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据，写一份 3-5 行的《今日小结》：
-1. 今天做了什么（对话主题/工作日志/应用使用）
-2. 一个值得注意的观察（如有）
+DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据，写一份《今日小结》。
+只输出 JSON：{{"content": "小结全文"}}
+
+content 格式要求（Markdown，共 3-5 行）：
+1. 第一行 `**<今日一句>**`——用一句话概括今天的主线（≤20 字，具体不空泛）
+2. 中间 2-3 行 `- ` 列表：今天做了什么（对话主题/工作日志/应用使用），
+   引用真实数据（如"调了 2h RAG"、"VSCode 4.5h"）；没数据的方面不写
+3. 如有值得注意的观察，最后加一行 `💡 观察：...`；没有就不加
+4. 如有超过 3 天未提及的关切话题，紧跟一行 `💭 以前的 XX 还没续上，要看看吗？`
 要求：具体、简洁、不编造数据（没数据就说没有）。
 
 今日对话摘要：
@@ -36,11 +42,8 @@ DAILY_PROMPT = """你是用户的私人 AI 助手。基于今天的活动数据�
 今日工作日志：
 {logs}
 
-超过 3 天未提及的关切话题（如有，在小结末尾温和提醒一句）：
+超过 3 天未提及的关切话题（如有，按上面第 4 条格式提醒）：
 {stale_concerns}
-
-只输出 JSON：
-{{"content": "小结全文（3-5 行，行与行用换行符分隔）"}}
 """
 
 
@@ -86,10 +89,8 @@ async def run_daily_summary() -> dict:
         f"[{r['topics']}] {r['summary']}" for r in summaries[:20]
     ) or "（无对话）"
     log_text = "\n".join(f"{r['time_range']} {r['content']}" for r in logs) or "（无日志）"
-    stats_text = (
-        f"行为事件 {n_events} 条；应用时长 Top: "
-        + ", ".join(f"{a['name']} {round((a['secs'] or 0) / 3600, 2)}h" for a in apps)
-    )
+    top_apps = ", ".join(f"{a['name']} {round((a['secs'] or 0) / 3600, 2)}h" for a in apps) or "无"
+    stats_text = f"行为事件 {n_events} 条；应用时长 Top: {top_apps}"
 
     result = await llm.chat_json(
         "你是用户的私人 AI 助手，只输出 JSON。",

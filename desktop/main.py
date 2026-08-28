@@ -72,4 +72,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # --robot 标记：采集器与机器人命令行同为 pythonw main.py，
+    # 唯一参数让看门狗判活查询可区分两者（否则会误判/双拉）
+    if "--robot" not in sys.argv:
+        sys.argv.append("--robot")
     main()

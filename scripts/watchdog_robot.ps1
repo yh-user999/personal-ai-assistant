@@ -13,9 +13,10 @@ if (-not (Test-Path $PythonW)) {
 }
 if (-not (Test-Path $PythonW)) { exit 1 }
 
-# 判活：存在命令行引用 desktop\main.py 的 pythonw 进程（机器人 + 面板同进程）
+# 判活：机器人以 --robot 参数启动（desktop/main.py 入口自动附加），
+# 与采集器（同为 pythonw main.py）唯一可区分的特征
 $alive = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
-    Where-Object { $_.CommandLine -like "*desktop*main.py*" }
+    Where-Object { $_.CommandLine -like "*--robot*" }
 
 if (-not $alive) {
     Start-Process -FilePath $PythonW -ArgumentList "main.py" -WorkingDirectory $DesktopDir

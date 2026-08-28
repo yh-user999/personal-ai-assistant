@@ -31,7 +31,8 @@ Register-ScheduledTask -TaskName "PAA-Collector" -Action $Action1 -Trigger $Trig
 
 # ── ② 桌面机器人 ─────────────────────────────────────────
 Write-Host "==> 注册 PAA-Robot"
-$Action2 = New-ScheduledTaskAction -Execute $PythonW -Argument "main.py" -WorkingDirectory $DesktopDir
+# --robot 参数：看门狗判活标记（与采集器同为 pythonw main.py，靠参数区分）
+$Action2 = New-ScheduledTaskAction -Execute $PythonW -Argument "main.py --robot" -WorkingDirectory $DesktopDir
 $Trigger2 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Trigger2.Delay = "PT15S"
 $Settings2 = New-ScheduledTaskSettingsSet `

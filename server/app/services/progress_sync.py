@@ -44,9 +44,10 @@ def refresh_progress_facts() -> int:
     try:
         # 清理已不在快照中的课程/项目类事实（如课程被删除时）
         keep = {s for s, _, _ in PROGRESS_FACTS}
+        ph = ",".join("?" * len(keep))
         conn.execute(
-            "DELETE FROM facts WHERE (subject LIKE '第%课' OR subject='六课带教计划' OR subject='项目') AND subject NOT IN (%s)"
-            % ",".join("?" * len(keep)),
+            "DELETE FROM facts WHERE (subject LIKE '第%课' OR subject='六课带教计划' "
+            "OR subject='项目') AND subject NOT IN (" + ph + ")",
             tuple(keep),
         )
         for sub, pred, obj in PROGRESS_FACTS:

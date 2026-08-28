@@ -23,54 +23,91 @@ class _ReportWorker(QThread):
             self.done.emit(None, None)
 
 
-def make_robot_icon(size: int = 64) -> QIcon:
-    """自绘班德式机器人头像做托盘图标（金属灰 + 视窗眼 + 格栅嘴）。"""
+def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
+    """自绘机器人托盘图标（双皮肤：bender 金属风 / astro 白色宇航员风）。"""
     from PySide6.QtGui import QLinearGradient, QPainterPath
 
+    from skins import current_skin
+
+    if skin == "auto":
+        skin = current_skin()
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    # 头：圆顶窄顶 + 底部外扩（桶形）
-    head = QPainterPath()
-    head.moveTo(size * 0.22, size * 0.40)
-    head.quadTo(size * 0.22, size * 0.14, size * 0.50, size * 0.14)
-    head.quadTo(size * 0.78, size * 0.14, size * 0.78, size * 0.40)
-    head.lineTo(size * 0.86, size * 0.72)
-    head.quadTo(size * 0.86, size * 0.78, size * 0.76, size * 0.78)
-    head.lineTo(size * 0.24, size * 0.78)
-    head.quadTo(size * 0.14, size * 0.78, size * 0.14, size * 0.72)
-    head.lineTo(size * 0.22, size * 0.40)
-    head.closeSubpath()
     g = QLinearGradient(0, 0, size, size)
-    g.setColorAt(0.0, QColor("#a9b2c4"))
-    g.setColorAt(0.5, QColor("#6b7488"))
-    g.setColorAt(1.0, QColor("#3a414e"))
-    p.setBrush(g)
-    p.setPen(QColor("#565e70"))
-    p.drawPath(head)
-    # 天线
-    p.setPen(QColor("#565e70"))
-    p.drawLine(size // 2, int(size * 0.14), size // 2, int(size * 0.04))
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#4d7cff"))
-    p.drawEllipse(int(size * 0.44), 0, int(size * 0.12), int(size * 0.12))
-    # 视窗眼（发光屏）
-    p.setBrush(QColor("#20242c"))
-    p.drawRoundedRect(int(size * 0.30), int(size * 0.40), int(size * 0.40), int(size * 0.18), 4, 4)
-    p.setBrush(QColor("#4d7cff"))
-    p.drawRoundedRect(int(size * 0.33), int(size * 0.43), int(size * 0.34), int(size * 0.12), 3, 3)
-    # 格栅嘴（2 条横槽）
-    p.setPen(QColor("#565e70"))
-    p.drawLine(int(size * 0.32), int(size * 0.64), int(size * 0.68), int(size * 0.64))
-    p.drawLine(int(size * 0.32), int(size * 0.70), int(size * 0.68), int(size * 0.70))
+    stroke = QColor("#565e70")
+    if skin == "astro":
+        # 白色宇航员风：白盔 + 琥珀面罩 + 黑圆眼 + 黄色点缀
+        g.setColorAt(0.0, QColor("#ffffff"))
+        g.setColorAt(0.55, QColor("#dfe4ec"))
+        g.setColorAt(1.0, QColor("#b9c1ce"))
+        stroke = QColor("#9aa3b5")
+        p.setBrush(g)
+        p.setPen(stroke)
+        p.drawRoundedRect(int(size * 0.14), int(size * 0.10), int(size * 0.72), int(size * 0.66), int(size * 0.3), int(size * 0.3))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#dfe4ec"))
+        p.drawEllipse(int(size * 0.02), int(size * 0.28), int(size * 0.16), int(size * 0.16))
+        p.drawEllipse(int(size * 0.82), int(size * 0.28), int(size * 0.16), int(size * 0.16))
+        # 天线
+        p.setPen(QColor("#9aa3b5"))
+        p.drawLine(size // 2, int(size * 0.10), size // 2, int(size * 0.02))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4d7cff"))
+        p.drawEllipse(int(size * 0.44), 0, int(size * 0.12), int(size * 0.12))
+        # 面罩
+        p.setBrush(QColor("#f2b33d"))
+        p.setPen(QColor("#b8822a"))
+        p.drawRoundedRect(int(size * 0.26), int(size * 0.24), int(size * 0.48), int(size * 0.38), int(size * 0.1), int(size * 0.1))
+        # 黑圆眼
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#1a1d24"))
+        p.drawEllipse(int(size * 0.33), int(size * 0.33), int(size * 0.12), int(size * 0.12))
+        p.drawEllipse(int(size * 0.55), int(size * 0.33), int(size * 0.12), int(size * 0.12))
+        p.setBrush(QColor(255, 255, 255, 210))
+        p.drawEllipse(int(size * 0.37), int(size * 0.36), int(size * 0.05), int(size * 0.05))
+        p.drawEllipse(int(size * 0.59), int(size * 0.36), int(size * 0.05), int(size * 0.05))
+        # 嘴
+        p.setPen(QColor("#8a5a14"))
+        p.drawLine(int(size * 0.43), int(size * 0.54), int(size * 0.57), int(size * 0.54))
+    else:
+        # 班德金属风：桶形头 + 视窗眼 + 格栅嘴
+        g.setColorAt(0.0, QColor("#a9b2c4"))
+        g.setColorAt(0.5, QColor("#6b7488"))
+        g.setColorAt(1.0, QColor("#3a414e"))
+        head = QPainterPath()
+        head.moveTo(size * 0.22, size * 0.40)
+        head.quadTo(size * 0.22, size * 0.14, size * 0.50, size * 0.14)
+        head.quadTo(size * 0.78, size * 0.14, size * 0.78, size * 0.40)
+        head.lineTo(size * 0.86, size * 0.72)
+        head.quadTo(size * 0.86, size * 0.78, size * 0.76, size * 0.78)
+        head.lineTo(size * 0.24, size * 0.78)
+        head.quadTo(size * 0.14, size * 0.78, size * 0.14, size * 0.72)
+        head.lineTo(size * 0.22, size * 0.40)
+        head.closeSubpath()
+        p.setBrush(g)
+        p.setPen(stroke)
+        p.drawPath(head)
+        p.setPen(stroke)
+        p.drawLine(size // 2, int(size * 0.14), size // 2, int(size * 0.04))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4d7cff"))
+        p.drawEllipse(int(size * 0.44), 0, int(size * 0.12), int(size * 0.12))
+        p.setBrush(QColor("#20242c"))
+        p.drawRoundedRect(int(size * 0.30), int(size * 0.40), int(size * 0.40), int(size * 0.18), 4, 4)
+        p.setBrush(QColor("#4d7cff"))
+        p.drawRoundedRect(int(size * 0.33), int(size * 0.43), int(size * 0.34), int(size * 0.12), 3, 3)
+        p.setPen(stroke)
+        p.drawLine(int(size * 0.32), int(size * 0.64), int(size * 0.68), int(size * 0.64))
+        p.drawLine(int(size * 0.32), int(size * 0.70), int(size * 0.68), int(size * 0.70))
     p.end()
     return QIcon(pm)
 
 
 class TrayIcon(QSystemTrayIcon):
     def __init__(self, ball, parent=None) -> None:
-        super().__init__(make_robot_icon(), parent)
+        super().__init__(make_robot_icon(skin="auto"), parent)
         self.ball = ball
         self.setToolTip("Personal AI Assistant")
         self._known_week = None
@@ -100,6 +137,10 @@ class TrayIcon(QSystemTrayIcon):
     def _show_ball(self) -> None:
         self.ball.show()
         self.ball.raise_()
+
+    def refresh_icon(self) -> None:
+        """换肤后刷新托盘图标。"""
+        self.setIcon(make_robot_icon(skin="auto"))
 
     def _open_stats(self) -> None:
         self.ball.open_panel()

@@ -1,13 +1,10 @@
 """悬浮机器人：无边框透明窗口，可拖拽，点击展开聊天面板。
 
-形象：QPainter 自绘机器人（天线 + 圆角头 + LED 眼睛 + 状态指示灯）。
-第 14 课新增：手脚 + 动作——
-- 手臂/腿随状态切换姿势：思考=右手托下巴、被拖拽=双臂上举+荡腿、
-  双击开面板=招手问好、平时随呼吸轻微摆动
-- 姿态计算在 robot_pose.py（纯数学，可单测），本文件只负责画
-视觉升级（8-27 用户反馈"太单调"）：渐变立体感 + 地面阴影 + 耳朵/腮红/
-胸口屏细节 + 状态色光晕/天线脉冲 + 思考环绕粒子 + 分状态表情。
-换肤：把 SVG 放到 desktop/assets/robot.svg 会自动替换为素材渲染（v2 扩展位）。
+形象：QPainter 自绘机器人，双皮肤（右键菜单切换，QSettings 持久化）——
+- bender：班德金属风（金属灰桶形头 + 视窗单眼 + 格栅嘴）
+- astro：白色宇航员风（原创致敬：白盔 + 琥珀面罩 + 黑圆眼 + 黄色点缀）
+动作：思考=右手托下巴、被拖拽=双臂上举+荡腿、双击=招手、呼吸摆动。
+姿态计算在 robot_pose.py（纯数学，可单测），本文件只负责画。
 """
 import math
 import random
@@ -19,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from chat_panel import ChatPanel
 from robot_pose import arm_angle, leg_angles
+from skins import SKIN_NAMES, current_skin, set_skin
 
 # 状态 → 主色（光晕/天线/眼睛/胸口屏联动）
 STATE_COLORS = {
@@ -55,6 +53,7 @@ class FloatingBall(QWidget):
         self._moved = False        # 本次按下是否发生了拖拽
         self.panel: ChatPanel | None = None
         self.state = "idle"
+        self.skin = current_skin()  # bender / astro（右键换肤，持久化）
 
         # 动画状态
         self._phase = 0.0            # 呼吸相位
@@ -207,7 +206,7 @@ class FloatingBall(QWidget):
 
         accent = self._state_color()
 
-        # ── 地面阴影（悬浮感）──
+        # ── 地面阴影（悬浮感，两套皮肤共享）──
         shadow = QColor(0, 0, 0, 42)
         painter.setBrush(shadow)
         painter.setPen(Qt.NoPen)
@@ -220,40 +219,46 @@ class FloatingBall(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(10, 12, self.W - 20, self.W - 20)
 
+        if self.skin == "astro":
+            self._paint_astro(painter, accent)
+        else:
+            self._paint_bender(painter, accent)
+
+    # ── 班德金属风（金属灰桶形头 + 视窗单眼 + 格栅嘴）──
+
+    def _paint_bender(self, painter: QPainter, accent: QColor) -> None:
         limb_color = QColor("#4a5160")
         stroke = QColor("#565e70")
 
-        # ── 腿（先画，被身体压住根部）──
+        # 腿（先画，被身体压住根部）
         l_leg, r_leg = leg_angles(self._phase, self._dragging)
         for hip_x, ang in ((34, l_leg), (46, r_leg)):
             fx, fy = self._draw_limb(painter, hip_x, 62, 13, ang, 3.5, limb_color)
-            # 小脚丫
             painter.setPen(Qt.NoPen)
             painter.setBrush(limb_color)
             painter.drawEllipse(int(fx - 2.5), int(fy - 1.5), 5, 4)
 
-        # ── 手臂（身体两侧，头会盖住肩部衔接）──
+        # 手臂
         waving = self._wave >= 0
         for side, sh_x in (("L", 28), ("R", 52)):
             ang = arm_angle(self.state, self._phase, self._dragging, waving, self._wave, side)
             hx, hy = self._draw_limb(painter, sh_x, 53, 16, ang, 3.5, limb_color)
-            # 小手
             painter.setPen(Qt.NoPen)
             painter.setBrush(limb_color)
             painter.drawEllipse(int(hx - 2.5), int(hy - 2.5), 5, 5)
 
-        # ── 耳朵（头部两侧的金属侧板）──
+        # 耳朵（金属侧板）
         painter.setBrush(self._shell_gradient(5, 28, 9, 14))
         painter.setPen(QPen(stroke, 1))
         painter.drawRoundedRect(6, 29, 8, 14, 4, 4)
         painter.drawRoundedRect(66, 29, 8, 14, 4, 4)
 
-        # ── 身体（金属渐变）──
+        # 身体（金属渐变）
         painter.setBrush(self._shell_gradient(26, 50, 28, 14))
         painter.setPen(QPen(stroke, 1))
         painter.drawRoundedRect(26, 50, 28, 14, 6, 6)
 
-        # 胸口小屏：深色底 + 状态色脉冲点
+        # 胸口小屏 + 状态色脉冲点
         painter.setBrush(QColor("#14161c"))
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(35, 55, 10, 5, 2, 2)
@@ -262,57 +267,162 @@ class FloatingBall(QWidget):
         painter.setBrush(pulse)
         painter.drawEllipse(39, 56, 3, 3)
 
-        # ── 天线（金属杆 + 脉冲光点）──
+        # 天线（脉冲光点）
         painter.setPen(QPen(QColor("#565e70"), 2))
         painter.drawLine(40, 14, 40, 7)
         glow = QColor(accent)
         glow.setAlpha(int(70 + 70 * math.sin(self._phase * 2)))
         painter.setBrush(glow)
         painter.setPen(Qt.NoPen)
-        painter.drawEllipse(35, 0, 10, 10)  # 外圈脉冲
+        painter.drawEllipse(35, 0, 10, 10)
         painter.setBrush(accent)
         painter.drawEllipse(37, 2, 6, 6)
 
-        # ── 头部：班德式桶形（圆顶窄顶 + 底部外扩）+ 金属渐变 ──
+        # 桶形头
         painter.setBrush(self._shell_gradient(14, 14, 52, 38))
         painter.setPen(QPen(stroke, 1.2))
         painter.drawPath(self._head_path())
 
-        # 顶部高光弧（金属受光）
+        # 顶部高光弧
         painter.setPen(QPen(QColor(255, 255, 255, 40), 3, Qt.SolidLine, Qt.RoundCap))
         painter.drawArc(26, 17, 28, 14, 180 * 16, 180 * 16)
 
-        # ── 视窗单眼（宽屏幕眼，状态色发光；眨眼 = 高度压扁）──
+        # 视窗单眼（眨眼 = 高度压扁）
         visor_h = 10.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
         outer = QColor(accent)
         outer.setAlpha(50)
         painter.setBrush(outer)
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(20, 28 - 3, 40, 16, 8, 8)
-        # 视窗框（深色金属框）
         painter.setBrush(QColor("#20242c"))
         painter.drawRoundedRect(24, int(32 - visor_h / 2) + 1, 32, int(visor_h) - 2, 5, 5)
-        # 发光屏
         painter.setBrush(QColor(accent))
         painter.drawRoundedRect(25, int(32 - visor_h / 2) + 2, 30, max(2, int(visor_h)) - 4, 4, 4)
 
-        # ── 格栅嘴（3 条横槽，机械感）──
+        # 格栅嘴（3 条横槽）
         painter.setPen(QPen(QColor("#565e70"), 1.6, Qt.SolidLine, Qt.RoundCap))
         for gy in (43.5, 46.0, 48.5):
             painter.drawLine(28, int(gy), 52, int(gy))
 
-        # ── 思考时环绕粒子（3 个小光点绕头转）──
-        if self.state == "thinking":
+        self._paint_particles(painter, accent)
+
+    # ── 白色宇航员风（原创致敬：白盔 + 琥珀面罩 + 黑圆眼 + 黄色点缀）──
+
+    def _paint_astro(self, painter: QPainter, accent: QColor) -> None:
+        white_g = QLinearGradient(20, 10, 60, 52)
+        white_g.setColorAt(0.0, QColor("#ffffff"))
+        white_g.setColorAt(0.55, QColor("#dfe4ec"))
+        white_g.setColorAt(1.0, QColor("#b9c1ce"))
+        stroke = QColor("#9aa3b5")
+        yellow = QColor("#f5c518")
+
+        # 腿：白色粗短腿 + 黄色脚块（荡腿 = 左右微摆）
+        l_leg, r_leg = leg_angles(self._phase, self._dragging)
+        for cx_leg, ang in ((32, l_leg), (48, r_leg)):
+            dx = int(ang * 0.25)
+            painter.setBrush(white_g)
+            painter.setPen(QPen(stroke, 1))
+            painter.drawRoundedRect(cx_leg - 4 + dx, 60, 8, 15, 4, 4)
+            painter.setBrush(yellow)
             painter.setPen(Qt.NoPen)
-            for i in range(3):
-                ang = self._phase * 1.8 + i * 2.094
-                px = 40 + 16 * math.cos(ang)
-                py = 33 + 16 * math.sin(ang)
-                a = int(110 + 90 * math.sin(self._phase * 3 + i))
-                dot = QColor(accent)
-                dot.setAlpha(max(0, a))
-                painter.setBrush(dot)
-                painter.drawEllipse(int(px), int(py), 3, 3)
+            painter.drawRoundedRect(cx_leg - 5 + dx, 73, 10, 4, 2, 2)
+
+        # 手臂：白色粗管臂 + 圆手（招手/托下巴/上举姿势复用）
+        waving = self._wave >= 0
+        for side, sh_x in (("L", 24), ("R", 56)):
+            ang = arm_angle(self.state, self._phase, self._dragging, waving, self._wave, side)
+            hx, hy = self._draw_limb(painter, sh_x, 55, 15, ang, 6, QColor("#dfe4ec"))
+            painter.setPen(QPen(stroke, 1))
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(int(hx - 5), int(hy - 5), 10, 10)
+
+        # 身体：白色小身板 + 黄色描边 + 状态色核心灯
+        painter.setBrush(white_g)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(30, 51, 20, 13, 6, 6)
+        painter.setPen(QPen(yellow, 1.4))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(33, 54, 14, 7, 3, 3)
+        pulse = QColor(accent)
+        pulse.setAlpha(int(150 + 90 * math.sin(self._phase * 2)))
+        painter.setBrush(pulse)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(38, 56, 4, 4)
+
+        # 天线（小月签名）
+        painter.setPen(QPen(QColor("#9aa3b5"), 2))
+        painter.drawLine(40, 10, 40, 5)
+        glow = QColor(accent)
+        glow.setAlpha(int(70 + 70 * math.sin(self._phase * 2)))
+        painter.setBrush(glow)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(36, 0, 8, 8)
+        painter.setBrush(accent)
+        painter.drawEllipse(37.5, 1.5, 5, 5)
+
+        # 头：白色大圆盔 + 两侧小圆耳 + 顶部高光
+        painter.setBrush(white_g)
+        painter.setPen(QPen(stroke, 1.2))
+        painter.drawRoundedRect(19, 9, 42, 42, 20, 20)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#dfe4ec"))
+        painter.drawEllipse(14, 27, 10, 10)
+        painter.drawEllipse(56, 27, 10, 10)
+        painter.setPen(QPen(QColor(255, 255, 255, 200), 4, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(27, 14, 26, 16, 200 * 16, 140 * 16)
+
+        # 面罩：琥珀圆角屏（error 变灰；thinking 发光）
+        face = QColor("#f2b33d") if self.state != "error" else QColor("#8b93a3")
+        if self.state == "thinking":
+            fg = QColor(accent)
+            fg.setAlpha(70)
+            painter.setBrush(fg)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(24, 17, 32, 28, 8, 8)
+        painter.setBrush(face)
+        painter.setPen(QPen(QColor("#b8822a") if self.state != "error" else QColor("#6b7280"), 1))
+        painter.drawRoundedRect(27, 20, 26, 23, 7, 7)
+
+        # 眼睛：黑圆眼 + 高光（眨眼 = 闭眼横线；思考 = 上翻；断线 = 横线）
+        eye_y = 28 if self.state != "thinking" else 25
+        painter.setBrush(QColor("#1a1d24"))
+        painter.setPen(Qt.NoPen)
+        if self._blink > 0 or self.state == "error":
+            painter.setPen(QPen(QColor("#1a1d24"), 2, Qt.SolidLine, Qt.RoundCap))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLine(32, eye_y, 38, eye_y)
+            painter.drawLine(42, eye_y, 48, eye_y)
+        else:
+            painter.drawEllipse(32, eye_y, 6, 6)
+            painter.drawEllipse(42, eye_y, 6, 6)
+            painter.setBrush(QColor(255, 255, 255, 210))
+            painter.drawEllipse(34, eye_y + 1, 2, 2)
+            painter.drawEllipse(44, eye_y + 1, 2, 2)
+
+        # 嘴巴：短横线（thinking 时 O 型）
+        painter.setPen(QPen(QColor("#8a5a14"), 1.6, Qt.SolidLine, Qt.RoundCap))
+        if self.state == "thinking":
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(38, 37, 4, 4)
+        else:
+            painter.drawLine(37, 39, 43, 39)
+
+        self._paint_particles(painter, accent)
+
+    def _paint_particles(self, painter: QPainter, accent: QColor) -> None:
+        """思考时环绕粒子（3 个小光点绕头转，两套皮肤共享）。"""
+        if self.state != "thinking":
+            return
+        painter.setPen(Qt.NoPen)
+        for i in range(3):
+            ang = self._phase * 1.8 + i * 2.094
+            px = 40 + 16 * math.cos(ang)
+            py = 33 + 16 * math.sin(ang)
+            a = int(110 + 90 * math.sin(self._phase * 3 + i))
+            dot = QColor(accent)
+            dot.setAlpha(max(0, a))
+            painter.setBrush(dot)
+            painter.drawEllipse(int(px), int(py), 3, 3)
 
     # ── 交互 ───────────────────────────────────────────────
 
@@ -350,12 +460,29 @@ class FloatingBall(QWidget):
             event.accept()
 
     def contextMenuEvent(self, event) -> None:
-        """右键菜单：打开面板 / 退出。"""
+        """右键菜单：打开面板 / 换肤 / 退出。"""
         menu = QMenu(self)
         menu.addAction("打开/收起面板", self.toggle_panel)
+        skin_menu = menu.addMenu("换肤")
+        for name, label in SKIN_NAMES.items():
+            act = skin_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self.skin == name)
+            act.triggered.connect(lambda checked=False, n=name: self._switch_skin(n))
         menu.addSeparator()
         menu.addAction("退出", QApplication.quit)
         menu.exec(event.globalPos())
+
+    def _switch_skin(self, name: str) -> None:
+        """切换皮肤：更新绘制 + 持久化 + 同步刷新托盘图标。"""
+        if name not in SKIN_NAMES or name == self.skin:
+            return
+        self.skin = name
+        set_skin(name)
+        self.update()
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.refresh_icon()
 
     def toggle_panel(self) -> None:
         if self.panel is None or not self.panel.isVisible():

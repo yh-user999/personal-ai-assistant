@@ -4,6 +4,7 @@ RAG 流水线：load → chunk → embed → store → search → generate。
 本模块负责 chunk/embed/store/search 四步；generate 在 chat.py。
 """
 import json
+import math
 from datetime import datetime, timezone
 
 from app.core import embedding
@@ -107,7 +108,11 @@ async def _vector_search(query: str, top_k: int = 3) -> list[dict]:
 
 
 def _bm25_rank(query: str, top_k: int = 10) -> list[dict]:
-    """BM25 简化版：query 的字符 2-gram 在块中的出现次数加权（精确词敏感）。"""
+    """BM25（字符 2-gram + IDF 权重）：稀有词（如"挖走"）高权重，
+    高频词（如"左志诚"）自动降权——修正"高频人物名霸榜、关键证据沉底"问题。
+
+    实现：score(d) = Σ tf(g,d) × idf(g)，idf = ln(1 + (N - df + 0.5)/(df + 0.5))。
+    """
     grams = [query[i:i + 2] for i in range(max(1, len(query) - 1))]
     conn = connect()
     try:
@@ -116,9 +121,20 @@ def _bm25_rank(query: str, top_k: int = 10) -> list[dict]:
         ).fetchall()
     finally:
         conn.close()
+    n = max(1, len(rows))
+    # 文档频率：每个 2-gram 出现在多少块里
+    df = {g: 0 for g in grams}
+    for r in rows:
+        for g in grams:
+            if g in r["content"]:
+                df[g] += 1
+    idf = {
+        g: math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
+        for g, c in df.items()
+    }
     scored = []
     for r in rows:
-        score = sum(r["content"].count(g) for g in grams)
+        score = sum(r["content"].count(g) * idf[g] for g in grams)
         if score > 0:
             scored.append((score, dict(r)))
     scored.sort(key=lambda x: -x[0])

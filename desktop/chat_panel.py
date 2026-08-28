@@ -1,8 +1,9 @@
 """聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
 
 v0.7 面板重制：
-- 窗口可自由缩放：八方向边缘拖拽（系统级 startSystemResize，平滑不抖），
+- 窗口可自由缩放：八方向边缘拖拽（系统级 startSystemResize + 手动几何兜底），
   双击标题栏最大化/还原；尺寸记忆（QSettings，下次打开恢复）
+- Windows 分层窗口点击穿透修复：1/255 透明底漆，否则透明区域收不到鼠标事件
 - 标题栏按住可拖动移动窗口
 - 气泡宽度随窗口自适应（72% 视口宽），放大面板不再大片留白
 - 深色细滚动条 / 输入框聚焦高亮 / 发送按钮 hover 态 / 按钮手型光标
@@ -28,6 +29,7 @@ from chat_workers import (
     _HistoryWorker,
 )
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -98,9 +100,11 @@ class ChatPanel(QWidget):
 
     def __init__(self, ball=None) -> None:
         super().__init__()
-        # Dialog 而非 Tool：面板出现在任务栏（被覆盖时可一键找回）；
-        # 去掉 WindowStaysOnTopHint：默认不置顶不挡路，📌 按钮可手动钉住
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        # Window + MinMaxButtonsHint：给原生窗口 WS_THICKFRAME 样式——
+        # 没有它 startSystemResize/Move 在 Windows 上会静默无效
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinMaxButtonsHint
+        )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMinimumSize(self.MIN_W, self.MIN_H)
         self._settings = QSettings("PersonalAI", "Assistant")
@@ -117,11 +121,27 @@ class ChatPanel(QWidget):
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
         self._title: QLabel | None = None
+        # 手动缩放/移动兜底（startSystem* 返回 False 时用）
+        self._manual_edges = 0
+        self._manual_geo = None
+        self._manual_pos = None
+        self._moving = False
+        self._move_offset = None
         self._size_save_timer = QTimer(self)
         self._size_save_timer.setSingleShot(True)
         self._size_save_timer.setInterval(400)  # 防抖：拖拽结束才写 QSettings
         self._size_save_timer.timeout.connect(self._save_size)
         self._init_ui()
+
+    def paintEvent(self, event) -> None:
+        """1/255 透明底漆。
+
+        Windows 分层窗口对全透明（alpha=0）像素点击穿透——没有这层，
+        6px 缩放热区和标题栏字隙的鼠标事件会全部穿到下层窗口去。
+        alpha=1 肉眼不可见，但足以让整窗可命中。
+        """
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 1))
 
     # ── UI 构建 ────────────────────────────────────────────
 
@@ -298,25 +318,70 @@ class ChatPanel(QWidget):
         if event.button() == Qt.LeftButton:
             edges = self._edge_at(event.position().toPoint())
             if edges:
-                # 系统级缩放循环：交给 OS 处理，拖拽平滑不抖
-                self.startSystemResize(Qt.Edges(edges))
+                # 先试系统级缩放（平滑）；不支持再走手动几何计算兜底
+                if not self.startSystemResize(Qt.Edges(edges)):
+                    self._manual_edges = edges
+                    self._manual_geo = self.geometry()
+                    self._manual_pos = event.globalPosition().toPoint()
                 event.accept()
                 return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        cursor = self._CURSORS.get(int(self._edge_at(event.position().toPoint())))
+        if self._manual_edges:
+            if event.buttons() & Qt.LeftButton:
+                self._apply_manual_resize(event.globalPosition().toPoint())
+            event.accept()
+            return
+        cursor = self._CURSORS.get(self._edge_at(event.position().toPoint()))
         if cursor:
             self.setCursor(cursor)
         else:
             self.unsetCursor()
         super().mouseMoveEvent(event)
 
+    def mouseReleaseEvent(self, event) -> None:
+        if self._manual_edges:
+            self._manual_edges = 0
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _apply_manual_resize(self, global_pos) -> None:
+        """手动缩放兜底：按按下时的几何 + 位移计算新窗口矩形。"""
+        edges = self._manual_edges
+        geo = self._manual_geo
+        d = global_pos - self._manual_pos
+        x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
+        L, R = Qt.Edge.LeftEdge.value, Qt.Edge.RightEdge.value
+        T, B = Qt.Edge.TopEdge.value, Qt.Edge.BottomEdge.value
+        if edges & R:
+            w = max(self.MIN_W, geo.width() + d.x())
+        if edges & B:
+            h = max(self.MIN_H, geo.height() + d.y())
+        if edges & L:
+            w = max(self.MIN_W, geo.width() - d.x())
+            x = geo.x() + geo.width() - w
+        if edges & T:
+            h = max(self.MIN_H, geo.height() - d.y())
+            y = geo.y() + geo.height() - h
+        self.setGeometry(x, y, w, h)
+
     def eventFilter(self, obj, event) -> bool:
         """标题栏：按住拖动移动窗口，双击最大化/还原。"""
         if obj is self._title:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                self.startSystemMove()
+                if not self.startSystemMove():
+                    self._moving = True
+                    self._move_offset = (
+                        event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                    )
+                return True
+            if event.type() == QEvent.MouseMove and self._moving:
+                self.move(event.globalPosition().toPoint() - self._move_offset)
+                return True
+            if event.type() == QEvent.MouseButtonRelease and self._moving:
+                self._moving = False
                 return True
             if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
                 self._toggle_maximize()

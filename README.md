@@ -14,7 +14,8 @@
 | **学习** | 关切追踪（在意什么）、风格学习（认可的回复形式）、多轮上下文（8 轮原文 + 摘要续接） |
 | **RAG** | 文档知识库：切块 → 向量化 → 混合检索（RRF）→ 带引用回答；Hit@k/MRR 评测体系 |
 | **产出** | 对话式文档生成（"写文档"命令）、简历优化（专家 prompt + .docx 导出）、个性化问候 |
-| **交互** | 桌面悬浮机器人（自绘形象/呼吸眨眼/状态灯）、气泡聊天（Markdown 渲染）、托盘通知、双击开面板、📌 图钉 |
+| **交互** | 桌面悬浮机器人（三套自绘皮肤：班德机械版/宇航员重制版/萌系风，呼吸眨眼+状态灯）、气泡聊天（Markdown 渲染 + 面板可缩放/最大化/移动/尺寸记忆）、托盘通知、📌 图钉 |
+| **执行** | 快捷启动器（"记住 打开B站=网址"注册常用软件/网页/搜索模板，打开X / 在X搜索 / 指定浏览器）、文件手（复制/备份/移动/重命名，白名单内）、远程指令队列（原子认领+超时释放） |
 | **运维** | 5 个定时任务、每日 03:00 热备份（滚动 7 份）、开机自启 + 崩溃自愈、黑匣子日志 |
 
 ## 架构
@@ -67,7 +68,7 @@
 | `server/benchmarks/` | 检索评测（Hit@k/MRR，8 题测试集） | — |
 | `server/scripts/` | 文档同步进知识库（docs/*.md → 可检索） | — |
 | `collector/` | 三通道采集、隐私脱敏、断网落盘、心跳上报、Win32 API 封装 | Python · ctypes |
-| `desktop/` | 自绘机器人（呼吸/眨眼/状态灯）、气泡面板（Markdown）、托盘、健康检查、开机自启 | PySide6 · Qt6 |
+| `desktop/` | 自绘机器人（三套皮肤/呼吸/眨眼/状态灯）、气泡面板（Markdown/可缩放/最大化/尺寸记忆）、快捷启动器、本地执行器、托盘、健康检查、开机自启 | PySide6 · Qt6 |
 | `docs/` | 11 份文档（方案/参考/评审/提问/部署/踩坑/进度/运维/研究/测试 + 本文） | Markdown |
 | `scripts/` | 服务器部署、开机自启、桌面打包 | bash · PowerShell |
 
@@ -107,7 +108,20 @@ python main.py
 ```powershell
 cd ..\desktop
 python -m pip install -r requirements.txt
-python main.py   # 双击机器人开面板；📌 置顶；Esc/✕ 关闭
+python main.py
+```
+
+聊天面板操作：拖八方向边缘/角落缩放、按住标题栏移动、点 □ 或双击标题最大化（尺寸自动记忆）、📌 置顶、Esc/✕ 关闭。
+
+快捷启动器（对话即管理）：
+
+```
+记住 打开B站 = https://www.bilibili.com     # 注册网页（裸域名自动补 https）
+记住 打开微信 = D:/Program/WeChat/WeChat.exe # 注册应用（显式注册=用户授权，可出白名单）
+记住 在B站搜索 = https://search.bilibili.com/all?keyword={q}  # 搜索模板
+记住 用chrome打开GitHub = github.com        # 指定浏览器
+打开B站 / 在b站搜索 关键词 / 用chrome打开GitHub  # 使用（本地直行，零延迟）
+我的常用 / 忘掉B站                           # 列表（按使用排序）/ 删除
 ```
 
 ### 4. 同步项目文档进知识库（让机器人知道项目进展）
@@ -121,7 +135,7 @@ cd server && git pull
 
 | 项 | 状态 |
 |----|------|
-| 单元/集成测试 | **59 个**（`cd server && pytest tests/ -q`） |
+| 单元/集成测试 | **153 个**（`cd server && .venv\Scripts\python -m pytest tests/ -q`，覆盖鉴权/执行器安全/启动器/记忆/隐私等） |
 | 检索评测 | `benchmarks/eval_retrieval.py`：基线 MRR 0.906 → 混合 0.938 |
 | 踩坑沉淀 | 20+ 个真实问题，每个配"根因+修复+教训"（LESSONS.md） |
 | 依赖 | requirements 全精确锁版 |

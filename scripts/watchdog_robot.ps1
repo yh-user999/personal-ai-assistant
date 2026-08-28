@@ -19,5 +19,7 @@ $alive = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
     Where-Object { $_.CommandLine -like "*--robot*" }
 
 if (-not $alive) {
-    Start-Process -FilePath $PythonW -ArgumentList "main.py" -WorkingDirectory $DesktopDir
+    # 必须带 --robot 拉起：否则拉起的实例命令行里没有判活标记，
+    # 下个周期看门狗看不到它 → 每分钟多拉一个机器人（多实例堆积 bug）
+    Start-Process -FilePath $PythonW -ArgumentList "main.py --robot" -WorkingDirectory $DesktopDir
 }

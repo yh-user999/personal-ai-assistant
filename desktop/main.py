@@ -6,6 +6,7 @@
 import logging
 import signal
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -50,12 +51,33 @@ def _excepthook(exc_type, exc_value, exc_tb):
 
 sys.excepthook = _excepthook
 
-from floating_ball import FloatingBall
-from PySide6.QtWidgets import QApplication
-from tray import TrayIcon
+from PySide6.QtCore import QLockFile  # noqa: E402
+from floating_ball import FloatingBall  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from tray import TrayIcon  # noqa: E402
+
+
+def _acquire_single_instance_lock() -> QLockFile | None:
+    """单实例锁：重复启动的实例在创建任何窗口前静默退出。
+
+    治两类问题：① 看门狗/任务计划/手动启动叠加 → 多个机器人同时挂桌面
+    ② 重复实例启动-退出时窗口一闪而过（先锁后开窗，闪窗消失）。
+    进程异常死亡时锁文件由 QLockFile 的 PID 判活自动视为陈旧，不阻塞重启。
+    """
+    lock = QLockFile(str(Path(tempfile.gettempdir()) / "paa-robot.lock"))
+    lock.setStaleLockTime(60_000)  # 60 秒无心跳视为陈旧（进程崩溃后锁自动失效）
+    if not lock.tryLock(100):
+        logger.info("已有机器人实例在运行（单实例锁被持有），本实例静默退出")
+        return None
+    logger.info("单实例锁已获取")
+    return lock
 
 
 def main() -> None:
+    # 单实例锁必须先于 QApplication/任何窗口：重复实例零闪烁退出
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        return
     logger.info("机器人启动中…")
     app = QApplication(sys.argv)
     app.setApplicationName("Personal AI Assistant")

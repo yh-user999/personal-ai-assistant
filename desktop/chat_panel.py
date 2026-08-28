@@ -1,5 +1,13 @@
 """聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
 
+v0.7 面板重制：
+- 窗口可自由缩放：八方向边缘拖拽（系统级 startSystemResize，平滑不抖），
+  双击标题栏最大化/还原；尺寸记忆（QSettings，下次打开恢复）
+- 标题栏按住可拖动移动窗口
+- 气泡宽度随窗口自适应（72% 视口宽），放大面板不再大片留白
+- 深色细滚动条 / 输入框聚焦高亮 / 发送按钮 hover 态 / 按钮手型光标
+- 问候语移到消息流上方（原先排在输入框下面，顺序错乱）
+
 v0.6 体验修正：
 - 气泡式消息（用户右/助手左，圆角气泡）+ 时间戳
 - 打开时只加载最近 10 条历史，自动定位到最新消息
@@ -8,6 +16,7 @@ v0.6 体验修正：
 """
 import html as html_lib
 import re
+from typing import ClassVar
 
 import markdown as md_lib
 from api_client import ApiClient
@@ -18,7 +27,7 @@ from chat_workers import (
     _GreetingWorker,
     _HistoryWorker,
 )
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -71,7 +80,21 @@ def _fmt_ts(ts: str) -> str:
 
 
 class ChatPanel(QWidget):
-    W, H = 460, 600
+    W, H = 460, 600          # 默认尺寸（可缩放，记忆在 QSettings）
+    MIN_W, MIN_H = 360, 460  # 缩放下限
+    _EDGE = 6                # 边缘缩放热区宽度（px）
+
+    # 边缘组合 → 光标形状（键用 Edge 枚举值的整数位组合）
+    _CURSORS: ClassVar[dict[int, Qt.CursorShape]] = {
+        Qt.Edge.LeftEdge.value: Qt.CursorShape.SizeHorCursor,
+        Qt.Edge.RightEdge.value: Qt.CursorShape.SizeHorCursor,
+        Qt.Edge.TopEdge.value: Qt.CursorShape.SizeVerCursor,
+        Qt.Edge.BottomEdge.value: Qt.CursorShape.SizeVerCursor,
+        Qt.Edge.LeftEdge.value | Qt.Edge.TopEdge.value: Qt.CursorShape.SizeFDiagCursor,
+        Qt.Edge.RightEdge.value | Qt.Edge.BottomEdge.value: Qt.CursorShape.SizeFDiagCursor,
+        Qt.Edge.RightEdge.value | Qt.Edge.TopEdge.value: Qt.CursorShape.SizeBDiagCursor,
+        Qt.Edge.LeftEdge.value | Qt.Edge.BottomEdge.value: Qt.CursorShape.SizeBDiagCursor,
+    }
 
     def __init__(self, ball=None) -> None:
         super().__init__()
@@ -79,7 +102,12 @@ class ChatPanel(QWidget):
         # 去掉 WindowStaysOnTopHint：默认不置顶不挡路，📌 按钮可手动钉住
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(self.W, self.H)
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
+        self._settings = QSettings("PersonalAI", "Assistant")
+        w = max(self.MIN_W, int(self._settings.value("panel_w", self.W) or self.W))
+        h = max(self.MIN_H, int(self._settings.value("panel_h", self.H) or self.H))
+        self.resize(w, h)
+        self.setMouseTracking(True)  # 悬停边缘时给缩放光标反馈
         self.setFocusPolicy(Qt.StrongFocus)  # 无边框窗口需要显式焦点策略才能收 Esc
         self.client = ApiClient()
         self._worker = None
@@ -88,13 +116,19 @@ class ChatPanel(QWidget):
         self._pinned = False
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
+        self._title: QLabel | None = None
+        self._size_save_timer = QTimer(self)
+        self._size_save_timer.setSingleShot(True)
+        self._size_save_timer.setInterval(400)  # 防抖：拖拽结束才写 QSettings
+        self._size_save_timer.timeout.connect(self._save_size)
         self._init_ui()
 
     # ── UI 构建 ────────────────────────────────────────────
 
     def _init_ui(self) -> None:
+        # 外圈留 6px 透明热区：既是边缘缩放的拖拽带，也让事件能到达顶层窗口
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(self._EDGE, self._EDGE, self._EDGE, self._EDGE)
 
         card = QWidget()
         card.setObjectName("card")
@@ -109,10 +143,14 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
 
-        # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v4.5")
+        # 标题行 + 图钉 + 关闭按钮（按住标题可拖动窗口，双击最大化）
+        title = QLabel("🤖 Personal AI Assistant v4.6")
+        title.setToolTip("按住拖动窗口 · 双击最大化/还原")
+        title.installEventFilter(self)
+        self._title = title
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
+        pin_btn.setCursor(Qt.PointingHandCursor)
         pin_btn.setToolTip("钉住窗口（始终置顶）")
         pin_btn.setCheckable(True)
         pin_btn.setStyleSheet(
@@ -124,6 +162,7 @@ class ChatPanel(QWidget):
         self._pin_btn = pin_btn
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(26, 26)
+        close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setToolTip("关闭（Esc）")
         close_btn.setStyleSheet(
             "QPushButton { background: transparent; color: #888; border: none; font-size: 15px; }"
@@ -136,10 +175,20 @@ class ChatPanel(QWidget):
         title_row.addWidget(close_btn)
         layout.addLayout(title_row)
 
+        # 问候标签（个性化+时效，每次打开面板刷新；放在消息流上方）
+        self._greeting_label = QLabel("你好，我是你的个人助手")
+        self._greeting_label.setWordWrap(True)
+        self._greeting_label.setStyleSheet(
+            "QLabel { color: #9aa3b2; font-size: 12px; padding: 6px 2px;"
+            "border-bottom: 1px solid #23262f; }"
+        )
+        layout.addWidget(self._greeting_label)
+
         # 消息区：滚动容器 + 垂直布局（每条消息 = 一行部件，左右由布局保证）
         self._avatars: list[RobotAvatar] = []   # 所有小月头像（统一动画，防内存泄漏引用）
         self._typing_row: QWidget | None = None  # "正在想"临时行（带思考动画头像）
         self._msg_container = QWidget()
+        self._msg_container.setStyleSheet("background: transparent;")  # viewport 不透明会盖住深色卡片
         self._msg_layout = QVBoxLayout(self._msg_container)
         self._msg_layout.setContentsMargins(0, 0, 0, 0)
         self._msg_layout.setSpacing(0)
@@ -147,7 +196,14 @@ class ChatPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._msg_container)
-        scroll.setStyleSheet("background: transparent; border: none;")
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 2px 2px 0; }"
+            "QScrollBar::handle:vertical { background: #333a48; border-radius: 4px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: #4a5468; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        )
         layout.addWidget(scroll, 1)
         self._msg_scroll = scroll
 
@@ -166,10 +222,12 @@ class ChatPanel(QWidget):
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
         for b in (stats_btn, report_btn, daily_btn, history_btn):
+            b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
                 "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
                 "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
-                "QPushButton:hover { color: #eee; border-color: #555; }"
+                "QPushButton:hover { color: #eee; border-color: #555; background: #2a2d38; }"
+                "QPushButton:pressed { background: #20242c; }"
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
@@ -183,27 +241,24 @@ class ChatPanel(QWidget):
         self.input = QLineEdit()
         self.input.setPlaceholderText("说点什么…（记录：xxx 可记工作日志）")
         self.input.setStyleSheet(
-            "background: #14161b; color: #eee; border: 1px solid #333;"
-            "border-radius: 8px; padding: 8px;"
+            "QLineEdit { background: #14161b; color: #eee; border: 1px solid #333;"
+            "border-radius: 8px; padding: 8px; }"
+            "QLineEdit:focus { border: 1px solid #2b5cff; }"
         )
         self.input.returnPressed.connect(self._send)
         send_btn = QPushButton("发送")
+        send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.setStyleSheet(
-            "background: #2b5cff; color: white; border: none; border-radius: 8px; padding: 0 16px;"
+            "QPushButton { background: #2b5cff; color: white; border: none;"
+            "border-radius: 8px; padding: 0 18px; min-height: 30px; font-size: 13px; }"
+            "QPushButton:hover { background: #3d6bff; }"
+            "QPushButton:pressed { background: #2452d8; }"
         )
         send_btn.clicked.connect(self._send)
         row.addWidget(self.input, 1)
         row.addWidget(send_btn)
         layout.addLayout(row)
 
-        # 问候标签（个性化+时效，每次打开面板刷新；独立于消息流）
-        self._greeting_label = QLabel("你好，我是你的个人助手")
-        self._greeting_label.setWordWrap(True)
-        self._greeting_label.setStyleSheet(
-            "QLabel { color: #9aa3b2; font-size: 12px; padding: 6px 2px;"
-            "border-bottom: 1px solid #23262f; }"
-        )
-        layout.addWidget(self._greeting_label)
         self._greeting_worker = None
         # 执行器结果轮询：每 10s 检查新结果，主动显示到聊天流。
         # last_executor_id 持久化（QSettings）：面板重启后不重复播报历史执行结果
@@ -221,6 +276,87 @@ class ChatPanel(QWidget):
         super().showEvent(event)
         self.input.setFocus()
         self._refresh_greeting()
+
+    # ── 窗口缩放 / 移动 / 最大化（无边框窗口手动实现）──────
+
+    def _edge_at(self, pos) -> int:
+        """光标位于哪几条边缘热区（外圈 6px 透明带上），返回 Edge 位组合。"""
+        m = self._EDGE
+        r = self.rect()
+        e = 0
+        if pos.x() <= m:
+            e |= Qt.Edge.LeftEdge.value
+        if pos.x() >= r.right() - m:
+            e |= Qt.Edge.RightEdge.value
+        if pos.y() <= m:
+            e |= Qt.Edge.TopEdge.value
+        if pos.y() >= r.bottom() - m:
+            e |= Qt.Edge.BottomEdge.value
+        return e
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            edges = self._edge_at(event.position().toPoint())
+            if edges:
+                # 系统级缩放循环：交给 OS 处理，拖拽平滑不抖
+                self.startSystemResize(Qt.Edges(edges))
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        cursor = self._CURSORS.get(int(self._edge_at(event.position().toPoint())))
+        if cursor:
+            self.setCursor(cursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:
+        """标题栏：按住拖动移动窗口，双击最大化/还原。"""
+        if obj is self._title:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self.startSystemMove()
+                return True
+            if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                self._toggle_maximize()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_bubble_widths()
+        self._size_save_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._save_size()
+        super().hideEvent(event)
+
+    def _save_size(self) -> None:
+        self._settings.setValue("panel_w", self.width())
+        self._settings.setValue("panel_h", self.height())
+
+    # ── 气泡宽度自适应 ─────────────────────────────────────
+
+    def _bubble_max_width(self) -> int:
+        return max(280, int(self._msg_scroll.viewport().width() * 0.72))
+
+    def _apply_bubble_widths(self) -> None:
+        """窗口变宽/变窄时同步所有气泡的宽度上限（按 property 找，免记引用）。"""
+        max_w = self._bubble_max_width()
+        for i in range(self._msg_layout.count()):
+            row = self._msg_layout.itemAt(i).widget()
+            if row is None:
+                continue
+            for lab in row.findChildren(QLabel):
+                if lab.property("bubble"):
+                    lab.setMaximumWidth(max_w)
 
     def _poll_executor_results(self) -> None:
         """轮询执行器新结果（有 worker 防重入）。"""
@@ -332,7 +468,8 @@ class ChatPanel(QWidget):
         bubble = QLabel(rendered)
         bubble.setWordWrap(True)
         bubble.setTextFormat(Qt.RichText)
-        bubble.setMaximumWidth(320)
+        bubble.setProperty("bubble", True)  # 缩放窗口时按此标记统一改宽
+        bubble.setMaximumWidth(self._bubble_max_width())
         bubble.setContentsMargins(10, 7, 10, 7)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 支持选中复制
         bubble.setStyleSheet(
@@ -371,6 +508,8 @@ class ChatPanel(QWidget):
         avatar.set_thinking(True)
         lay.addWidget(avatar, 0, Qt.AlignTop)
         bubble = QLabel("…")
+        bubble.setProperty("bubble", True)
+        bubble.setMaximumWidth(self._bubble_max_width())
         bubble.setContentsMargins(14, 7, 14, 7)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
         bubble.setStyleSheet(

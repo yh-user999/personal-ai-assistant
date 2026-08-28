@@ -683,4 +683,10 @@ class FloatingBall(QWidget):
         self.panel.show()
         self.panel.raise_()
         pos = self.frameGeometry().topLeft()
-        self.panel.move(pos.x() - self.panel.width() + self.W, pos.y() - self.panel.height() + self.H)
+        x = pos.x() - self.panel.width() + self.W
+        y = pos.y() - self.panel.height() + self.H
+        # 面板可被拉大：锚定后夹回屏幕可视区，避免跑出屏幕外找不回
+        geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        x = max(geo.left() + 8, min(x, geo.right() - self.panel.width() - 8))
+        y = max(geo.top() + 8, min(y, geo.bottom() - self.panel.height() - 8))
+        self.panel.move(x, y)

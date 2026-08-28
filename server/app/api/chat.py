@@ -216,6 +216,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # 1500字/块配 ±1 邻域 ≈ 一整场戏）
     knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=4000)
     knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
+    # 人物别名背景注入：跨名字指代的剧情问题需要这个前提（左志诚=左擎苍）
+    alias_note = knowledge.get_alias_note(msg)
+    if alias_note:
+        knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
     profile = get_profile_injection()
     lessons = get_lessons_injection()
     concerns = get_concerns_injection()

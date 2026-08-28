@@ -11,7 +11,7 @@ import random
 from pathlib import Path
 
 from chat_panel import ChatPanel
-from chat_workers import _HealthWorker
+from chat_workers import _HealthWorker, retire
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
@@ -107,7 +107,7 @@ class FloatingBall(QWidget):
         worker = self._health_worker
         self._health_worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         if self.state == "thinking":
             return  # 聊天中不打断状态
         self.set_state("online" if ok else "error")

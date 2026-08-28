@@ -1,9 +1,25 @@
 """聊天面板 / 悬浮球的后台 QThread 工作线程（从 chat_panel.py、floating_ball.py 拆出）。
 
 职责统一：所有网络调用都在后台线程跑，完成后 Signal 回 UI 线程，避免阻塞。
+
+生命周期规范（Qt6Core!sizedFree 堆损坏崩溃的防御）：
+worker 用完必须走 retire()——wait() 收尸后再 deleteLater()。
+原因：QThread 的 C++ 对象在线程真正退出前就被 deleteLater 销毁时，
+Qt 内部分配的线程栈/事件结构会被二次释放，崩溃点固定在
+QtPrivate::sizedFree（生产 minidump 五份同址实锤）。
 """
 from api_client import ApiClient
 from PySide6.QtCore import QThread, Signal
+
+
+def retire(worker: QThread) -> None:
+    """规范回收一个 QThread：等线程真正结束，再安全销毁。
+
+    信号槽已断开（调用方在槽内调用时 Qt 自动断开），wait 保证 run()
+    完全退出，deleteLater 此时只会释放已静止的对象——堆不再损坏。
+    """
+    worker.wait(3000)  # 网络调用已在 done.emit 前结束，wait 通常立即返回
+    worker.deleteLater()
 
 
 class _ChatWorker(QThread):

@@ -10,6 +10,8 @@ from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from chat_workers import retire
+
 
 class _ReportWorker(QThread):
     """后台检查最新周报 + 每日小结。"""
@@ -226,7 +228,7 @@ class TrayIcon(QSystemTrayIcon):
         worker = self._report_worker
         self._report_worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         # 新周报
         if report and report.get("week") != self._known_week:
             self._known_week = report.get("week")

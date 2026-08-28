@@ -23,6 +23,7 @@ import markdown as md_lib
 from api_client import ApiClient
 from chat_workers import (
     _ApiWorker,
+    retire,
     _ChatWorker,
     _ExecResultWorker,
     _GreetingWorker,
@@ -537,7 +538,7 @@ class ChatPanel(QWidget):
         worker = self._exec_worker
         self._exec_worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         for r in results:
             self._last_executor_id = max(self._last_executor_id, r["id"])
             mark = "✅" if r["status"] == "done" else "❌"
@@ -562,7 +563,7 @@ class ChatPanel(QWidget):
         worker = self._greeting_worker
         self._greeting_worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         if text:
             self._greeting_label.setText(f"👋 {text}")
             self._greeting_label.setToolTip("双击机器人随时重新打招呼（每次打开自动刷新）")
@@ -581,7 +582,7 @@ class ChatPanel(QWidget):
         worker = self._history_worker
         self._history_worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         self._clear_messages()
         if not messages:
             self._append(
@@ -741,7 +742,7 @@ class ChatPanel(QWidget):
         worker = self._api_worker
         self._api_worker = None
         if worker:
-            worker.deleteLater()
+            retire(worker)  # wait 收尸后销毁
         title = {"stats": "📊 今日概览", "report": "📋 周报", "daily": "🌙 今日小结"}.get(mode, "信息")
         dlg = _InfoDialog(title, text, parent=self)
         dlg.show()
@@ -777,7 +778,7 @@ class ChatPanel(QWidget):
         worker = self._worker
         self._worker = None
         if worker:
-            worker.deleteLater()  # 防 QThread 慢性泄漏
+            retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
         self._remove_typing()  # 撤下"正在想"行，换上真实回复
         self._append(role, text, "")
         if self.ball:

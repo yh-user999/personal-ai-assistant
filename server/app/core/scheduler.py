@@ -27,6 +27,7 @@ class SchedulerManager:
         from app.services.profile import refresh_profile
         from app.services.analyzer import evict_stale
         from app.services.backup import run_daily_backup
+        from app.services.progress_sync import sync_progress_to_bot
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self.scheduler.add_job(
@@ -72,6 +73,15 @@ class SchedulerManager:
             "cron",
             hour=3,
             id="daily_backup",
+        )
+        # 每日进度同步：4:10 把仓库 docs/*.md 重灌知识库 + 刷新课程进度事实
+        # （修复"文档更新了 机器人不知道"的流程缺环）
+        self.scheduler.add_job(
+            sync_progress_to_bot,
+            "cron",
+            hour=4,
+            minute=10,
+            id="progress_sync",
         )
 
         self.scheduler.start()

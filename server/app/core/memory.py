@@ -235,12 +235,17 @@ def bump_importance(memory_ids: list[int]) -> None:
 
 # ── 事实注入（v0.9：facts 三元组纳入每次聊天——"小月"失忆 bug 的系统性修复）──
 
-def get_facts_injection(limit: int = 10) -> str:
-    """最近 N 条持久事实（三元组），注入 prompt。身份/偏好/项目事实都在这里。"""
+def get_facts_injection(limit: int = 24) -> str:
+    """持久事实（三元组），注入 prompt。身份/偏好/项目进度都在这里。
+
+    ORDER BY id ASC：项目/课程进度等早期登记的稳定事实优先于后期闲聊事实
+    （曾因 DESC 取最新被小说设定类事实挤占，导致"课程进度丢失"）。
+    三元组极短，24 条 ≈ 400 字，prompt 开销可忽略。
+    """
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT subject, predicate, object FROM facts ORDER BY id DESC LIMIT ?",
+            "SELECT subject, predicate, object FROM facts ORDER BY id ASC LIMIT ?",
             (limit,),
         ).fetchall()
     finally:
@@ -248,7 +253,7 @@ def get_facts_injection(limit: int = 10) -> str:
     if not rows:
         return ""
     return "\n".join(
-        f"- {r['subject']} {r['predicate']} {r['object']}" for r in reversed(rows)
+        f"- {r['subject']} {r['predicate']} {r['object']}" for r in rows
     )
 
 

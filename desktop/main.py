@@ -31,7 +31,7 @@ logger = logging.getLogger("desktop")
 
 # 原生崩溃取证：Python excepthook 抓不到原生层崩溃（Qt/Win32 段错误 =
 # 进程无声消失、日志戛然而止）。faulthandler 会把原生栈写进同一黑匣子。
-import faulthandler  # noqa: E402
+import faulthandler
 
 _fault_log = open(_LOG_DIR / "faulthandler.log", "a", encoding="utf-8", buffering=1)
 faulthandler.enable(file=_fault_log)
@@ -50,10 +50,9 @@ def _excepthook(exc_type, exc_value, exc_tb):
 
 sys.excepthook = _excepthook
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
-
-from floating_ball import FloatingBall  # noqa: E402
-from tray import TrayIcon  # noqa: E402
+from floating_ball import FloatingBall
+from PySide6.QtWidgets import QApplication
+from tray import TrayIcon
 
 
 def main() -> None:

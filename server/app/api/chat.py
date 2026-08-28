@@ -1,4 +1,5 @@
 """聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 思维模块（自省/关切/术语/风格）。"""
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -9,6 +10,9 @@ from pydantic import BaseModel
 
 from app.core import knowledge, llm, memory
 from app.config import settings
+
+# 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
+_bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
 from app.services import behavior_context, documents, executor, goals, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
@@ -287,6 +291,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
         memory.bump_importance([m["id"] for m in mems])
     if definition_term:
         save_term(definition_term, reply)
+
+    # 6) 事实自动提取（第 6.21 课）：确认过的持久设定 → facts 永久层。
+    #    后台执行不阻塞回复；任务引用保留防 GC 回收
+    from app.services import fact_extract
+
+    _task = asyncio.create_task(fact_extract.maybe_extract_facts(msg))
+    _bg_tasks.add(_task)
+    _task.add_done_callback(_bg_tasks.discard)
 
     return ChatResponse(reply=reply, memories_used=len(mems))
 

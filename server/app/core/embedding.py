@@ -25,3 +25,26 @@ async def embed(texts: list[str]) -> list[list[float]]:
         input=texts,
     )
     return [d.embedding for d in resp.data]
+
+
+async def embed_batched(texts: list[str], batch_size: int = 8) -> list[list[float]]:
+    """分批向量化：长文档全部块一次请求会超 API 上限（如 embedding-3 单次≤8 条）。
+
+    逐批调用拼接，批间隔由 SDK 超时/重试兜底；适合小说等大文档入库。
+    """
+    import logging
+
+    logger = logging.getLogger("assistant.embedding")
+    out: list[list[float]] = []
+    total = (len(texts) + batch_size - 1) // batch_size
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        resp = await get_client().embeddings.create(
+            model=settings.embedding_model,
+            input=batch,
+        )
+        out.extend(d.embedding for d in resp.data)
+        n = i // batch_size + 1
+        if n % 25 == 0 or n == total:
+            logger.info("向量化进度 %d/%d 批", n, total)
+    return out

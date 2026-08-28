@@ -15,16 +15,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def ingest_document(name: str, content: str, replace: bool = True) -> dict:
-    """文档入库：切块 → 批量向量化 → 存 knowledge_chunks + chunk_vectors。
+async def ingest_document(
+    name: str, content: str, replace: bool = True, sanitize_content: bool = True
+) -> dict:
+    """文档入库：切块 → 分批向量化 → 存 knowledge_chunks + chunk_vectors。
 
     replace=True（默认）：同 doc_name 先删旧块再入库（同步更新不产生重复）。
-    入库前统一脱敏（第 6.14 课）：敏感信息明文不进向量库。
+    入库前统一脱敏（第 6.14 课）；sanitize_content=False 跳过脱敏——
+    用于小说等长文本（避免形似手机号的数字串被误打码）。
     """
-    from app.services.sanitize import sanitize
+    if sanitize_content:
+        from app.services.sanitize import sanitize
 
-    name = sanitize(name)
-    content = sanitize(content)
+        name = sanitize(name)
+        content = sanitize(content)
     chunks = chunk_text(content)
     if not chunks:
         return {"chunks": 0, "error": "文档为空或无可切分内容"}
@@ -43,8 +47,8 @@ async def ingest_document(name: str, content: str, replace: bool = True) -> dict
     finally:
         conn.close()
 
-    # 批量向量化（一次 API 调用处理所有块）
-    vectors = await embedding.embed(chunks)
+    # 分批向量化（长文档单批超 API 上限）
+    vectors = await embedding.embed_batched(chunks)
 
     conn = connect()
     try:

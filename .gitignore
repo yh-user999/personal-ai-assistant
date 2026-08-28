@@ -29,6 +29,9 @@ build/
 *.spec
 *.exe
 
+# 视觉预览产物
+scripts/preview_out/
+
 # 系统
 .DS_Store
 Thumbs.db

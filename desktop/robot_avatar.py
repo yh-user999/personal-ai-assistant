@@ -2,11 +2,10 @@
 import math
 import random
 
-from PySide6.QtCore import QTimer, Qt
+import skins
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
-
-import skins
 
 
 class RobotAvatar(QWidget):
@@ -101,127 +100,215 @@ class RobotAvatar(QWidget):
                 painter.setBrush(dot)
                 painter.drawEllipse(int(px), int(py), 2, 2)
 
+    def _paint_particles(self, painter: QPainter, accent: QColor) -> None:
+        """思考时环绕粒子（3 个小光点绕头转，与悬浮球同款）。"""
+        if not self._thinking:
+            return
+        painter.setPen(Qt.NoPen)
+        for i in range(3):
+            ang = self._phase * 1.8 + i * 2.094
+            px = 18 + 10 * math.cos(ang)
+            py = 16 + 10 * math.sin(ang)
+            dot = QColor(accent)
+            dot.setAlpha(max(0, int(110 + 90 * math.sin(self._phase * 3 + i))))
+            painter.setBrush(dot)
+            painter.drawEllipse(QPointF(px, py), 1.6, 1.6)
+
+    @staticmethod
+    def _draw_hex(painter: QPainter, cx: float, cy: float, r: float,
+                  fill: QLinearGradient, stroke: QColor) -> None:
+        """六角螺栓（平边朝上）。"""
+        p = QPainterPath()
+        for i in range(6):
+            ang = math.radians(60 * i)
+            px = cx + r * math.cos(ang)
+            py = cy + r * math.sin(ang)
+            if i == 0:
+                p.moveTo(px, py)
+            else:
+                p.lineTo(px, py)
+        p.closeSubpath()
+        painter.setBrush(fill)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawPath(p)
+        painter.setBrush(QColor(0, 0, 0, 60))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(cx, cy), r * 0.32, r * 0.32)
+
     def _paint_bender(self, painter: QPainter) -> None:
-        """班德风迷你头像：金属灰桶形头 + 视窗眼 + 格栅嘴。"""
+        """班德金属风 · 硬核机械版迷你头像：平顶切角壳 + 小内嵌屏 + 散热格栅。"""
         accent = QColor("#fbbf24") if self._thinking else QColor("#4d7cff")
+        steel = QLinearGradient(5, 4, 31, 27)
+        steel.setColorAt(0.0, QColor("#b7c0d4"))
+        steel.setColorAt(0.5, QColor("#646e82"))
+        steel.setColorAt(1.0, QColor("#2f3542"))
+        stroke = QColor("#525a6b")
+        dark = QColor("#12151c")
+        recess = QColor("#232833")
 
-        g = QLinearGradient(3, 3, 33, 33)
-        g.setColorAt(0.0, QColor("#a9b2c4"))
-        g.setColorAt(0.5, QColor("#6b7488"))
-        g.setColorAt(1.0, QColor("#3a414e"))
+        # 天线（方形光点）
+        painter.setPen(QPen(stroke, 1.5))
+        painter.drawLine(18, 4, 18, 1)
+        glow = QColor(accent)
+        glow.setAlpha(150 if self._thinking else 90)
+        painter.setBrush(glow)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(14.5, -0.5, 7, 4.5)
+        painter.setBrush(accent)
+        painter.drawRect(16.5, 0.8, 3, 3)
 
+        # 侧六角螺栓
+        for bx in (3.2, 32.8):
+            self._draw_hex(painter, bx, 15.5, 3.2, steel, stroke)
+
+        # 头（平顶切角）
         head = QPainterPath()
-        head.moveTo(8, 15)
-        head.quadTo(8, 6, 18, 6)
-        head.quadTo(28, 6, 28, 15)
-        head.lineTo(31, 25)
-        head.quadTo(31, 28, 27, 28)
-        head.lineTo(9, 28)
-        head.quadTo(5, 28, 5, 25)
-        head.lineTo(8, 15)
+        head.moveTo(8, 4)
+        head.lineTo(28, 4)
+        head.lineTo(31, 7)
+        head.lineTo(31, 24)
+        head.lineTo(28, 27)
+        head.lineTo(8, 27)
+        head.lineTo(5, 24)
+        head.lineTo(5, 7)
         head.closeSubpath()
-        painter.setBrush(g)
-        painter.setPen(QPen(QColor("#565e70"), 1))
+        painter.setBrush(steel)
+        painter.setPen(QPen(stroke, 1))
         painter.drawPath(head)
 
-        painter.setPen(QPen(QColor("#565e70"), 2))
-        painter.drawLine(18, 6, 18, 2)
+        # 顶板拼缝 + 铆钉
+        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.drawLine(7, 8, 29, 8)
+        painter.setBrush(QColor("#2e3440"))
+        painter.drawEllipse(QPointF(9, 6), 0.9, 0.9)
+        painter.drawEllipse(QPointF(27, 6), 0.9, 0.9)
+
+        # 内嵌显示屏
+        painter.setBrush(recess)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(accent)
-        painter.drawEllipse(16, 0, 4, 4)
+        painter.drawRoundedRect(10, 10.5, 16, 7.5, 1, 1)
+        painter.setBrush(dark)
+        painter.drawRoundedRect(10.8, 11.3, 14.4, 5.9, 1, 1)
 
-        visor_h = 5.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
-        glow = QColor(accent)
-        glow.setAlpha(55)
-        painter.setBrush(glow)
-        painter.drawRoundedRect(7, 12, 22, 10, 5, 5)
-        painter.setBrush(QColor("#20242c"))
-        painter.drawRoundedRect(9, int(16 - visor_h / 2) + 1, 18, int(visor_h) - 2, 3, 3)
-        painter.setBrush(QColor(accent))
-        painter.drawRoundedRect(10, int(16 - visor_h / 2) + 2, 16, max(1, int(visor_h)) - 4, 2, 2)
-
-        painter.setPen(QPen(QColor("#565e70"), 1.2, Qt.SolidLine, Qt.RoundCap))
-        painter.drawLine(12, 23, 24, 23)
-        painter.drawLine(12, 25, 24, 25)
-
+        # LED 扫描眼
+        eye_h = 2.6 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
+        eye_h = max(1.0, eye_h)
         if self._thinking:
-            painter.setPen(Qt.NoPen)
-            for i in range(3):
-                ang = self._phase * 1.8 + i * 2.094
-                px = 18 + 9 * math.cos(ang)
-                py = 15 + 9 * math.sin(ang)
-                dot = QColor(accent)
-                dot.setAlpha(150)
-                painter.setBrush(dot)
-                painter.drawEllipse(int(px), int(py), 2, 2)
+            halo = QColor(accent)
+            halo.setAlpha(60)
+            painter.setBrush(halo)
+            painter.drawRoundedRect(11.5, 11.8, 13, 4.8, 1, 1)
+        painter.setBrush(QColor(accent))
+        painter.drawRoundedRect(12, 14.3 - eye_h / 2, 12, eye_h, 0.8, 0.8)
+
+        # 散热格栅
+        painter.setBrush(recess)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(12.5, 20, 11, 5, 1, 1)
+        painter.setPen(QPen(QColor("#565e70"), 1))
+        for gx in (14, 16.2, 18.4, 20.6, 22.8):
+            painter.drawLine(gx, 21, gx, 24)
+
+        # 颈 + 身体
+        painter.setBrush(QColor("#2e3440"))
+        painter.setPen(Qt.NoPen)
+        painter.drawRect(15, 27, 6, 2.5)
+        painter.setBrush(steel)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(12, 29, 12, 6, 1, 1)
+        pulse = QColor(accent)
+        pulse.setAlpha(140 + int(100 * math.sin(self._phase * 2)))
+        painter.setBrush(pulse)
+        painter.drawEllipse(QPointF(18, 32), 1.3, 1.3)
+
+        self._paint_particles(painter, accent)
 
     def _paint_astro(self, painter: QPainter) -> None:
-        """白色宇航员风迷你头像：白盔 + 琥珀面罩 + 黑圆眼（眨眼=闭眼线）。"""
-        g = QLinearGradient(4, 3, 32, 29)
-        g.setColorAt(0.0, QColor("#ffffff"))
-        g.setColorAt(0.55, QColor("#dfe4ec"))
-        g.setColorAt(1.0, QColor("#b9c1ce"))
-
-        # 白盔 + 小圆耳
-        painter.setBrush(g)
-        painter.setPen(QPen(QColor("#9aa3b5"), 1))
-        painter.drawRoundedRect(4, 3, 28, 26, 13, 13)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#dfe4ec"))
-        painter.drawEllipse(0, 14, 7, 7)
-        painter.drawEllipse(29, 14, 7, 7)
-
-        # 天线
-        painter.setPen(QPen(QColor("#9aa3b5"), 2))
-        painter.drawLine(18, 3, 18, 0)
+        """白色宇航员风 · 重制版迷你头像：圆球头盔 + 深色玻璃面罩 + 发光圆眼。"""
         accent = QColor("#fbbf24") if self._thinking else QColor("#4d7cff")
+        stroke = QColor("#9aa5b8")
+        yellow = QColor("#f5c518")
+
+        # 天线（小月签名）
+        painter.setPen(QPen(stroke, 1.5))
+        painter.drawLine(18, 5.5, 18, 2.5)
+        glow = QColor(accent)
+        glow.setAlpha(150 if self._thinking else 90)
+        painter.setBrush(glow)
         painter.setPen(Qt.NoPen)
+        painter.drawEllipse(15, -0.5, 6, 5)
         painter.setBrush(accent)
-        painter.drawEllipse(16, -1, 4, 4)
+        painter.drawEllipse(QPointF(18, 3.2), 1.8, 1.8)
 
-        # 面罩（thinking 发光）
-        if self._thinking:
-            glow = QColor(accent)
-            glow.setAlpha(70)
-            painter.setBrush(glow)
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(8, 8, 20, 18, 6, 6)
-        painter.setBrush(QColor("#f2b33d"))
-        painter.setPen(QPen(QColor("#b8822a"), 1))
-        painter.drawRoundedRect(10, 10, 16, 14, 5, 5)
+        # 身体（画在头盔后面）
+        painter.setBrush(QColor("#f4f6fa"))
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(13, 28, 10, 6.5, 2, 2)
+        painter.setPen(QPen(yellow, 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(15, 30, 6, 2.5)
 
-        # 眼睛：黑圆眼 + 高光（眨眼 = 闭眼横线；思考 = 上翻）
-        eye_y = 15 if not self._thinking else 13
-        painter.setBrush(QColor("#1a1d24"))
+        # 头盔圆球
+        helmet_g = QLinearGradient(7, 6, 29, 29)
+        helmet_g.setColorAt(0.0, QColor("#ffffff"))
+        helmet_g.setColorAt(0.6, QColor("#e6ebf3"))
+        helmet_g.setColorAt(1.0, QColor("#c2cad8"))
+        painter.setBrush(helmet_g)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawEllipse(QPointF(18, 17.5), 13, 13)
+
+        # 侧耳灯
+        painter.setBrush(yellow)
+        painter.setPen(QPen(QColor("#c99e14"), 0.8))
+        painter.drawEllipse(QPointF(5.5, 17.5), 2.5, 2.5)
+        painter.drawEllipse(QPointF(30.5, 17.5), 2.5, 2.5)
+
+        # 面罩：深色玻璃
+        visor_g = QLinearGradient(10.5, 10, 25.5, 24)
+        visor_g.setColorAt(0.0, QColor("#2b3550"))
+        visor_g.setColorAt(1.0, QColor("#151b29"))
+        painter.setBrush(visor_g)
+        painter.setPen(QPen(QColor("#10141f"), 0.8))
+        painter.drawRoundedRect(10.5, 10, 15, 14, 5, 5)
+
+        # 玻璃反光带
+        painter.setBrush(QColor(255, 255, 255, 30))
         painter.setPen(Qt.NoPen)
+        st = QPainterPath()
+        st.moveTo(13, 11)
+        st.lineTo(15.2, 11)
+        st.lineTo(11.8, 23)
+        st.lineTo(10.9, 20)
+        st.closeSubpath()
+        painter.drawPath(st)
+
+        # 眼睛：发光圆眼（眨眼 = 横线）
+        eye_y = 15.5 if not self._thinking else 14.3
+        core = QColor("#e8f4ff")
+        for ex in (14.6, 21.4):
+            halo = QColor(accent)
+            halo.setAlpha(55)
+            painter.setBrush(halo)
+            painter.drawEllipse(QPointF(ex, eye_y), 2.4, 2.4)
         if self._blink > 0:
-            painter.setPen(QPen(QColor("#1a1d24"), 1.6, Qt.SolidLine, Qt.RoundCap))
+            painter.setPen(QPen(core, 1.2, Qt.SolidLine, Qt.RoundCap))
             painter.setBrush(Qt.NoBrush)
-            painter.drawLine(12, eye_y, 16, eye_y)
-            painter.drawLine(20, eye_y, 24, eye_y)
+            painter.drawLine(13.2, eye_y, 16, eye_y)
+            painter.drawLine(20, eye_y, 22.8, eye_y)
         else:
-            painter.drawEllipse(12, eye_y, 4, 4)
-            painter.drawEllipse(20, eye_y, 4, 4)
-            painter.setBrush(QColor(255, 255, 255, 210))
-            painter.drawEllipse(13, eye_y + 1, 1.5, 1.5)
-            painter.drawEllipse(21, eye_y + 1, 1.5, 1.5)
+            painter.setBrush(core)
+            painter.drawEllipse(QPointF(14.6, eye_y), 1.3, 2)
+            painter.drawEllipse(QPointF(21.4, eye_y), 1.3, 2)
+            painter.setBrush(QColor(255, 255, 255, 230))
+            painter.drawEllipse(QPointF(14.2, eye_y - 0.9), 0.5, 0.5)
+            painter.drawEllipse(QPointF(21, eye_y - 0.9), 0.5, 0.5)
 
-        # 嘴巴：短横线 / 思考 O
-        painter.setPen(QPen(QColor("#8a5a14"), 1.2, Qt.SolidLine, Qt.RoundCap))
+        # 嘴：微笑弧（thinking = 小 o）
+        painter.setPen(QPen(QColor("#dfe9ff"), 1, Qt.SolidLine, Qt.RoundCap))
+        painter.setBrush(Qt.NoBrush)
         if self._thinking:
-            painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(16.5, 20, 3, 3)
+            painter.drawEllipse(QPointF(18, 21.5), 1, 1)
         else:
-            painter.drawLine(15, 21, 21, 21)
+            painter.drawArc(16.8, 19.6, 2.4, 2, 200 * 16, 140 * 16)
 
-        # 思考环绕粒子
-        if self._thinking:
-            painter.setPen(Qt.NoPen)
-            for i in range(3):
-                ang = self._phase * 1.8 + i * 2.094
-                px = 18 + 9 * math.cos(ang)
-                py = 15 + 9 * math.sin(ang)
-                dot = QColor(accent)
-                dot.setAlpha(150)
-                painter.setBrush(dot)
-                painter.drawEllipse(int(px), int(py), 2, 2)
+        self._paint_particles(painter, accent)

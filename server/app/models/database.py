@@ -168,6 +168,15 @@ CREATE TABLE IF NOT EXISTS executor_commands (
   claimed_at TEXT,
   executed_at TEXT
 );
+
+-- ⑰ 小说设定卡（第 6.19 课：策划数据，人物/事件权威事实）
+CREATE TABLE IF NOT EXISTS novel_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book TEXT NOT NULL,              -- 所属书（如 小说-寂静杀戮）
+  keywords TEXT NOT NULL,          -- 触发词（逗号分隔：人物名/事件词）
+  content TEXT NOT NULL,           -- 设定条目正文
+  created_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

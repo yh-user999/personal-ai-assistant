@@ -295,6 +295,22 @@ def get_alias_note(query: str) -> str:
     return "；".join(dict.fromkeys(notes))
 
 
+def get_novel_facts(query: str) -> list[str]:
+    """小说设定卡检索：query 命中关键词的权威事实条目（优先级最高）。"""
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT keywords, content FROM novel_facts").fetchall()
+    finally:
+        conn.close()
+    matched = []
+    for r in rows:
+        for kw in r["keywords"].replace("，", ",").split(","):
+            if kw.strip() and kw.strip() in query:
+                matched.append(r["content"])
+                break
+    return matched
+
+
 def format_knowledge_injection(hits: list[dict]) -> str:
     """检索结果注入 prompt 的格式（带来源标注，支持"引用"）。"""
     if not hits:

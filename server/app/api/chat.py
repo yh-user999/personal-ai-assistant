@@ -220,6 +220,15 @@ async def chat(req: ChatRequest) -> ChatResponse:
     alias_note = knowledge.get_alias_note(msg)
     if alias_note:
         knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
+    # 小说设定卡注入：策划的权威事实，优先级最高（人物/事件问题直接可用）
+    novel_facts = knowledge.get_novel_facts(msg)
+    if novel_facts:
+        knowledge_text = (
+            "【小说设定（权威背景，优先采用）】\n- "
+            + "\n- ".join(novel_facts)
+            + "\n\n"
+            + knowledge_text
+        )
     profile = get_profile_injection()
     lessons = get_lessons_injection()
     concerns = get_concerns_injection()

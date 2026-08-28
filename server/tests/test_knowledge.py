@@ -107,3 +107,20 @@ def test_bm25_idf_saturation():
     conn.close()
     hits = knowledge._bm25_rank("左志诚被谁挖走了命丛", top_k=10)
     assert hits[0]["chunk_index"] == 1  # 证据块必须排第一
+
+
+def test_novel_facts_match():
+    from app.core import knowledge
+    from app.models.database import connect, init_db
+
+    init_db()
+    conn = connect()
+    conn.execute("DELETE FROM novel_facts")
+    conn.execute(
+        "INSERT INTO novel_facts (book, keywords, content, created_at) "
+        "VALUES ('小说-x', '左志诚,左擎苍', '设定A', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+    assert knowledge.get_novel_facts("左志诚被谁挖走了命丛") == ["设定A"]
+    assert knowledge.get_novel_facts("今天天气") == []

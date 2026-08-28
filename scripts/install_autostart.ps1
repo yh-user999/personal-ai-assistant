@@ -36,7 +36,7 @@ $Trigger2 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Trigger2.Delay = "PT15S"
 $Settings2 = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -RestartCount 1 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName "PAA-Robot" -Action $Action2 -Trigger $Trigger2 -Settings $Settings2 -Force | Out-Null

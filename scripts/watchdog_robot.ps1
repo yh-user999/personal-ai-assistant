@@ -1,4 +1,4 @@
-# 桌面机器人看门狗：检测进程消失则自动拉起（任务计划每分钟触发）
+﻿# 桌面机器人看门狗：检测进程消失则自动拉起（任务计划每分钟触发）
 # 安装（管理员 PowerShell）:  .\scripts\install_watchdog.ps1
 # 卸载: Unregister-ScheduledTask -TaskName "PAA-Robot-Watchdog" -Confirm:$false
 $ErrorActionPreference = "SilentlyContinue"

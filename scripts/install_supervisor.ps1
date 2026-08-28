@@ -1,4 +1,4 @@
-# 安装机器人守护进程（管理员 PowerShell）：pythonw 常驻，零控制台，崩溃秒级拉起
+﻿# 安装机器人守护进程（管理员 PowerShell）：pythonw 常驻，零控制台，崩溃秒级拉起
 # 用法: 管理员 PowerShell 执行  .\scripts\install_supervisor.ps1
 # 迁移说明：
 #   - 停用旧的 PAA-Robot 任务（机器人由守护进程拉起，避免双重启动抢单实例锁）

@@ -14,6 +14,8 @@ import logging
 import os
 
 import httpx
+
+from common import launcher
 from common.file_ops import (
     OPEN_BLOCKED_EXTS,
     copy_impl,
@@ -75,6 +77,10 @@ class Executor:
         """执行单一指令（同步，to_thread 包裹）。"""
         try:
             if action == "open":
+                # 先查快捷启动器（用户注册的别名/网址优先；显式注册 = 用户授权）
+                launched, ok, text = launcher.try_launch(target)
+                if launched:
+                    return ok, text
                 ext = os.path.splitext(target)[1].lower()
                 if ext in OPEN_BLOCKED_EXTS:
                     return False, f"出于安全考虑，不允许打开脚本/安装包类型：{ext}"

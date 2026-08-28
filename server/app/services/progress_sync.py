@@ -35,18 +35,36 @@ PROGRESS_FACTS = [
 
 
 def refresh_progress_facts() -> int:
-    """课程/项目进度事实刷新（幂等：先清理课程/项目类，再插入快照）。"""
+    """课程/项目进度事实刷新。
+
+    upsert 语义（按 subject+predicate）：首轮迁移后 id 保持稳定，
+    不会因"删了重插"把事实推到注入窗口外（曾因此丢进度）。
+    """
     conn = connect()
     try:
+        # 清理已不在快照中的课程/项目类事实（如课程被删除时）
+        keep = {s for s, _, _ in PROGRESS_FACTS}
         conn.execute(
-            "DELETE FROM facts WHERE subject LIKE '第%课' OR subject='六课带教计划' OR subject='项目'"
+            "DELETE FROM facts WHERE (subject LIKE '第%课' OR subject='六课带教计划' OR subject='项目') AND subject NOT IN (%s)"
+            % ",".join("?" * len(keep)),
+            tuple(keep),
         )
         for sub, pred, obj in PROGRESS_FACTS:
-            conn.execute(
-                "INSERT INTO facts (subject, predicate, object, confidence, updated_at) "
-                "VALUES (?, ?, ?, 0.9, ?)",
-                (sub, pred, obj, "2026-08-28T00:00:00+00:00"),
-            )
+            row = conn.execute(
+                "SELECT id FROM facts WHERE subject=? AND predicate=?",
+                (sub, pred),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE facts SET object=?, confidence=0.9 WHERE id=?",
+                    (obj, row["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO facts (subject, predicate, object, confidence, updated_at) "
+                    "VALUES (?, ?, ?, 0.9, ?)",
+                    (sub, pred, obj, "2026-08-28T00:00:00+00:00"),
+                )
         conn.commit()
     finally:
         conn.close()

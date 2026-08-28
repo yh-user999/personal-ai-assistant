@@ -21,6 +21,11 @@ STORY_FACTS = [
     {"subject": "李羽", "predicate": "苏醒表现", "object": "沉默寡言，装作失忆，适应环境"},
     {"subject": "李羽家", "predicate": "田地", "object": "三四亩"},
     {"subject": "少爷", "predicate": "背景势力", "object": "地方豪强"},
+    # 早期确认的世界观/主线（#214 摘要核对）
+    {"subject": "小说", "predicate": "主线", "object": "王朝末年乱世，主角穿越受欺压，从一县之地起步统一国家终结乱世"},
+    {"subject": "小说", "predicate": "修炼体系", "object": "采用《寂静杀戮》的命丛体系"},
+    {"subject": "小说", "predicate": "外星人设定", "object": "偶然发现地球，因东方有修炼体系想研究；武力比东方顶尖高一阶段，被围攻会死，躲在西方搞科技"},
+    {"subject": "小说", "predicate": "每章字数", "object": "按网文标准每章约3000字"},
 ]
 
 if __name__ == "__main__":

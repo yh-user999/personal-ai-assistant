@@ -15,7 +15,7 @@ from app.models.database import connect
 
 logger = logging.getLogger("assistant.progress_sync")
 
-DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
+DOCS_DIR = Path(__file__).resolve().parents[3] / "docs"  # 仓库根 /docs
 
 # 与 docs/LEARNING_PROGRESS.md 同步维护的进度快照（subject, predicate, object）
 PROGRESS_FACTS = [

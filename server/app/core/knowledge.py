@@ -108,10 +108,10 @@ async def _vector_search(query: str, top_k: int = 3) -> list[dict]:
 
 
 def _bm25_rank(query: str, top_k: int = 10) -> list[dict]:
-    """BM25（字符 2-gram + IDF 权重）：稀有词（如"挖走"）高权重，
-    高频词（如"左志诚"）自动降权——修正"高频人物名霸榜、关键证据沉底"问题。
+    """BM25（字符 2-gram + IDF + 词频饱和 + 长度归一，k1=1.5，b=0.75）。
 
-    实现：score(d) = Σ tf(g,d) × idf(g)，idf = ln(1 + (N - df + 0.5)/(df + 0.5))。
+    词频饱和是关键：名词解释章里"命丛"出现 50 次只按 ~2.4 次计分，
+    不再线性霸榜；"挖走"这类稀有证据词得以浮出水面。
     """
     grams = [query[i:i + 2] for i in range(max(1, len(query) - 1))]
     conn = connect()
@@ -121,22 +121,31 @@ def _bm25_rank(query: str, top_k: int = 10) -> list[dict]:
         ).fetchall()
     finally:
         conn.close()
-    n = max(1, len(rows))
-    # 文档频率：每个 2-gram 出现在多少块里
+    docs = [dict(r) for r in rows]
+    n = max(1, len(docs))
+    lengths = [len(d["content"]) for d in docs]
+    avgdl = sum(lengths) / n if lengths else 1.0
     df = {g: 0 for g in grams}
-    for r in rows:
+    for d in docs:
         for g in grams:
-            if g in r["content"]:
+            if g in d["content"]:
                 df[g] += 1
-    idf = {
-        g: math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
-        for g, c in df.items()
-    }
+    k1, b = 1.5, 0.75
+
+    def _idf(g: str) -> float:
+        c = df[g]
+        return math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
+
     scored = []
-    for r in rows:
-        score = sum(r["content"].count(g) * idf[g] for g in grams)
-        if score > 0:
-            scored.append((score, dict(r)))
+    for d, L in zip(docs, lengths):
+        s = 0.0
+        for g in grams:
+            tf = d["content"].count(g)
+            if tf:
+                norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * L / avgdl))
+                s += norm * _idf(g)
+        if s > 0:
+            scored.append((s, d))
     scored.sort(key=lambda x: -x[0])
     return [c for _, c in scored[:top_k]]
 

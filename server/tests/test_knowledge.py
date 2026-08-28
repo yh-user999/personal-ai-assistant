@@ -83,3 +83,27 @@ def test_expand_chunks_empty():
 
     assert knowledge.expand_chunks([]) == []
 
+
+
+def test_bm25_idf_saturation():
+    """词频饱和：稀有词证据块应压过高频词霸榜块。"""
+    from app.core import knowledge
+    from app.models.database import connect, init_db
+
+    init_db()
+    conn = connect()
+    conn.execute("DELETE FROM knowledge_chunks")
+    conn.execute(
+        "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
+        "VALUES ('测试', 0, ?, '2026-01-01T00:00:00+00:00')",
+        ("命丛 " * 50,),  # 高频霸榜块
+    )
+    conn.execute(
+        "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
+        "VALUES ('测试', 1, ?, '2026-01-01T00:00:00+00:00')",
+        ("蜃宗挖走了左志诚的命丛",),  # 稀有词证据块
+    )
+    conn.commit()
+    conn.close()
+    hits = knowledge._bm25_rank("左志诚被谁挖走了命丛", top_k=10)
+    assert hits[0]["chunk_index"] == 1  # 证据块必须排第一

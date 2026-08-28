@@ -6,11 +6,11 @@ v0.7：bender/astro 图标与悬浮球新形象同步（平顶机械头 / 圆球
 """
 import math
 
+import theme
+from chat_workers import retire
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
-
-from chat_workers import retire
 
 
 class _ReportWorker(QThread):
@@ -47,7 +47,7 @@ def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
         p.setPen(QColor("#9aa5b8"))
         p.drawLine(int(size * 0.5), int(size * 0.13), int(size * 0.5), int(size * 0.05))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#4d7cff"))
+        p.setBrush(QColor(theme.token("accent")))
         p.drawEllipse(QRectF(size * 0.43, 0.0, size * 0.14, size * 0.12))
         # 头盔圆球
         g = QLinearGradient(0, 0, size, size)
@@ -94,9 +94,9 @@ def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
         p.setPen(QColor("#4b5563"))
         p.drawLine(size // 2, 8, size // 2, 16)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#4d7cff"))
+        p.setBrush(QColor(theme.token("accent")))
         p.drawEllipse(size // 2 - 4, 4, 8, 8)
-        p.setBrush(QColor("#4d7cff"))
+        p.setBrush(QColor(theme.token("accent")))
         p.drawEllipse(int(size * 0.32), int(size * 0.42), int(size * 0.16), int(size * 0.16))
         p.drawEllipse(int(size * 0.52), int(size * 0.42), int(size * 0.16), int(size * 0.16))
         p.setPen(QColor("#8b93a3"))
@@ -113,7 +113,7 @@ def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
         p.setPen(QColor("#525a6b"))
         p.drawLine(int(size * 0.5), int(size * 0.16), int(size * 0.5), int(size * 0.06))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#4d7cff"))
+        p.setBrush(QColor(theme.token("accent")))
         p.drawRect(QRectF(size * 0.455, 0.0, size * 0.09, size * 0.07))
         # 侧六角螺栓
         for bx in (0.16, 0.84):
@@ -155,7 +155,7 @@ def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
         p.setBrush(QColor("#12151c"))
         p.drawRoundedRect(QRectF(size * 0.34, size * 0.35, size * 0.32, size * 0.11),
                           size * 0.01, size * 0.01)
-        p.setBrush(QColor("#4d7cff"))
+        p.setBrush(QColor(theme.token("accent")))
         p.drawRoundedRect(QRectF(size * 0.37, size * 0.385, size * 0.26, size * 0.05),
                           size * 0.01, size * 0.01)
         # 散热格栅（竖栅）

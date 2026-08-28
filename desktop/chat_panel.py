@@ -1,5 +1,10 @@
 """聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
 
+v0.8 主题系统：
+- 4 套配色（星夜蓝/森屿绿/暮山紫/墨玉金），右键悬浮球 → 主题 切换
+- theme.py 色表 + QSettings 记忆；皮肤(造型) × 主题(颜色) 正交组合
+- 静态样式构建收拢 _init_static_styles，apply_theme 即时重着色不重启
+
 v0.7 面板重制：
 - 窗口可自由缩放：八方向缩放把手压在卡片不透明像素上（确定性可命中），
   纯手动几何计算缩放（不依赖系统缩放调用与分层窗口命中测试行为），
@@ -20,14 +25,15 @@ import re
 from typing import ClassVar
 
 import markdown as md_lib
+import theme
 from api_client import ApiClient
 from chat_workers import (
     _ApiWorker,
-    retire,
     _ChatWorker,
     _ExecResultWorker,
     _GreetingWorker,
     _HistoryWorker,
+    retire,
 )
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
@@ -57,14 +63,17 @@ class _InfoDialog(QDialog):
         lay = QVBoxLayout(self)
         browser = QTextBrowser()
         browser.setHtml(html_text)
-        browser.setStyleSheet("background: #14161b; color: #d8dbe2; border: none; font-size: 13px;")
+        browser.setStyleSheet(
+            f"background: {theme.token('input_bg')}; color: {theme.token('text_main')};"
+            "border: none; font-size: 13px;"
+        )
         lay.addWidget(browser, 1)
         close_btn = QPushButton("关闭（Esc）")
         close_btn.clicked.connect(self.close)
         close_btn.setStyleSheet(
-            "QPushButton { background: #23262f; color: #ccc; border: 1px solid #333;"
-            "border-radius: 8px; padding: 8px; }"
-            "QPushButton:hover { color: #fff; }"
+            f"QPushButton {{ background: {theme.token('btn_bg')}; color: {theme.token('text_sub')}; border: 1px solid {theme.token('border')};"
+            f"border-radius: 8px; padding: 8px; }}"
+            f"QPushButton:hover {{ color: #fff; }}"
         )
         lay.addWidget(close_btn)
 
@@ -182,14 +191,9 @@ class ChatPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        card = QWidget()
+        self.card = card = QWidget()
         card.setObjectName("card")
-        card.setStyleSheet(
-            # 完全不透明（alpha=255）：背后窗口内容不会再透进来造成"叠字"，
-            # 这是"面板排版看着乱"的隐藏元凶（之前 245≈96% 不透明）
-            "#card { background: #1c1f26; border-radius: 14px; }"
-            "QLabel { color: #eee; }"
-        )
+        # 不透明卡片：背后窗口内容不会再透进来造成"叠字"（样式见 _init_static_styles）
         outer.addWidget(card)
 
         # 八方向缩放把手：贴边透明小部件，叠在卡片外圈不透明像素上
@@ -210,7 +214,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（按住标题可拖动窗口，双击最大化）
-        title = QLabel("🤖 Personal AI Assistant v4.6")
+        title = QLabel("🤖 Personal AI Assistant v4.8")
         title.setToolTip("按住拖动窗口 · 双击最大化/还原")
         title.installEventFilter(self)
         self._title = title
@@ -220,9 +224,9 @@ class ChatPanel(QWidget):
         pin_btn.setToolTip("钉住窗口（始终置顶）")
         pin_btn.setCheckable(True)
         pin_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #888; border: none; font-size: 14px; }"
-            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
-            "QPushButton:checked { color: #fbbf24; background: #2a2d35; border-radius: 13px; }"
+            f"QPushButton {{ background: transparent; color: {theme.token('text_faint')}; border: none; font-size: 14px; }}"
+            f"QPushButton:hover {{ color: #fff; background: {theme.token('hover')}; border-radius: 13px; }}"
+            f"QPushButton:checked {{ color: {theme.token('state')['thinking']}; background: {theme.token('hover')}; border-radius: 13px; }}"
         )
         pin_btn.clicked.connect(self._toggle_pin)
         self._pin_btn = pin_btn
@@ -231,18 +235,20 @@ class ChatPanel(QWidget):
         max_btn.setCursor(Qt.PointingHandCursor)
         max_btn.setToolTip("最大化/还原")
         max_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #888; border: none; font-size: 13px; }"
-            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
+            f"QPushButton {{ background: transparent; color: {theme.token('text_faint')}; border: none; font-size: 13px; }}"
+            f"QPushButton:hover {{ color: #fff; background: {theme.token('hover')}; border-radius: 13px; }}"
         )
         max_btn.clicked.connect(self._toggle_maximize)
         self._max_btn = max_btn
         close_btn = QPushButton("✕")
+        self._max_btn_ref = max_btn
+        self._close_btn_ref = close_btn
         close_btn.setFixedSize(26, 26)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setToolTip("关闭（Esc）")
         close_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #888; border: none; font-size: 15px; }"
-            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
+            f"QPushButton {{ background: transparent; color: {theme.token('text_faint')}; border: none; font-size: 15px; }}"
+            f"QPushButton:hover {{ color: #fff; background: {theme.token('hover')}; border-radius: 13px; }}"
         )
         close_btn.clicked.connect(self.hide)
         title_row = QHBoxLayout()
@@ -255,10 +261,6 @@ class ChatPanel(QWidget):
         # 问候标签（个性化+时效，每次打开面板刷新；放在消息流上方）
         self._greeting_label = QLabel("你好，我是你的个人助手")
         self._greeting_label.setWordWrap(True)
-        self._greeting_label.setStyleSheet(
-            "QLabel { color: #9aa3b2; font-size: 12px; padding: 6px 2px;"
-            "border-bottom: 1px solid #23262f; }"
-        )
         layout.addWidget(self._greeting_label)
 
         # 消息区：滚动容器 + 垂直布局（每条消息 = 一行部件，左右由布局保证）
@@ -276,14 +278,6 @@ class ChatPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._msg_container)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 2px 2px 0; }"
-            "QScrollBar::handle:vertical { background: #333a48; border-radius: 4px; min-height: 30px; }"
-            "QScrollBar::handle:vertical:hover { background: #4a5468; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-        )
         layout.addWidget(scroll, 1)
         self._msg_scroll = scroll
 
@@ -302,12 +296,13 @@ class ChatPanel(QWidget):
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
         for b in (stats_btn, report_btn, daily_btn, history_btn):
+            b.setProperty("quick", True)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
-                "QPushButton { background: #23262f; color: #aaa; border: 1px solid #333;"
-                "border-radius: 8px; padding: 4px 10px; font-size: 12px; }"
-                "QPushButton:hover { color: #eee; border-color: #555; background: #2a2d38; }"
-                "QPushButton:pressed { background: #20242c; }"
+                f"QPushButton {{ background: {theme.token('btn_bg')}; color: {theme.token('text_sub')}; border: 1px solid {theme.token('border')};"
+                f"border-radius: 8px; padding: 4px 10px; font-size: 12px; }}"
+                f"QPushButton:hover {{ color: {theme.token('text_main')}; border-color: {theme.token('scrollbar')}; background: {theme.token('hover')}; }}"
+                f"QPushButton:pressed {{ background: {theme.token('pressed')}; }}"
             )
         quick_row.addWidget(stats_btn)
         quick_row.addWidget(report_btn)
@@ -321,25 +316,23 @@ class ChatPanel(QWidget):
         self.input = QLineEdit()
         self.input.setPlaceholderText("说点什么…（记录：xxx 可记工作日志）")
         self.input.setCursor(Qt.CursorShape.IBeamCursor)  # 显式 I-beam（同气泡）
-        self.input.setStyleSheet(
-            "QLineEdit { background: #14161b; color: #eee; border: 1px solid #333;"
-            "border-radius: 8px; padding: 8px; }"
-            "QLineEdit:focus { border: 1px solid #2b5cff; }"
-        )
+        # 输入框/滚动条/问候样式统一在 _init_static_styles（主题切换可重建）
         self.input.returnPressed.connect(self._send)
         send_btn = QPushButton("发送")
         send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.setStyleSheet(
-            "QPushButton { background: #2b5cff; color: white; border: none;"
-            "border-radius: 8px; padding: 0 18px; min-height: 30px; font-size: 13px; }"
-            "QPushButton:hover { background: #3d6bff; }"
-            "QPushButton:pressed { background: #2452d8; }"
+            f"QPushButton {{ background: {theme.token('accent')}; color: {theme.accent_text()}; border: none;"
+            f"border-radius: 8px; padding: 0 18px; min-height: 30px; font-size: 13px; }}"
+            f"QPushButton:hover {{ background: {theme.token('accent_hover')}; }}"
+            f"QPushButton:pressed {{ background: {theme.token('accent_pressed')}; }}"
         )
+        self.send_btn = send_btn
         send_btn.clicked.connect(self._send)
         row.addWidget(self.input, 1)
         row.addWidget(send_btn)
         layout.addLayout(row)
 
+        self._init_static_styles()
         self._greeting_worker = None
         # 执行器结果轮询：每 10s 检查新结果，主动显示到聊天流。
         # last_executor_id 持久化（QSettings）：面板重启后不重复播报历史执行结果
@@ -504,6 +497,84 @@ class ChatPanel(QWidget):
         self._save_size()
         super().hideEvent(event)
 
+    def apply_theme(self) -> None:
+        """主题切换后重建全部运行时样式（静态样式在 _init_ui 已按 token 构建）。
+
+        动态样式 = 每条消息气泡/时间戳/typing 行（append 时取色）；
+        静态样式（卡片/按钮/滚动条/输入框）用 setStyleSheet 重新套一遍。
+        """
+        self._init_static_styles()
+        # 已有消息气泡颜色跟随：按 role 标记重刷（bubble 无 role 属性，直接全量重刷）
+        self._retheme_existing_bubbles()
+
+    def _init_static_styles(self) -> None:
+        """静态样式构建（_init_ui 与 apply_theme 共用）。"""
+        self.card.setStyleSheet(
+            f"#card {{ background: {theme.token('card')}; border-radius: 14px; }}"
+            f"QLabel {{ color: {theme.token('text_main')}; }}"
+        )
+        self._greeting_label.setStyleSheet(
+            f"QLabel {{ color: {theme.token('text_sub')}; font-size: 12px; padding: 6px 2px;"
+            f"border-bottom: 1px solid {theme.token('btn_bg')}; }}"
+        )
+        self._msg_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 2px 2px 0; }"
+            f"QScrollBar::handle:vertical {{ background: {theme.token('scrollbar')}; border-radius: 4px; min-height: 30px; }}"
+            f"QScrollBar::handle:vertical:hover {{ background: {theme.token('hover')}; }}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        )
+        self.input.setStyleSheet(
+            f"QLineEdit {{ background: {theme.token('input_bg')}; color: {theme.token('text_main')}; border: 1px solid {theme.token('border')};"
+            f"border-radius: 8px; padding: 8px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {theme.token('accent')}; }}"
+        )
+        for b in (self._pin_btn, self._max_btn_ref, self._close_btn_ref):
+            size_fs = {"📌": 14, "□": 13, "✕": 15}.get(b.text(), 13)
+            extra = (
+                f"QPushButton:checked {{ color: {theme.token('state')['thinking']}; background: {theme.token('hover')}; border-radius: 13px; }}"
+                if b is self._pin_btn else ""
+            )
+            b.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {theme.token('text_faint')}; border: none; font-size: {size_fs}px; }}"
+                f"QPushButton:hover {{ color: #fff; background: {theme.token('hover')}; border-radius: 13px; }}"
+                + extra
+            )
+        for b in self.findChildren(QPushButton):
+            if b.property("quick"):
+                b.setStyleSheet(
+                    f"QPushButton {{ background: {theme.token('btn_bg')}; color: {theme.token('text_sub')}; border: 1px solid {theme.token('border')};"
+                    f"border-radius: 8px; padding: 4px 10px; font-size: 12px; }}"
+                    f"QPushButton:hover {{ color: {theme.token('text_main')}; border-color: {theme.token('scrollbar')}; background: {theme.token('hover')}; }}"
+                    f"QPushButton:pressed {{ background: {theme.token('pressed')}; }}"
+                )
+        self.send_btn.setStyleSheet(
+            f"QPushButton {{ background: {theme.token('accent')}; color: {theme.accent_text()}; border: none;"
+            f"border-radius: 8px; padding: 0 18px; min-height: 30px; font-size: 13px; }}"
+            f"QPushButton:hover {{ background: {theme.token('accent_hover')}; }}"
+            f"QPushButton:pressed {{ background: {theme.token('accent_pressed')}; }}"
+        )
+
+    def _retheme_existing_bubbles(self) -> None:
+        """已渲染消息按 role 重着色（row 存 role 属性标记）。"""
+        for i in range(self._msg_layout.count()):
+            row = self._msg_layout.itemAt(i).widget()
+            if row is None:
+                continue
+            role = row.property("msg_role")
+            if not role:
+                continue
+            for lab in row.findChildren(QLabel):
+                if lab.property("bubble"):
+                    bg = theme.token("bubble_me") if role == "user" else theme.token("bubble_ai")
+                    fg = theme.accent_text() if role == "user" else theme.token("text_main")
+                    lab.setStyleSheet(
+                        f"QLabel {{ background: {bg}; color: {fg}; border-radius: 12px; font-size: 13px; }}"
+                    )
+                elif lab.property("ts"):
+                    lab.setStyleSheet(f"QLabel {{ color: {theme.token('text_faint')}; font-size: 10px; }}")
+
     def _save_size(self) -> None:
         if self._maximized:
             return  # 最大化尺寸不是常规尺寸，下次打开应还原拖拽后的大小
@@ -616,16 +687,17 @@ class ChatPanel(QWidget):
         左右完全由 QHBoxLayout 保证——不再依赖任何 CSS 对齐。
         """
         row = QWidget()
+        row.setProperty("msg_role", role)  # 主题切换时按 role 重着色
         lay = QHBoxLayout(row)
         lay.setContentsMargins(0, 3, 0, 3)
         lay.setSpacing(8)
 
         if role == "user":
-            bg, fg = "#2b5cff", "#fff"
+            bg, fg = theme.token("bubble_me"), theme.accent_text()
             align_side = Qt.AlignRight
             lay.addStretch(1)
         else:
-            bg, fg = "#23262f", "#d8dbe2"
+            bg, fg = theme.token("bubble_ai"), theme.token("text_main")
             align_side = Qt.AlignLeft
             avatar = RobotAvatar()
             self._avatars.append(avatar)
@@ -647,7 +719,8 @@ class ChatPanel(QWidget):
         col.addWidget(bubble, 0, align_side)
         if ts:
             ts_label = QLabel(_fmt_ts(ts))
-            ts_label.setStyleSheet("QLabel { color: #5b6270; font-size: 10px; }")
+            ts_label.setProperty("ts", True)
+            ts_label.setStyleSheet(f"QLabel {{ color: {theme.token('text_faint')}; font-size: 10px; }}")
             col.addWidget(ts_label, 0, align_side)
         lay.addLayout(col)
         if role != "user":
@@ -682,7 +755,7 @@ class ChatPanel(QWidget):
         bubble.setContentsMargins(14, 7, 14, 7)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
         bubble.setStyleSheet(
-            "QLabel { background: #23262f; color: #d8dbe2; border-radius: 12px; font-size: 13px; }"
+            f"QLabel {{ background: {theme.token('bubble_ai')}; color: {theme.token('text_main')}; border-radius: 12px; font-size: 13px; }}"
         )
         lay.addWidget(bubble, 0, Qt.AlignTop)
         lay.addStretch(1)

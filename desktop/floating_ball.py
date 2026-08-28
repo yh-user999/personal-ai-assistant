@@ -10,6 +10,7 @@ import math
 import random
 from pathlib import Path
 
+import theme
 from chat_panel import ChatPanel
 from chat_workers import _HealthWorker, retire
 from PySide6.QtCore import QPointF, Qt, QTimer
@@ -17,9 +18,10 @@ from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from robot_pose import arm_angle, leg_angles
 from skins import SKIN_NAMES, current_skin, set_skin
+from theme import THEME_NAMES
 
-# 状态 → 主色（光晕/天线/眼睛/胸口屏联动）
-STATE_COLORS = {
+# 状态 → 主色（光晕/天线/眼睛/胸口屏联动）——跟随主题（theme.state_colors）
+_DEFAULT_STATE_COLORS = {
     "idle": "#60a5fa",      # 蓝
     "online": "#34d399",    # 绿
     "thinking": "#fbbf24",  # 琥珀
@@ -79,7 +81,7 @@ class FloatingBall(QWidget):
 
     def set_state(self, state: str) -> None:
         """切换状态指示灯颜色：idle/online/thinking/error。"""
-        if state in STATE_COLORS:
+        if state in theme.state_colors():
             self.state = state
             self.update()
 
@@ -155,7 +157,8 @@ class FloatingBall(QWidget):
         return ex, ey
 
     def _state_color(self) -> QColor:
-        return QColor(STATE_COLORS.get(self.state, STATE_COLORS["idle"]))
+        colors = theme.state_colors()
+        return QColor(colors.get(self.state, colors["idle"]))
 
     @staticmethod
     def _shell_gradient(x: float, y: float, w: float, h: float) -> QLinearGradient:
@@ -656,6 +659,12 @@ class FloatingBall(QWidget):
             act.setCheckable(True)
             act.setChecked(self.skin == name)
             act.triggered.connect(lambda checked=False, n=name: self._switch_skin(n))
+        theme_menu = menu.addMenu("主题")
+        for name, label in THEME_NAMES.items():
+            act = theme_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(theme.current_theme() == name)
+            act.triggered.connect(lambda checked=False, n=name: self._switch_theme(n))
         menu.addSeparator()
         menu.addAction("退出", QApplication.quit)
         menu.exec(event.globalPos())
@@ -667,6 +676,18 @@ class FloatingBall(QWidget):
         self.skin = name
         set_skin(name)
         self.update()
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.refresh_icon()
+
+    def _switch_theme(self, name: str) -> None:
+        """切换主题：持久化 + 状态灯/LED 重绘 + 打开中的面板即时重着色 + 托盘图标。"""
+        if name not in THEME_NAMES or name == theme.current_theme():
+            return
+        theme.set_theme(name)
+        self.update()  # 光晕/LED/粒子取 theme.state_colors()，重绘即生效
+        if self.panel is not None:
+            self.panel.apply_theme()
         tray = getattr(self, "_tray", None)
         if tray is not None:
             tray.refresh_icon()

@@ -265,6 +265,9 @@ class ChatPanel(QWidget):
         self._typing_row: QWidget | None = None  # "正在想"临时行（带思考动画头像）
         self._msg_container = QWidget()
         self._msg_container.setStyleSheet("background: transparent;")  # viewport 不透明会盖住深色卡片
+        # 消息区显式 Arrow：防止把手的缩放光标经父子继承链泄漏到内容区
+        # （setCursor 沿父链继承，子部件不显式声明就会吃到祖先/邻居的光标）
+        self._msg_container.setCursor(Qt.CursorShape.ArrowCursor)
         self._msg_layout = QVBoxLayout(self._msg_container)
         self._msg_layout.setContentsMargins(0, 0, 0, 0)
         self._msg_layout.setSpacing(0)
@@ -316,6 +319,7 @@ class ChatPanel(QWidget):
         row = QHBoxLayout()
         self.input = QLineEdit()
         self.input.setPlaceholderText("说点什么…（记录：xxx 可记工作日志）")
+        self.input.setCursor(Qt.CursorShape.IBeamCursor)  # 显式 I-beam（同气泡）
         self.input.setStyleSheet(
             "QLineEdit { background: #14161b; color: #eee; border: 1px solid #333;"
             "border-radius: 8px; padding: 8px; }"
@@ -635,6 +639,7 @@ class ChatPanel(QWidget):
         bubble.setMaximumWidth(self._bubble_max_width())
         bubble.setContentsMargins(10, 7, 10, 7)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 支持选中复制
+        bubble.setCursor(Qt.CursorShape.IBeamCursor)  # 显式声明：可选中文本区
         bubble.setStyleSheet(
             f"QLabel {{ background: {bg}; color: {fg}; border-radius: 12px; font-size: 13px; }}"
         )

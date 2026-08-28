@@ -33,7 +33,8 @@ def fake_shell(monkeypatch):
     def fake_popen(cmd, **kwargs):
         calls.append(("popen", tuple(cmd)))
 
-    monkeypatch.setattr(os, "startfile", fake_startfile)
+    # raising=False：os.startfile 仅 Windows 存在，Linux 测试环境按"新增属性"打桩
+    monkeypatch.setattr(os, "startfile", fake_startfile, raising=False)
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
     return calls, state
 

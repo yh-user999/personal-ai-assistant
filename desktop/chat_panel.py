@@ -402,25 +402,18 @@ class ChatPanel(QWidget):
         hs[7].setGeometry(0, h - m, m, m)                # 左下
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            edges = self._edge_at(event.position().toPoint())
-            if edges:
-                self.begin_resize(edges, event)
-                event.accept()
-                return
+        # 缩放完全由 _ResizeHandle 接管；面板自身不再处理——
+        # 此前的"边缘 6px 判定 + setCursor"会把光标改成缩放箭头、
+        # 吞掉气泡文本选择（setCursor 优先级高于子部件的 I-beam）。
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self._manual_edges:
+            # 缩放进行中（把手发起），跟随更新几何
             if event.buttons() & Qt.LeftButton:
                 self._apply_manual_resize(event.globalPosition().toPoint())
             event.accept()
             return
-        cursor = self._CURSORS.get(self._edge_at(event.position().toPoint()))
-        if cursor:
-            self.setCursor(cursor)
-        else:
-            self.unsetCursor()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:

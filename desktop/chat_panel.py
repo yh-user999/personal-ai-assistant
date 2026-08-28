@@ -220,6 +220,16 @@ class ChatPanel(QWidget):
         )
         pin_btn.clicked.connect(self._toggle_pin)
         self._pin_btn = pin_btn
+        max_btn = QPushButton("□")
+        max_btn.setFixedSize(26, 26)
+        max_btn.setCursor(Qt.PointingHandCursor)
+        max_btn.setToolTip("最大化/还原")
+        max_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #888; border: none; font-size: 13px; }"
+            "QPushButton:hover { color: #fff; background: #2a2d35; border-radius: 13px; }"
+        )
+        max_btn.clicked.connect(self._toggle_maximize)
+        self._max_btn = max_btn
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(26, 26)
         close_btn.setCursor(Qt.PointingHandCursor)
@@ -232,6 +242,7 @@ class ChatPanel(QWidget):
         title_row = QHBoxLayout()
         title_row.addWidget(title, 1)
         title_row.addWidget(pin_btn)
+        title_row.addWidget(max_btn)
         title_row.addWidget(close_btn)
         layout.addLayout(title_row)
 
@@ -438,6 +449,8 @@ class ChatPanel(QWidget):
         """标题栏：按住拖动移动窗口（手动），双击最大化/还原。"""
         if obj is self._title:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                if self.isMaximized():
+                    return True  # 最大化状态下不允许拖动（先还原再拖）
                 self._moving = True
                 self._move_offset = (
                     event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -459,6 +472,18 @@ class ChatPanel(QWidget):
             self.showNormal()
         else:
             self.showMaximized()
+        self._update_max_btn()
+
+    def _update_max_btn(self) -> None:
+        """按钮图标随窗口状态切换：□ 最大化 / ▣ 还原。"""
+        maximized = self.isMaximized()
+        self._max_btn.setText("▣" if maximized else "□")
+        self._max_btn.setToolTip("还原窗口" if maximized else "最大化")
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._update_max_btn()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -471,6 +496,8 @@ class ChatPanel(QWidget):
         super().hideEvent(event)
 
     def _save_size(self) -> None:
+        if self.isMaximized():
+            return  # 最大化尺寸不是常规尺寸，下次打开应还原拖拽后的大小
         self._settings.setValue("panel_w", self.width())
         self._settings.setValue("panel_h", self.height())
 

@@ -214,17 +214,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
     knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
     # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
     # 1500字/块配 ±1 邻域 ≈ 一整场戏）
-    knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=4000)
+    knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=2500)
     knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
     # 人物别名背景注入：跨名字指代的剧情问题需要这个前提（左志诚=左擎苍）
     alias_note = knowledge.get_alias_note(msg)
     if alias_note:
         knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
-    # 小说设定卡注入：策划的权威事实，优先级最高（人物/事件问题直接可用）
+    # 小说设定卡注入：策划的权威事实，即知识库资料，可直接作为回答依据
     novel_facts = knowledge.get_novel_facts(msg)
     if novel_facts:
         knowledge_text = (
-            "【小说设定（权威背景，优先采用）】\n- "
+            "【小说设定卡（知识库权威资料，回答时直接采用）】\n- "
             + "\n- ".join(novel_facts)
             + "\n\n"
             + knowledge_text

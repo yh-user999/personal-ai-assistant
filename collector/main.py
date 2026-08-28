@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 仓库根：common 共享包
 
 from dotenv import load_dotenv
 
@@ -59,11 +60,12 @@ async def main() -> None:
         return
 
     logger.info("采集器启动：%d 个通道 → %s", len(collectors), settings.server_url)
+    executor = Executor(settings.server_url, token=settings.api_token)
     tasks = [
         asyncio.create_task(pusher.run()),
         asyncio.create_task(pusher.heartbeat()),
         # 执行器（第 11 课）：轮询服务器指令 → 执行"打开/列目录/读文件"
-        asyncio.create_task(Executor(settings.server_url, token=settings.api_token).run()),
+        asyncio.create_task(executor.run()),
         *[asyncio.create_task(c.run()) for c in collectors],
     ]
     try:
@@ -73,6 +75,7 @@ async def main() -> None:
     finally:
         for c in collectors:
             c.stop()
+        await executor.aclose()
         await pusher.stop()
 
 

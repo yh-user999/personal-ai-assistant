@@ -20,6 +20,9 @@ env/
 logs/
 *.log
 
+# 采集器断网缓存（个人行为数据，绝不入库）
+collector/cache/
+
 # 打包产物
 dist/
 build/

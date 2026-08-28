@@ -9,12 +9,15 @@ v0.2 采纳外部评审优化：
 参考 Wave Memory：importance 随引用增长、检索评分 = 相似度 × importance × 时间衰减。
 """
 import json
+import logging
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from app.core import embedding
 from app.models.database import connect
+
+logger = logging.getLogger("assistant.memory")
 
 INJECT_FORMAT = "[记忆] {ts}: {content}"
 
@@ -65,8 +68,9 @@ async def write_message(sender: str, content: str) -> int | None:
             conn.commit()
         finally:
             conn.close()
-    except Exception:
-        pass  # 向量不可用时退化为关键词检索
+    except Exception as e:
+        # 降级不阻塞写入，但必须留痕——否则 embedding key 失效会静默退化数周无人知晓
+        logger.warning("记忆向量化失败，该条退化为关键词检索: %s", e)
     return memory_id
 
 
@@ -144,8 +148,9 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
                 rows.append(dict(r))
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # 向量检索失败退化为关键词，但留痕排障（key 失效/服务宕机不该无声无息）
+        logger.warning("向量检索失败，退化为关键词检索: %s", e)
 
     # 2) 关键词兜底（向量不可用或无结果时）
     if not rows:

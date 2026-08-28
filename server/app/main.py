@@ -5,6 +5,7 @@ M2 里程碑：注册 events/stats 路由。
 M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 """
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,6 +25,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("assistant")
+
+APP_VERSION = "0.2.0"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用
 
 
 @asynccontextmanager
@@ -50,14 +53,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if settings.api_token and request.url.path not in self.PUBLIC_PATHS:
             auth = request.headers.get("authorization", "")
-            if auth != f"Bearer {settings.api_token}":
+            # 常数时间比较，防时序侧信道逐字节猜 token
+            if not secrets.compare_digest(
+                auth.encode(), f"Bearer {settings.api_token}".encode()
+            ):
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
 
 
 app = FastAPI(
     title="Personal AI Assistant",
-    version="0.1.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 app.add_middleware(AuthMiddleware)
@@ -76,7 +82,7 @@ app.include_router(executor.router, prefix="/api", tags=["executor"])
 async def health(request: Request):
     """健康检查：服务状态 + 采集器心跳（检测采集停滞）。"""
     hb = request.app.state.collector_heartbeat
-    return {"status": "ok", "version": "0.2.0", "collector_heartbeat": hb}
+    return {"status": "ok", "version": APP_VERSION, "collector_heartbeat": hb}
 
 
 # ── Web 静态页 ────────────────────────────────────────────

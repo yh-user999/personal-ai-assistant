@@ -1,4 +1,5 @@
 """聊天接口：记忆检索注入 + LLM 编排 + 记录归档 + 思维模块（自省/关切/术语/风格）。"""
+import logging
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -17,6 +18,8 @@ from app.services.profile import get_profile_injection
 from app.services.self_reflect import detect_correction, get_lessons_injection, save_lesson
 
 router = APIRouter()
+
+logger = logging.getLogger("assistant.chat")
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -248,7 +251,15 @@ async def chat(req: ChatRequest) -> ChatResponse:
         + history
         + [{"role": "user", "content": msg}]
     )
-    reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
+    try:
+        reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
+    except Exception:
+        # 失败给友好回复而不是裸 500；用户消息已入库（第 3 步），assistant 侧不写
+        logger.exception("LLM 调用失败")
+        return ChatResponse(
+            reply="抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？",
+            memories_used=0,
+        )
 
     # 5) 记录回复 + 提升被引用记忆的重要性 + 术语建档
     await memory.write_message("assistant", reply)

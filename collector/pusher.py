@@ -48,6 +48,7 @@ class EventPusher:
         # 各采集通道最近成功时间（通道名 → ISO 时间）；GIL 下单键赋值线程安全
         self._health: dict = {}
         self._running = True
+        self._client: httpx.AsyncClient | None = None  # 长驻客户端，避免每批次重建
 
     # ── 生产者侧（任意线程调用，同步）────────────────────────
 
@@ -92,6 +93,8 @@ class EventPusher:
     async def stop(self) -> None:
         self._running = False
         self.flush_to_disk()
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     # ── 内部实现 ────────────────────────────────────────────
 
@@ -107,14 +110,18 @@ class EventPusher:
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=10, trust_env=False)
+        return self._client
+
     async def _push_batch(self, batch: list[dict]) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
-                r = await client.post(
-                    f"{self.server_url}/api/events",
-                    json={"events": batch},
-                    headers=self._headers(),
-                )
+            r = await self._get_client().post(
+                f"{self.server_url}/api/events",
+                json={"events": batch},
+                headers=self._headers(),
+            )
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
             logger.info("推送成功 %d 条", len(batch))
@@ -125,12 +132,11 @@ class EventPusher:
     async def _send_heartbeat(self) -> None:
         payload = {"client": "collector", "channels": dict(self._health)}
         try:
-            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
-                r = await client.post(
-                    f"{self.server_url}/api/heartbeat",
-                    json=payload,
-                    headers=self._headers(),
-                )
+            r = await self._get_client().post(
+                f"{self.server_url}/api/heartbeat",
+                json=payload,
+                headers=self._headers(),
+            )
             if r.status_code == 200:
                 logger.info("心跳已发送: %s", payload["channels"])
             else:

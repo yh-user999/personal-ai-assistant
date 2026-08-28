@@ -10,11 +10,11 @@ import math
 import random
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from chat_panel import ChatPanel
+from chat_workers import _HealthWorker
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
-
-from chat_panel import ChatPanel
 from robot_pose import arm_angle, leg_angles
 from skins import SKIN_NAMES, current_skin, set_skin
 
@@ -27,18 +27,6 @@ STATE_COLORS = {
 }
 
 ASSET_SVG = Path(__file__).resolve().parent / "assets" / "robot.svg"
-
-
-class _HealthWorker(QThread):
-    """后台健康检查线程：断线时机器人亮红灯。"""
-    result = Signal(bool)
-
-    def __init__(self, client) -> None:
-        super().__init__()
-        self.client = client
-
-    def run(self) -> None:
-        self.result.emit(self.client.health())
 
 
 class FloatingBall(QWidget):

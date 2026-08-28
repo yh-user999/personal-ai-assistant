@@ -160,14 +160,21 @@ CREATE TABLE IF NOT EXISTS unresolved_issues (
 -- ⑯ 执行器指令队列（第 11 课：机器人操作 Windows 的通道）
 CREATE TABLE IF NOT EXISTS executor_commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  action TEXT NOT NULL,            -- open / list_dir / read_file
+  action TEXT NOT NULL,            -- open / list_dir / read_file / copy / backup / move / rename
   target TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',   -- pending / done / failed
+  status TEXT DEFAULT 'pending',   -- pending / claimed / done / failed
   result TEXT DEFAULT '',
   created_at TEXT NOT NULL,
+  claimed_at TEXT,
   executed_at TEXT
 );
 """
+
+# 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）
+_MIGRATIONS = [
+    # 执行器指令认领时间：支撑原子认领 + claimed 超时释放
+    "ALTER TABLE executor_commands ADD COLUMN claimed_at TEXT",
+]
 
 # 向量表（sqlite-vec 虚拟表）。
 # 单独拆分：扩展不可用时 init_db 跳过此段，基础功能不受影响。
@@ -186,11 +193,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
 _SCHEMA = _BASE_SCHEMA + VEC_TABLE_SQL
 
 
+_vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过日志），避免每次连接刷屏
+
+
 def connect() -> sqlite3.Connection:
     """打开数据库连接：WAL 模式（读写并发）+ busy_timeout（锁等待）。
 
     WAL 允许读写并行：采集事件写入不会阻塞记忆检索查询。
     """
+    global _vec_state
     db_file = settings.db_file
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_file), timeout=5.0)
@@ -204,10 +215,14 @@ def connect() -> sqlite3.Connection:
 
         conn.enable_load_extension(True)
         conn.load_extension(sqlite_vec.loadable_path())
-        logger.info("sqlite-vec 已加载: %s", sqlite_vec.loadable_path())
+        if _vec_state is not True:
+            logger.info("sqlite-vec 已加载: %s", sqlite_vec.loadable_path())
+        _vec_state = True
     except Exception as e:
         # 扩展未加载不致命：向量检索功能暂不可用，其余功能正常
-        logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
+        if _vec_state is not False:
+            logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
+        _vec_state = False
     return conn
 
 
@@ -215,6 +230,11 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(_SCHEMA)
+        for sql in _MIGRATIONS:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # 列已存在（新库由 schema 直接建出）
         conn.commit()
     except sqlite3.OperationalError as e:
         # sqlite-vec 未安装时虚拟表建表失败：回滚，改用基础表（向量检索自动退化）

@@ -12,6 +12,8 @@ def get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(
             base_url=settings.embedding_base_url,
             api_key=settings.embedding_api_key,
+            timeout=settings.llm_timeout,
+            max_retries=settings.llm_max_retries,
         )
     return _client
 

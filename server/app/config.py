@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
+    llm_timeout: float = 60.0      # 单次调用超时秒数（SDK 默认 600s 太长，会挂死请求）
+    llm_max_retries: int = 2       # 网络错误自动重试次数
 
     # ── Embedding ───────────────────────────────────────────
     embedding_base_url: str = "https://api.siliconflow.cn/v1"

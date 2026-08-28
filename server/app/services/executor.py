@@ -10,8 +10,9 @@
 open 仅 startfile（打开文件/文件夹/应用，不执行命令）。
 """
 import json
+import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.models.database import connect
@@ -22,6 +23,7 @@ def _now() -> str:
 
 
 STALE_SECONDS = 30 * 60  # pending 指令 30 分钟未被领取 = 过期（防僵尸指令隔天突然执行）
+CLAIM_SECONDS = 10 * 60  # claimed 10 分钟未回传 = 执行器中途失联，释放为 failed
 
 
 def _pack(a: str, b: str) -> str:
@@ -99,29 +101,39 @@ def enqueue(action: str, target: str) -> int:
 
 
 def get_pending() -> dict | None:
-    """取队首 pending 指令（executor 轮询）。
+    """原子认领队首 pending 指令（executor 轮询）。
 
-    超时未领取的指令自动标记 failed（过期），不再返回——
-    否则旧指令会在采集器重启后突然被执行，用户看到"延迟的惊喜"。
+    认领即置 status='claimed' 并记录 claimed_at：同一指令不会被两个轮询
+    重复领取，也不会因回传丢失被反复执行（旧实现执行期间仍标记 pending，
+    采集器回传失败时会每 5s 重跑同一指令直到过期）。超时清理：
+    - pending 超 30 分钟未领取 → failed（过期，防"延迟的惊喜"）
+    - claimed 超 10 分钟未回传 → failed（执行器失联，不永久占队）
     """
     conn = connect()
     try:
-        row = conn.execute(
-            "SELECT id, action, target, created_at FROM executor_commands "
-            "WHERE status='pending' ORDER BY id LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return None
-        created = datetime.fromisoformat(row["created_at"])
-        if (datetime.now(timezone.utc) - created).total_seconds() > STALE_SECONDS:
-            conn.execute(
-                "UPDATE executor_commands SET status='failed', "
-                "result='指令已过期（超时未执行）', executed_at=? WHERE id=?",
-                (_now(), row["id"]),
-            )
-            conn.commit()
-            return None
-        return dict(row)
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "UPDATE executor_commands SET status='failed', "
+            "result='指令已过期（超时未执行）', executed_at=? "
+            "WHERE status='pending' AND created_at < ?",
+            (_now(), (now - timedelta(seconds=STALE_SECONDS)).isoformat()),
+        )
+        conn.execute(
+            "UPDATE executor_commands SET status='failed', "
+            "result='执行器回传超时，已标记失败', executed_at=? "
+            "WHERE status='claimed' AND claimed_at < ?",
+            (_now(), (now - timedelta(seconds=CLAIM_SECONDS)).isoformat()),
+        )
+        cur = conn.execute(
+            "UPDATE executor_commands SET status='claimed', claimed_at=? "
+            "WHERE id = (SELECT id FROM executor_commands "
+            "            WHERE status='pending' ORDER BY id LIMIT 1) "
+            "RETURNING id, action, target, created_at",
+            (_now(),),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
     finally:
         conn.close()
 
@@ -139,17 +151,31 @@ def mark_result(cmd_id: int, ok: bool, result: str) -> None:
         conn.close()
 
 
+def _allowed_roots() -> list[str]:
+    """解析白名单根目录：归一化为绝对路径 + normcase（Windows 大小写/斜杠不敏感）。"""
+    return [
+        os.path.normcase(os.path.abspath(r.strip().replace("\\", "/")))
+        for r in settings.executor_allowed_roots.replace(",", ";").split(";")
+        if r.strip()
+    ]
+
+
+def _path_in_roots(target: str, roots: list[str]) -> bool:
+    """判断归一化后的 target 是否等于某根目录或位于其内部。
+
+    根目录补尾分隔符再做前缀比较，堵住兄弟目录绕过
+    （C:/Users/wfy33-evil 不属于 C:/Users/wfy33）；abspath 已折叠 ../ 穿越。
+    """
+    norm = os.path.normcase(os.path.abspath(target.replace("\\", "/")))
+    return any(norm == root or norm.startswith(root.rstrip("\\/") + os.sep) for root in roots)
+
+
 def check_roots(target: str) -> bool:
     """白名单检查：list_dir/read_file 目标须在允许根目录内。未配置=全禁止。
 
     分隔符：分号或逗号均可（.env 建议分号——逗号会被 pydantic-settings 误解析）。
     """
-    roots = [
-        r.strip()
-        for r in settings.executor_allowed_roots.replace(",", ";").split(";")
-        if r.strip()
-    ]
+    roots = _allowed_roots()
     if not roots:
         return False
-    norm = target.replace("\\", "/").lower()
-    return any(norm.startswith(r.replace("\\", "/").lower()) for r in roots)
+    return _path_in_roots(target, roots)

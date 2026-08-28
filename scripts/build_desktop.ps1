@@ -9,7 +9,7 @@ Push-Location $DesktopDir
 & python -m pip install -r requirements.txt
 & python -m pip install pyinstaller
 
-& pyinstaller --noconfirm --onefile --windowed --name "PersonalAssistant" main.py
+& pyinstaller --noconfirm --onefile --windowed --name "PersonalAssistant" --paths ".." main.py
 
 Write-Host "产物: $DesktopDir\dist\PersonalAssistant.exe"
 Pop-Location

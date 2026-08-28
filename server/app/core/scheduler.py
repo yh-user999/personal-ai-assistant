@@ -4,8 +4,9 @@
 - eviction: 每 6h 淘汰 noise（7 天）/ 过期 chat（30 天）
 
 时区：Asia/Shanghai（周报"周日 21:00"按北京时间触发）。
+协程函数直接交给 add_job（AsyncIOScheduler 会在事件循环上调度），
+不用 lambda+create_task——后者不保留任务引用，可能被 GC 中途回收、任务无声消失。
 """
-import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -29,16 +30,15 @@ class SchedulerManager:
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self.scheduler.add_job(
-            lambda: asyncio.create_task(
-                consolidate_recent(hours=settings.consolidation_interval_hours)
-            ),
+            consolidate_recent,
             "interval",
             hours=settings.consolidation_interval_hours,
+            args=[settings.consolidation_interval_hours],
             id="consolidation",
         )
         # 画像刷新：周报前一小时（周日 20:00），周报生成时能读到最新画像
         self.scheduler.add_job(
-            lambda: asyncio.create_task(refresh_profile()),
+            refresh_profile,
             "cron",
             day_of_week=settings.weekly_report_weekday,
             hour=max(0, settings.weekly_report_hour - 1),
@@ -46,7 +46,7 @@ class SchedulerManager:
         )
         # 每周反思：周日 21:00（Asia/Shanghai）
         self.scheduler.add_job(
-            lambda: asyncio.create_task(run_weekly_reflect()),
+            run_weekly_reflect,
             "cron",
             day_of_week=settings.weekly_report_weekday,
             hour=settings.weekly_report_hour,
@@ -54,21 +54,21 @@ class SchedulerManager:
         )
         # 每日小结：每晚 22:00
         self.scheduler.add_job(
-            lambda: asyncio.create_task(run_daily_summary()),
+            run_daily_summary,
             "cron",
             hour=22,
             id="daily_summary",
         )
         # 淘汰：noise 7 天删除 / chat 30 天
         self.scheduler.add_job(
-            lambda: asyncio.create_task(evict_stale()),
+            evict_stale,
             "interval",
             hours=6,
             id="eviction",
         )
         # 每日备份：凌晨 3:00（避开周报/整合高峰；热备份+滚动保留 7 份）
         self.scheduler.add_job(
-            lambda: asyncio.create_task(run_daily_backup()),
+            run_daily_backup,
             "cron",
             hour=3,
             id="daily_backup",

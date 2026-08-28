@@ -10,6 +10,7 @@ import tempfile
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
+from common.file_ops import MAX_LIST, is_hidden_system, natural_key
 from desktop import local_exec  # noqa: E402
 
 
@@ -23,7 +24,7 @@ def _make_tree(path, dirs=(), files=()):
 
 def test_natural_key():
     names = ["f2", "f10", "f1", "B", "a"]
-    assert sorted(names, key=local_exec._natural_key) == ["a", "B", "f1", "f2", "f10"]
+    assert sorted(names, key=natural_key) == ["a", "B", "f1", "f2", "f10"]
 
 
 def test_list_dir_format_and_sort():
@@ -58,13 +59,13 @@ def test_list_dir_missing_dir():
 
 def test_list_dir_truncation():
     with tempfile.TemporaryDirectory() as td:
-        _make_tree(td, files=[f"f{i:03d}.txt" for i in range(local_exec.MAX_LIST + 2)])
+        _make_tree(td, files=[f"f{i:03d}.txt" for i in range(MAX_LIST + 2)])
         ok, text = local_exec._execute("list_dir", td)
         assert ok
-        assert f"共 {local_exec.MAX_LIST + 2} 项" in text
+        assert f"共 {MAX_LIST + 2} 项" in text
         assert f"… 其余 2 项" in text
         # 文件段只列出 MAX_LIST 个（分隔符数量 = MAX_LIST - 1）
-        assert text.count(" · ") == local_exec.MAX_LIST - 1
+        assert text.count(" · ") == MAX_LIST - 1
 
 
 def test_hidden_filter_non_windows_is_noop():
@@ -72,7 +73,7 @@ def test_hidden_filter_non_windows_is_noop():
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "normal.txt")
         open(p, "w", encoding="utf-8").close()
-        assert local_exec._is_hidden_system(p) is False
+        assert is_hidden_system(p) is False
 
 
 def test_list_dir_sensitive_warning():

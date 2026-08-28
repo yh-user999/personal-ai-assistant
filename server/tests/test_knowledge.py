@@ -40,3 +40,46 @@ def test_chunk_preserves_order():
     chunks = chunk_text(text, chunk_size=200, overlap=0)
     joined = "".join(chunks)
     assert "段落0" in joined and "段落2" in joined
+
+
+# ── 邻域扩展（6.18 后：小说问答情节完整性）────────────────
+
+def test_expand_chunks_merges_neighborhood():
+    from app.core import knowledge
+    from app.models.database import connect, init_db
+
+    init_db()
+    conn = connect()
+    conn.execute("DELETE FROM knowledge_chunks")
+    for i in range(6):
+        conn.execute(
+            "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("小说-测试", i, f"第{i}段内容", "2026-01-01T00:00:00+00:00"),
+        )
+    conn.commit()
+    conn.close()
+
+    hits = [
+        {"doc_name": "小说-测试", "chunk_index": 3, "content": "第3段内容", "similarity": 0.8},
+        # 落在扩展区间内的命中应被去重
+        {"doc_name": "小说-测试", "chunk_index": 4, "content": "第4段内容", "similarity": 0.7},
+        # 区间外的保持原样
+        {"doc_name": "小说-测试", "chunk_index": 9, "content": "第9段内容", "similarity": 0.6},
+    ]
+    out = knowledge.expand_chunks(hits, radius=2)
+    assert len(out) == 2  # 首条扩展 + 区间外的一条
+    assert out[0]["expanded"] is True
+    assert out[0]["chunk_index"] == "1-5"
+    assert "第1段内容" in out[0]["content"] and "第5段内容" in out[0]["content"]
+    assert out[1]["chunk_index"] == 9
+    # 注入格式带"剧情片段"标注
+    text = knowledge.format_knowledge_injection(out)
+    assert "剧情片段" in text and "片段" in text
+
+
+def test_expand_chunks_empty():
+    from app.core import knowledge
+
+    assert knowledge.expand_chunks([]) == []
+

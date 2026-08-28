@@ -163,14 +163,55 @@ async def search_knowledge(query: str, top_k: int = 3, method: str = "hybrid") -
     return await hybrid_search(query, top_k)
 
 
+def expand_chunks(hits: list[dict], radius: int = 2, max_chars: int = 2800) -> list[dict]:
+    """把首条命中扩展为连续剧情段（同文档邻域块拼接），其余命中保持单块。
+
+    零成本提升小说问答的"情节完整性"：500 字单块太碎，±2 邻域 ≈ 一整场戏。
+    落在扩展区间内的后续命中自动去重，避免重复注入。
+    """
+    if not hits:
+        return []
+    top = hits[0]
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT chunk_index, content FROM knowledge_chunks "
+            "WHERE doc_name=? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index",
+            (
+                top["doc_name"],
+                max(0, top["chunk_index"] - radius),
+                top["chunk_index"] + radius,
+            ),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return list(hits)
+    lo, hi = rows[0]["chunk_index"], rows[-1]["chunk_index"]
+    expanded_text = "\n".join(r["content"] for r in rows)[:max_chars]
+    out = [{
+        "doc_name": top["doc_name"],
+        "chunk_index": f"{lo}-{hi}",
+        "content": expanded_text,
+        "similarity": top["similarity"],
+        "expanded": True,
+    }]
+    for h in hits[1:]:
+        if h["doc_name"] == top["doc_name"] and lo <= h["chunk_index"] <= hi:
+            continue  # 已在扩展区间内，去重
+        out.append(dict(h))
+    return out
+
+
 def format_knowledge_injection(hits: list[dict]) -> str:
     """检索结果注入 prompt 的格式（带来源标注，支持"引用"）。"""
     if not hits:
         return ""
     parts = []
     for i, h in enumerate(hits, 1):
+        kind = "剧情片段" if h.get("expanded") else "片段"
         parts.append(
-            f"[资料{i} · {h['doc_name']}#{h['chunk_index']} · 相关度{h['similarity']}]\n{h['content']}"
+            f"[资料{i} · {h['doc_name']}#{h['chunk_index']} · {kind} · 相关度{h['similarity']}]\n{h['content']}"
         )
     return "\n\n".join(parts)
 

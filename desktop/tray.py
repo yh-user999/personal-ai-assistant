@@ -241,6 +241,12 @@ class TrayIcon(QSystemTrayIcon):
         # 新每日小结（每晚 22:00 后第一次检查时通知）
         if daily and daily.get("date") != self._known_daily_date:
             self._known_daily_date = daily.get("date")
+            # 已是昨天的旧小结不再弹（进程重启后 _known_* 归零会误判为"新"）
+            from datetime import date as _date
+
+            today = _date.today().isoformat()
+            if daily.get("date") < today:
+                return
             content = (daily.get("content") or "").strip()
             preview = content[:60] + ("…" if len(content) > 60 else "")
             self.showMessage(

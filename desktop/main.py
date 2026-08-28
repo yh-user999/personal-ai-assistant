@@ -29,6 +29,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("desktop")
 
+# 原生崩溃取证：Python excepthook 抓不到原生层崩溃（Qt/Win32 段错误 =
+# 进程无声消失、日志戛然而止）。faulthandler 会把原生栈写进同一黑匣子。
+import faulthandler  # noqa: E402
+
+_fault_log = open(_LOG_DIR / "faulthandler.log", "a", encoding="utf-8", buffering=1)
+faulthandler.enable(file=_fault_log)
+logger.info("faulthandler 已启用 → logs/faulthandler.log")
+
 
 def _excepthook(exc_type, exc_value, exc_tb):
     """未捕获异常写入黑匣子（pythonw 下不打印，只能靠文件）。"""
@@ -36,6 +44,8 @@ def _excepthook(exc_type, exc_value, exc_tb):
         "未捕获异常:\n%s",
         "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
     )
+    faulthandler_log_path = _LOG_DIR / "faulthandler.log"
+    logger.critical("原生崩溃取证见: %s", faulthandler_log_path)
 
 
 sys.excepthook = _excepthook

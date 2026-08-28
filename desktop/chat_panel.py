@@ -31,6 +31,7 @@ from chat_workers import (
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -154,6 +155,10 @@ class ChatPanel(QWidget):
         self._manual_pos = None
         self._moving = False
         self._move_offset = None
+        # 手动最大化状态（不用原生 isMaximized/showMaximized——原生最大化
+        # 对无边框半透明窗口有崩溃风险，状态自管）
+        self._maximized = False
+        self._pre_max_geo = None
         self._size_save_timer = QTimer(self)
         self._size_save_timer.setSingleShot(True)
         self._size_save_timer.setInterval(400)  # 防抖：拖拽结束才写 QSettings
@@ -449,7 +454,7 @@ class ChatPanel(QWidget):
         """标题栏：按住拖动移动窗口（手动），双击最大化/还原。"""
         if obj is self._title:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                if self.isMaximized():
+                if self._maximized:
                     return True  # 最大化状态下不允许拖动（先还原再拖）
                 self._moving = True
                 self._move_offset = (
@@ -468,35 +473,41 @@ class ChatPanel(QWidget):
         return super().eventFilter(obj, event)
 
     def _toggle_maximize(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
+        """最大化/还原：纯手动几何，不走原生 showMaximized。
+
+        无边框 + 半透明窗口的原生最大化在 Windows 上会让 Qt 原生层崩溃
+        （进程无声消失、日志戛然而止——faulthandler 前时代 13:56 的死亡
+        模式），改用自己算工作区矩形，零原生调用零风险。
+        """
+        if self._maximized:
+            self.setGeometry(self._pre_max_geo)
+            self._maximized = False
         else:
-            self.showMaximized()
+            self._pre_max_geo = self.geometry()
+            self._maximized = True
+            self.setGeometry(
+                QApplication.primaryScreen().availableGeometry()
+            )
         self._update_max_btn()
 
     def _update_max_btn(self) -> None:
         """按钮图标随窗口状态切换：□ 最大化 / ▣ 还原。"""
-        maximized = self.isMaximized()
-        self._max_btn.setText("▣" if maximized else "□")
-        self._max_btn.setToolTip("还原窗口" if maximized else "最大化")
-
-    def changeEvent(self, event) -> None:
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            self._update_max_btn()
+        self._max_btn.setText("▣" if self._maximized else "□")
+        self._max_btn.setToolTip("还原窗口" if self._maximized else "最大化")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._layout_handles()
         self._apply_bubble_widths()
-        self._size_save_timer.start()
+        if not self._maximized:
+            self._size_save_timer.start()
 
     def hideEvent(self, event) -> None:
         self._save_size()
         super().hideEvent(event)
 
     def _save_size(self) -> None:
-        if self.isMaximized():
+        if self._maximized:
             return  # 最大化尺寸不是常规尺寸，下次打开应还原拖拽后的大小
         self._settings.setValue("panel_w", self.width())
         self._settings.setValue("panel_h", self.height())

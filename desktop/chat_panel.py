@@ -73,8 +73,50 @@ class RobotAvatar(QWidget):
 
         if self.skin == "astro":
             self._paint_astro(painter)
+        elif self.skin == "classic":
+            self._paint_classic(painter)
         else:
             self._paint_bender(painter)
+
+    def _paint_classic(self, painter: QPainter) -> None:
+        """原版萌系迷你头像：暗色圆角头 + 双 LED 眼 + 微笑。"""
+        accent = QColor("#fbbf24") if self._thinking else QColor("#4d7cff")
+
+        g = QLinearGradient(3, 3, 33, 33)
+        g.setColorAt(0.0, QColor("#4a5266"))
+        g.setColorAt(1.0, QColor("#1a1d24"))
+        painter.setBrush(g)
+        painter.setPen(QPen(QColor("#4a5264"), 1))
+        painter.drawRoundedRect(4, 4, 28, 26, 9, 9)
+
+        painter.setPen(QPen(QColor("#4b5563"), 2))
+        painter.drawLine(18, 4, 18, 1)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(accent)
+        painter.drawEllipse(16, 0, 4, 4)
+
+        eye_h = 6.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
+        painter.setBrush(accent)
+        for ex in (10, 21):
+            painter.drawEllipse(ex, int(12 + (6 - eye_h) / 2), 5, max(1, int(eye_h)))
+
+        painter.setPen(QPen(QColor("#9aa3b5"), 1.5, Qt.SolidLine, Qt.RoundCap))
+        painter.setBrush(Qt.NoBrush)
+        if self._thinking:
+            painter.drawEllipse(16, 24, 4, 4)
+        else:
+            painter.drawArc(14, 22, 8, 6, 200 * 16, 140 * 16)
+
+        if self._thinking:
+            painter.setPen(Qt.NoPen)
+            for i in range(3):
+                ang = self._phase * 1.8 + i * 2.094
+                px = 18 + 9 * math.cos(ang)
+                py = 15 + 9 * math.sin(ang)
+                dot = QColor(accent)
+                dot.setAlpha(150)
+                painter.setBrush(dot)
+                painter.drawEllipse(int(px), int(py), 2, 2)
 
     def _paint_bender(self, painter: QPainter) -> None:
         """班德风迷你头像：金属灰桶形头 + 视窗眼 + 格栅嘴。"""
@@ -381,7 +423,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（版本号用于确认面板跑的是不是最新代码）
-        title = QLabel("🤖 Personal AI Assistant v4.4")
+        title = QLabel("🤖 Personal AI Assistant v4.5")
         pin_btn = QPushButton("📌")
         pin_btn.setFixedSize(26, 26)
         pin_btn.setToolTip("钉住窗口（始终置顶）")

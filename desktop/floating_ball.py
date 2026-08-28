@@ -221,6 +221,8 @@ class FloatingBall(QWidget):
 
         if self.skin == "astro":
             self._paint_astro(painter, accent)
+        elif self.skin == "classic":
+            self._paint_classic(painter, accent)
         else:
             self._paint_bender(painter, accent)
 
@@ -410,7 +412,7 @@ class FloatingBall(QWidget):
         self._paint_particles(painter, accent)
 
     def _paint_particles(self, painter: QPainter, accent: QColor) -> None:
-        """思考时环绕粒子（3 个小光点绕头转，两套皮肤共享）。"""
+        """思考时环绕粒子（3 个小光点绕头转，三套皮肤共享）。"""
         if self.state != "thinking":
             return
         painter.setPen(Qt.NoPen)
@@ -423,6 +425,109 @@ class FloatingBall(QWidget):
             dot.setAlpha(max(0, a))
             painter.setBrush(dot)
             painter.drawEllipse(int(px), int(py), 3, 3)
+
+    # ── 原版萌系风（暗色圆角头 + 双 LED 大眼 + 微笑/腮红 + 胸口屏）──
+
+    def _paint_classic(self, painter: QPainter, accent: QColor) -> None:
+        limb_color = QColor("#3f4654")
+        stroke = QColor("#4a5264")
+        dark_g = QLinearGradient(14, 14, 62, 52)
+        dark_g.setColorAt(0.0, QColor("#4a5266"))
+        dark_g.setColorAt(0.45, QColor("#2c313d"))
+        dark_g.setColorAt(1.0, QColor("#1a1d24"))
+
+        # 腿
+        l_leg, r_leg = leg_angles(self._phase, self._dragging)
+        for hip_x, ang in ((34, l_leg), (46, r_leg)):
+            fx, fy = self._draw_limb(painter, hip_x, 62, 13, ang, 3.5, limb_color)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(limb_color)
+            painter.drawEllipse(int(fx - 2.5), int(fy - 1.5), 5, 4)
+
+        # 手臂
+        waving = self._wave >= 0
+        for side, sh_x in (("L", 28), ("R", 52)):
+            ang = arm_angle(self.state, self._phase, self._dragging, waving, self._wave, side)
+            hx, hy = self._draw_limb(painter, sh_x, 53, 16, ang, 3.5, limb_color)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(limb_color)
+            painter.drawEllipse(int(hx - 2.5), int(hy - 2.5), 5, 5)
+
+        # 耳朵（头部两侧小侧板）
+        painter.setBrush(dark_g)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(11, 26, 8, 13, 4, 4)
+        painter.drawRoundedRect(61, 26, 8, 13, 4, 4)
+
+        # 身体
+        painter.setBrush(dark_g)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(28, 50, 24, 14, 7, 7)
+
+        # 胸口小屏 + 状态色脉冲点
+        painter.setBrush(QColor("#14161c"))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(35, 55, 10, 5, 2, 2)
+        pulse = QColor(accent)
+        pulse.setAlpha(int(140 + 100 * math.sin(self._phase * 2)))
+        painter.setBrush(pulse)
+        painter.drawEllipse(39, 56, 3, 3)
+
+        # 天线（脉冲光点）
+        painter.setPen(QPen(QColor("#4b5563"), 2))
+        painter.drawLine(40, 14, 40, 7)
+        glow = QColor(accent)
+        glow.setAlpha(int(70 + 70 * math.sin(self._phase * 2)))
+        painter.setBrush(glow)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(35, 0, 10, 10)
+        painter.setBrush(accent)
+        painter.drawEllipse(37, 2, 6, 6)
+
+        # 头部（暗色圆角）
+        painter.setBrush(dark_g)
+        painter.setPen(QPen(stroke, 1))
+        painter.drawRoundedRect(18, 14, 44, 38, 12, 12)
+
+        # 顶部高光弧
+        painter.setPen(QPen(QColor(255, 255, 255, 34), 3, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(24, 18, 20, 12, 180 * 16, 180 * 16)
+
+        # 双 LED 大眼（光晕 + 高光；眨眼 = 高度压扁）
+        eye_h = 11.0 * (1.0 - 0.85 * abs(math.sin(self._blink * math.pi)))
+        eye_w = 11.0
+        outer = QColor(accent)
+        outer.setAlpha(55)
+        painter.setBrush(outer)
+        painter.setPen(Qt.NoPen)
+        for ex in (26, 43):
+            painter.drawEllipse(int(ex - 3), int(24 + (11 - eye_h) / 2), int(eye_w + 6), int(eye_h + 6))
+        painter.setBrush(QColor(accent))
+        for ex in (26, 43):
+            painter.drawEllipse(int(ex), int(27 + (11 - eye_h) / 2), int(eye_w), max(2, int(eye_h)))
+        if self._blink == 0:
+            painter.setBrush(QColor(255, 255, 255, 170))
+            for ex in (29, 46):
+                painter.drawEllipse(ex, 29, 3, 3)
+
+        # 腮红（error 时消失）
+        if self.state != "error":
+            painter.setBrush(QColor(255, 122, 156, 74))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(22, 40, 6, 3.5)
+            painter.drawEllipse(52, 40, 6, 3.5)
+
+        # 嘴巴（微笑 / 思考圆 / 难过）
+        painter.setPen(QPen(QColor("#9aa3b5"), 2, Qt.SolidLine, Qt.RoundCap))
+        painter.setBrush(Qt.NoBrush)
+        if self.state == "thinking":
+            painter.drawEllipse(37, 42, 6, 6)
+        elif self.state == "error":
+            painter.drawArc(34, 40, 12, 9, 20 * 16, 140 * 16)  # 嘴角向下
+        else:
+            painter.drawArc(34, 39, 12, 9, 200 * 16, 140 * 16)
+
+        self._paint_particles(painter, accent)
 
     # ── 交互 ───────────────────────────────────────────────
 

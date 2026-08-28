@@ -71,6 +71,24 @@ def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
         # 嘴
         p.setPen(QColor("#8a5a14"))
         p.drawLine(int(size * 0.43), int(size * 0.54), int(size * 0.57), int(size * 0.54))
+    elif skin == "classic":
+        # 原版萌系风：暗色圆角头 + 双 LED 眼 + 微笑
+        g.setColorAt(0.0, QColor("#4a5266"))
+        g.setColorAt(1.0, QColor("#1a1d24"))
+        stroke = QColor("#4a5264")
+        p.setBrush(g)
+        p.setPen(stroke)
+        p.drawRoundedRect(8, 16, size - 16, int(size * 0.55), 10, 10)
+        p.setPen(QColor("#4b5563"))
+        p.drawLine(size // 2, 8, size // 2, 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4d7cff"))
+        p.drawEllipse(size // 2 - 4, 4, 8, 8)
+        p.setBrush(QColor("#4d7cff"))
+        p.drawEllipse(int(size * 0.32), int(size * 0.42), int(size * 0.16), int(size * 0.16))
+        p.drawEllipse(int(size * 0.52), int(size * 0.42), int(size * 0.16), int(size * 0.16))
+        p.setPen(QColor("#8b93a3"))
+        p.drawArc(int(size * 0.36), int(size * 0.52), int(size * 0.28), int(size * 0.16), 200 * 16, 140 * 16)
     else:
         # 班德金属风：桶形头 + 视窗眼 + 格栅嘴
         g.setColorAt(0.0, QColor("#a9b2c4"))

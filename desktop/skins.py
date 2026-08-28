@@ -11,6 +11,7 @@ _SKIN_KEY = "robot_skin"
 SKIN_NAMES = {
     "bender": "班德金属风",
     "astro": "白色宇航员风",
+    "classic": "原版萌系风",
 }
 
 

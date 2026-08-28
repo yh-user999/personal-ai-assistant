@@ -211,9 +211,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # 1) 检索：记忆 + 知识库双通道
     mems = await memory.search(msg)
     injections = memory.format_injection(mems)
-    knowledge_hits = await knowledge.search_knowledge(msg, top_k=5)
-    # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性）
-    knowledge_hits = knowledge.expand_chunks(knowledge_hits)
+    knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
+    # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
+    # 1500字/块配 ±1 邻域 ≈ 一整场戏）
+    knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=4000)
     knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
     profile = get_profile_injection()
     lessons = get_lessons_injection()

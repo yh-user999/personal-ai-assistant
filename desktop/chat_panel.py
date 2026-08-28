@@ -1,9 +1,9 @@
 """聊天气泡面板：半透明无边框窗口，接入服务器 /api/chat。
 
 v0.7 面板重制：
-- 窗口可自由缩放：八方向边缘拖拽（系统级 startSystemResize + 手动几何兜底），
+- 窗口可自由缩放：八方向缩放把手压在卡片不透明像素上（确定性可命中），
+  纯手动几何计算缩放（不依赖系统缩放调用与分层窗口命中测试行为），
   双击标题栏最大化/还原；尺寸记忆（QSettings，下次打开恢复）
-- Windows 分层窗口点击穿透修复：1/255 透明底漆，否则透明区域收不到鼠标事件
 - 标题栏按住可拖动移动窗口
 - 气泡宽度随窗口自适应（72% 视口宽），放大面板不再大片留白
 - 深色细滚动条 / 输入框聚焦高亮 / 发送按钮 hover 态 / 按钮手型光标
@@ -81,6 +81,34 @@ def _fmt_ts(ts: str) -> str:
         return ""
 
 
+class _ResizeHandle(QWidget):
+    """边缘缩放把手：无边框窗口的确定性缩放方案。
+
+    把手是不参与布局的透明小部件，压在卡片外圈的不透明像素上——
+    与按钮可点击同一原理，必然能收到鼠标事件，不依赖 Windows
+    对分层窗口透明区域的命中测试行为，也不依赖系统缩放调用。
+    """
+
+    def __init__(self, parent: QWidget, edges: int, cursor: Qt.CursorShape) -> None:
+        super().__init__(parent)
+        self._edges = edges
+        self._panel: ChatPanel = parent  # type: ignore[assignment]
+        self.setCursor(cursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._panel.begin_resize(self._edges, event)
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        self._panel.drag_resize(event)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._panel.end_resize()
+        event.accept()
+
+
 class ChatPanel(QWidget):
     W, H = 460, 600          # 默认尺寸（可缩放，记忆在 QSettings）
     MIN_W, MIN_H = 360, 460  # 缩放下限
@@ -108,9 +136,8 @@ class ChatPanel(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMinimumSize(self.MIN_W, self.MIN_H)
         self._settings = QSettings("PersonalAI", "Assistant")
-        w = max(self.MIN_W, int(self._settings.value("panel_w", self.W) or self.W))
-        h = max(self.MIN_H, int(self._settings.value("panel_h", self.H) or self.H))
-        self.resize(w, h)
+        self._saved_w = max(self.MIN_W, int(self._settings.value("panel_w", self.W) or self.W))
+        self._saved_h = max(self.MIN_H, int(self._settings.value("panel_h", self.H) or self.H))
         self.setMouseTracking(True)  # 悬停边缘时给缩放光标反馈
         self.setFocusPolicy(Qt.StrongFocus)  # 无边框窗口需要显式焦点策略才能收 Esc
         self.client = ApiClient()
@@ -132,23 +159,22 @@ class ChatPanel(QWidget):
         self._size_save_timer.setInterval(400)  # 防抖：拖拽结束才写 QSettings
         self._size_save_timer.timeout.connect(self._save_size)
         self._init_ui()
+        # 在 _init_ui 之后 resize：resizeEvent 会布局把手/气泡，需要 UI 就绪
+        self.resize(self._saved_w, self._saved_h)
 
     def paintEvent(self, event) -> None:
-        """1/255 透明底漆。
-
-        Windows 分层窗口对全透明（alpha=0）像素点击穿透——没有这层，
-        6px 缩放热区和标题栏字隙的鼠标事件会全部穿到下层窗口去。
-        alpha=1 肉眼不可见，但足以让整窗可命中。
-        """
+        """1/255 透明底漆：圆角外的窗角仍可命中（否则该处点击穿透）。
+        边缘缩放不依赖它——把手压在卡片不透明像素上。"""
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(0, 0, 0, 1))
 
     # ── UI 构建 ────────────────────────────────────────────
 
     def _init_ui(self) -> None:
-        # 外圈留 6px 透明热区：既是边缘缩放的拖拽带，也让事件能到达顶层窗口
+        # 卡片铺满窗口（不透明像素直达窗缘）——缩放把手压在卡片外圈上，
+        # 依赖"不透明像素必然可命中"，不再依赖任何系统命中测试行为
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(self._EDGE, self._EDGE, self._EDGE, self._EDGE)
+        outer.setContentsMargins(0, 0, 0, 0)
 
         card = QWidget()
         card.setObjectName("card")
@@ -159,6 +185,20 @@ class ChatPanel(QWidget):
             "QLabel { color: #eee; }"
         )
         outer.addWidget(card)
+
+        # 八方向缩放把手：贴边透明小部件，叠在卡片外圈不透明像素上
+        # （与按钮可点击同一原理，必然能收到鼠标事件）
+        E = Qt.Edge
+        self._handles = [
+            _ResizeHandle(self, E.LeftEdge.value, Qt.CursorShape.SizeHorCursor),
+            _ResizeHandle(self, E.RightEdge.value, Qt.CursorShape.SizeHorCursor),
+            _ResizeHandle(self, E.TopEdge.value, Qt.CursorShape.SizeVerCursor),
+            _ResizeHandle(self, E.BottomEdge.value, Qt.CursorShape.SizeVerCursor),
+            _ResizeHandle(self, E.LeftEdge.value | E.TopEdge.value, Qt.CursorShape.SizeFDiagCursor),
+            _ResizeHandle(self, E.RightEdge.value | E.BottomEdge.value, Qt.CursorShape.SizeFDiagCursor),
+            _ResizeHandle(self, E.RightEdge.value | E.TopEdge.value, Qt.CursorShape.SizeBDiagCursor),
+            _ResizeHandle(self, E.LeftEdge.value | E.BottomEdge.value, Qt.CursorShape.SizeBDiagCursor),
+        ]
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -294,13 +334,16 @@ class ChatPanel(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._layout_handles()  # 隐藏期间 resize 事件不投递，首次显示时补布局
         self.input.setFocus()
         self._refresh_greeting()
 
-    # ── 窗口缩放 / 移动 / 最大化（无边框窗口手动实现）──────
+    # ── 窗口缩放 / 移动 / 最大化（纯手动几何，确定性优先）──
+    # 不用 startSystemResize/Move：它可能返回"成功"但实际不动作
+    # （FramelessWindowHint 下原生样式被剥离），所以全部本地几何计算。
 
     def _edge_at(self, pos) -> int:
-        """光标位于哪几条边缘热区（外圈 6px 透明带上），返回 Edge 位组合。"""
+        """光标位于哪几条边缘热区（外圈 6px，含把手与卡片外环），返回 Edge 位组合。"""
         m = self._EDGE
         r = self.rect()
         e = 0
@@ -314,15 +357,39 @@ class ChatPanel(QWidget):
             e |= Qt.Edge.BottomEdge.value
         return e
 
+    def begin_resize(self, edges: int, event) -> None:
+        """缩放起点（由 _ResizeHandle 或边缘按下触发）。"""
+        self._manual_edges = edges
+        self._manual_geo = self.geometry()
+        self._manual_pos = event.globalPosition().toPoint()
+
+    def drag_resize(self, event) -> None:
+        if self._manual_edges:
+            self._apply_manual_resize(event.globalPosition().toPoint())
+
+    def end_resize(self) -> None:
+        self._manual_edges = 0
+        self._save_size()
+
+    def _layout_handles(self) -> None:
+        """把手贴到窗缘（叠在卡片外圈不透明像素上）。"""
+        m = self._EDGE
+        w, h = self.width(), self.height()
+        hs = self._handles
+        hs[0].setGeometry(0, m, m, h - 2 * m)            # 左
+        hs[1].setGeometry(w - m, m, m, h - 2 * m)        # 右
+        hs[2].setGeometry(m, 0, w - 2 * m, m)            # 上
+        hs[3].setGeometry(m, h - m, w - 2 * m, m)        # 下
+        hs[4].setGeometry(0, 0, m, m)                    # 左上
+        hs[5].setGeometry(w - m, h - m, m, m)            # 右下
+        hs[6].setGeometry(w - m, 0, m, m)                # 右上
+        hs[7].setGeometry(0, h - m, m, m)                # 左下
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             edges = self._edge_at(event.position().toPoint())
             if edges:
-                # 先试系统级缩放（平滑）；不支持再走手动几何计算兜底
-                if not self.startSystemResize(Qt.Edges(edges)):
-                    self._manual_edges = edges
-                    self._manual_geo = self.geometry()
-                    self._manual_pos = event.globalPosition().toPoint()
+                self.begin_resize(edges, event)
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -342,13 +409,13 @@ class ChatPanel(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:
         if self._manual_edges:
-            self._manual_edges = 0
+            self.end_resize()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def _apply_manual_resize(self, global_pos) -> None:
-        """手动缩放兜底：按按下时的几何 + 位移计算新窗口矩形。"""
+        """手动缩放：按按下时的几何 + 位移计算新窗口矩形（含最小尺寸钳制）。"""
         edges = self._manual_edges
         geo = self._manual_geo
         d = global_pos - self._manual_pos
@@ -368,14 +435,13 @@ class ChatPanel(QWidget):
         self.setGeometry(x, y, w, h)
 
     def eventFilter(self, obj, event) -> bool:
-        """标题栏：按住拖动移动窗口，双击最大化/还原。"""
+        """标题栏：按住拖动移动窗口（手动），双击最大化/还原。"""
         if obj is self._title:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                if not self.startSystemMove():
-                    self._moving = True
-                    self._move_offset = (
-                        event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-                    )
+                self._moving = True
+                self._move_offset = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
                 return True
             if event.type() == QEvent.MouseMove and self._moving:
                 self.move(event.globalPosition().toPoint() - self._move_offset)
@@ -396,6 +462,7 @@ class ChatPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._layout_handles()
         self._apply_bubble_widths()
         self._size_save_timer.start()
 

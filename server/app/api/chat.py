@@ -14,7 +14,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, goals, reminders, resume, unresolved, worklog
+from app.services import behavior_context, documents, executor, goals, novel_writing, reminders, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -208,6 +208,32 @@ async def chat(req: ChatRequest) -> ChatResponse:
             reply=f"📈 进度已更新：{payload}" if ok else "暂无活跃目标可更新（先说\"目标：XXX\"创建）",
             memories_used=0,
         )
+
+    # 小说写作增强（第 6.25 课）：写作记录 / 写作进度 / 设定冲突检查 / 续写
+    log_cmd = novel_writing.parse_writing_log(msg)
+    if log_cmd:
+        chapter, words = log_cmd
+        novel_writing.add_writing_log(chapter, words)
+        return ChatResponse(
+            reply=f"📝 已记录写作：{f'第{chapter}章 ' if chapter else ''}{words} 字 ✓",
+            memories_used=0,
+        )
+    if msg.strip() in ("写作进度", "写作统计", "写作台账", "写作记录查询"):
+        return ChatResponse(reply=novel_writing.writing_summary(), memories_used=0)
+    conflict_text = novel_writing.parse_conflict_command(msg)
+    if conflict_text:
+        if novel_writing._looks_like_file_path(conflict_text):
+            return ChatResponse(
+                reply="📂 目前请直接粘贴正文来检查：把新写的内容贴在「检查设定冲突：」后面"
+                      "（路径读取可先对文件说「读一下」拿到内容）",
+                memories_used=0,
+            )
+        result = await novel_writing.check_conflicts(conflict_text)
+        return ChatResponse(reply=result["reply"], memories_used=0)
+    cont_text = novel_writing.parse_continue_command(msg)
+    if cont_text:
+        reply = await novel_writing.continue_story(cont_text)
+        return ChatResponse(reply=reply, memories_used=0)
 
     # 执行器命令（第 11 课）："帮我打开XX" / "看看XX目录" / "读一下XX文件"
     # 第 13 课扩展：复制/备份/移动/重命名（双路径白名单校验）

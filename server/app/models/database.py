@@ -186,6 +186,14 @@ CREATE TABLE IF NOT EXISTS reminders (
   status TEXT DEFAULT 'pending',   -- pending / notified / cancelled
   created_at TEXT NOT NULL
 );
+
+-- ⑲ 写作台账（第 6.25 课：小说写作增强）
+CREATE TABLE IF NOT EXISTS writing_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chapter TEXT,                    -- 章节号（可空）
+  words INTEGER NOT NULL,          -- 本次字数
+  created_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

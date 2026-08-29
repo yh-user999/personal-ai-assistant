@@ -11,7 +11,7 @@ router = APIRouter()
 
 # 远程允许的指令集合。run_script 不在其中——远程跑脚本属安全分级③，
 # 只允许桌面本地执行器解析。
-ALLOWED_ACTIONS = {"open", "list_dir", "read_file", "copy", "backup", "move", "rename"}
+ALLOWED_ACTIONS = {"open", "list_dir", "read_file", "copy", "backup", "move", "rename", "search_files"}
 
 # 火后不管任务须保留引用，否则可能被 GC 中途回收、结果丢失
 _background_tasks: set[asyncio.Task] = set()
@@ -41,10 +41,12 @@ async def enqueue(req: EnqueueRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"不支持的指令类型：{req.action}")
     if req.action != "open":
         paths = executor.unpack_paths(req.action, req.target)
-        if not paths or not all(executor.check_roots(p) for p in paths):
-            raise HTTPException(
-                status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
-            )
+        # search_files 目录为空 = 全白名单搜索（执行端逐根校验）
+        if not (req.action == "search_files" and not paths):
+            if not paths or not all(executor.check_roots(p) for p in paths):
+                raise HTTPException(
+                    status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
+                )
     cmd_id = executor.enqueue(req.action, req.target)
     return {"id": cmd_id}
 

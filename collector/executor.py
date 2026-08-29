@@ -24,6 +24,7 @@ from common.file_ops import (
     path_allowed,
     read_file_text,
     rename_impl,
+    search_files_impl,
 )
 
 logger = logging.getLogger("collector.executor")
@@ -110,6 +111,16 @@ class Executor:
                 if action == "move":
                     return move_impl(src, dst)
                 return rename_impl(src, dst)
+            # ── 第 6.24 课：文件搜索（JSON [目录, 关键词]；目录空=全白名单）──
+            if action == "search_files":
+                try:
+                    parts = json.loads(target)
+                    dir_spec, keyword = str(parts[0]), str(parts[1])
+                except Exception:
+                    return False, "指令格式错误（需要 JSON [目录, 关键词]）"
+                if dir_spec and not path_allowed(dir_spec):
+                    return False, "🔒 搜索目录超出白名单（EXECUTOR_ALLOWED_ROOTS），本地已拒绝"
+                return search_files_impl(dir_spec, keyword)
             return False, f"未知指令类型：{action}"
         except Exception as e:
             return False, f"执行出错：{e}"

@@ -211,16 +211,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     # 执行器命令（第 11 课）："帮我打开XX" / "看看XX目录" / "读一下XX文件"
     # 第 13 课扩展：复制/备份/移动/重命名（双路径白名单校验）
+    # 第 6.24 课扩展：search_files（目录空=全白名单搜索，Windows 端逐根校验）
     exec_cmd = executor.parse_executor_command(msg)
     if exec_cmd:
         action, target = exec_cmd
         if action != "open":
             paths = executor.unpack_paths(action, target)
-            if not paths or not all(executor.check_roots(p) for p in paths):
-                return ChatResponse(
-                    reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
-                    memories_used=0,
-                )
+            if not (action == "search_files" and not paths):
+                if not paths or not all(executor.check_roots(p) for p in paths):
+                    return ChatResponse(
+                        reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
+                        memories_used=0,
+                    )
         cmd_id = executor.enqueue(action, target)
         return ChatResponse(
             reply=f"🤖 已收到指令（#{cmd_id}）：{action} → {target}\n"

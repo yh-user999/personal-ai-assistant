@@ -114,3 +114,61 @@ def test_try_execute_find_all_roots_no_whitelist_error(monkeypatch):
     handled, text = local_exec.try_execute("帮我找包含todo的文件")
     assert handled
     assert "白名单" in text
+
+
+# ── 第 6.24 课扩展：采集器远程搜索通道（search_files 入队动作）──
+
+def test_collector_search_files(sandbox):
+    """Windows 采集器执行器：JSON [目录, 关键词] → 与桌面端同一公共实现。"""
+    import json
+
+    from collector.executor import Executor
+
+    ex = Executor("http://x", "")
+    ok, text = ex._execute("search_files", json.dumps([os.path.join(sandbox, "proj"), "todo"]))
+    assert ok
+    assert "todo.md" in text and "计划-todo.txt" in text
+
+
+def test_collector_search_all_roots(sandbox):
+    import json
+
+    from collector.executor import Executor
+
+    ex = Executor("http://x", "")
+    ok, text = ex._execute("search_files", json.dumps(["", "todo"]))
+    assert ok
+    assert "todo.md" in text
+
+
+def test_collector_search_blocked(sandbox):
+    import json
+
+    from collector.executor import Executor
+
+    ex = Executor("http://x", "")
+    outside = tempfile.mkdtemp()
+    try:
+        ok, text = ex._execute("search_files", json.dumps([outside, "todo"]))
+        assert not ok
+        assert "🔒" in text
+    finally:
+        os.rmdir(outside)
+
+
+def test_server_parse_search_files():
+    """服务端聊天解析：目录句式 + 全根句式 + 误吞防护（与桌面同规则）。"""
+    import json as _json
+    from app.services import executor as srv_exec
+
+    assert srv_exec.parse_executor_command("帮我找包含todo的文件") == (
+        "search_files",
+        _json.dumps(["", "todo"], ensure_ascii=False),
+    )
+    act, target = srv_exec.parse_executor_command("在F盘里找内容包含todo的文件")
+    assert act == "search_files"
+    assert _json.loads(target) == ["F:/", "content:todo"]
+    assert srv_exec.parse_executor_command("搜索一下北京天气") is None
+    assert srv_exec.parse_executor_command("搜索淘宝里的switch") is None
+    # 目录为空时 unpack 返回空列表（全白名单搜索豁免目录校验）
+    assert srv_exec.unpack_paths("search_files", _json.dumps(["", "todo"])) == []

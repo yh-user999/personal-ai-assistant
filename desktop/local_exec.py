@@ -28,25 +28,12 @@ from common.file_ops import (
     path_allowed,
     read_file_text,
     rename_impl,
+    search_files_impl,
 )
 
 SCRIPT_TIMEOUT = 120  # 脚本最长运行秒数，超时强制终止
 SCRIPT_EXTS = (".py", ".bat", ".cmd")  # 允许的脚本类型（.ps1 暂不支持）
 PATH_ACTIONS = ("list_dir", "read_file", "copy", "backup", "move", "rename", "run_script", "find_files")
-
-# ── 文件搜索（第 6.24 课）性能/安全护栏 ───────────────────
-_SEARCH_SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", ".venv", "venv", ".idea", ".vscode",
-    "AppData", "$Recycle.Bin", "System Volume Information", "Windows", "Program Files",
-}
-_SEARCH_TEXT_EXTS = {
-    ".txt", ".md", ".py", ".json", ".log", ".csv", ".ini", ".cfg", ".yml", ".yaml",
-    ".html", ".js", ".ts", ".bat", ".cmd", ".ps1", ".java", ".c", ".h", ".cpp",
-}
-_MAX_SCAN_FILES = 3000    # 每个根目录最多扫这么多文件（防全盘扫描拖死）
-_MAX_TEXT_SCAN = 150      # 内容搜索最多打开的文件数
-_MAX_FILE_SIZE = 300 * 1024  # 内容搜索跳过 >300KB 的文件
-_MAX_DEPTH = 12           # 目录深度上限
 
 # ── 快捷启动器（第 14 课）语法 ─────────────────────────────
 _LAUNCHER_ADD_RE = re.compile(r"^(?:帮我|请)?记住\s*(.+?)\s*[=＝]\s*(.+)$")
@@ -196,115 +183,12 @@ def _execute(action: str, target: str, extra: str = "") -> tuple[bool, str]:
             if proc.returncode == 0:
                 return True, f"脚本执行完成（exit 0，用时 {dt:.1f}s）：\n{out}"
             return False, f"脚本执行失败（exit {proc.returncode}，用时 {dt:.1f}s）：\n{out}"
-        # ── 第 6.24 课：文件搜索 ───────────────────────────────
+        # ── 第 6.24 课：文件搜索（公共实现，与采集器共用护栏）──
         if action == "find_files":
-            return _find_files(target, extra)
+            return search_files_impl(target, extra)
         return False, f"未知指令类型：{action}"
     except Exception as e:
         return False, f"执行出错：{e}"
-
-
-def _find_files(dir_spec: str, keyword: str) -> tuple[bool, str]:
-    """在指定目录（或全部白名单根目录）里找名字/内容含关键词的文件。
-
-    护栏：跳过系统/缓存目录、目录深度≤12、每根目录最多扫 3000 个文件、
-    内容搜索只开白名单文本扩展名且 ≤300KB、最多打开 150 个文件。
-    返回 (ok, 摘要文本)；即使 0 命中也算 ok（"没找到"不是执行错误）。
-    """
-    kw = keyword.strip().casefold()
-    if not kw:
-        return False, "搜索关键词为空"
-    content_mode = kw.startswith("content:")
-    if content_mode:
-        kw = kw[8:].strip()
-    if not kw:
-        return False, "搜索关键词为空"
-
-    roots = []
-    if not dir_spec or dir_spec == ".":
-        roots = get_roots()  # 全白名单搜索
-    else:
-        norm = os.path.normcase(os.path.abspath(dir_spec.replace("\\", "/")))
-        if not path_allowed(norm):
-            return False, "🔒 搜索目录超出白名单（EXECUTOR_ALLOWED_ROOTS），已拒绝"
-        roots = [norm]
-    if not roots:
-        return False, "未配置白名单目录（EXECUTOR_ALLOWED_ROOTS），无法搜索"
-
-    name_hits: list[str] = []
-    content_hits: list[str] = []
-    scanned = 0
-    truncated = False
-
-    for root in roots:
-        if not os.path.isdir(root):
-            continue
-        walker = os.walk(root)
-        while True:
-            try:
-                dirpath, dirnames, filenames = next(walker)
-            except StopIteration:
-                break
-            except OSError:
-                break  # 权限错误：跳过该分支
-            depth = dirpath.replace(root, "").count(os.sep)
-            if depth > _MAX_DEPTH:
-                dirnames[:] = []
-                continue
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _SEARCH_SKIP_DIRS and not d.startswith(".")
-            ]
-            for fn in filenames:
-                scanned += 1
-                if scanned > _MAX_SCAN_FILES:
-                    truncated = True
-                    break
-                if kw in fn.casefold():
-                    name_hits.append(os.path.join(dirpath, fn))
-                elif (
-                    content_mode
-                    and len(content_hits) < _MAX_TEXT_SCAN
-                    and os.path.splitext(fn)[1].lower() in _SEARCH_TEXT_EXTS
-                ):
-                    full = os.path.join(dirpath, fn)
-                    try:
-                        if os.path.getsize(full) > _MAX_FILE_SIZE:
-                            continue
-                        with open(full, "r", encoding="utf-8", errors="ignore") as fh:
-                            head = fh.read(64 * 1024)
-                        if kw in head.casefold():
-                            content_hits.append(full)
-                    except OSError:
-                        continue
-            if truncated:
-                break
-        if truncated:
-            break
-
-    limit = 20
-    shown = name_hits[:limit]
-    lines = [f"  {i + 1}. {p}" for i, p in enumerate(shown)]
-    extra_note = ""
-    if len(name_hits) > limit:
-        extra_note = f"（仅显示前 {limit} 条，共 {len(name_hits)} 个文件名匹配）"
-    if content_mode:
-        cshown = content_hits[: max(0, limit - len(shown))]
-        if cshown:
-            if lines:
-                lines.append("  —— 以下为内容匹配 ——")
-            lines += [f"  {len(shown) + i + 1}. {p}" for i, p in enumerate(cshown)]
-            extra_note = f"（文件名 {len(name_hits)} 个 + 内容 {len(content_hits)} 个匹配）"
-        elif not lines:
-            return True, f"没有找到名字或内容包含「{keyword.strip()}」的文件"
-    if not lines:
-        return True, f"没有找到名字包含「{keyword.strip()}」的文件"
-    where = dir_spec or "全部白名单目录"
-    tail = "，扫描已截断" if truncated else ""
-    return True, (
-        f"在「{where}」找到 {len(lines)} 条{extra_note}{tail}：\n" + "\n".join(lines)
-    )
 
 
 # ── 快捷启动器（第 14 课）────────────────────────────────

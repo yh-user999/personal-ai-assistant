@@ -41,6 +41,12 @@ def normalize_target(target: str) -> str:
     return target.strip()
 
 
+def _looks_like_path(s: str) -> bool:
+    """目录参数必须像本地路径（盘符/斜杠/'盘'字），否则不算文件搜索。
+    （防止"搜索淘宝里的switch"这类网页搜索句式被误吞）"""
+    return bool(re.search(r"[A-Za-z]:|[/\\]|盘", s))
+
+
 def parse_executor_command(msg: str) -> tuple[str, str] | None:
     """解析操作命令 → (action, target)。
 
@@ -73,6 +79,34 @@ def parse_executor_command(msg: str) -> tuple[str, str] | None:
     m = re.match(r"^(?:帮我|请)?(?:重命名|改名|把)(.+?)(?:改名为|改为|改成|命名为|叫做|为|成)\s*(.+)$", msg.strip())
     if m:
         return ("rename", _pack(normalize_target(m.group(1))[:200], normalize_target(m.group(2))[:200]))
+    # ── 第 6.24 课：文件搜索（入队给 Windows 执行器，与桌面本地解析同规则）──
+    m = re.match(
+        r"^(?:帮我|请)?(?:找一下|找找|搜索|查找|找)\s*(.+?)(?:里|中|下|内)的?"
+        r"(内容包含|内容含|包含|含|名字里有|文件名带)?\s*(.+?)(?:的)?(?:文件|文档)?[?？!！。]?$",
+        msg.strip(),
+    )
+    if m and m.group(1).strip() and m.group(3).strip() and _looks_like_path(m.group(1)):
+        marker = m.group(2) or ""
+        kw = ("content:" if marker.startswith("内容") else "") + m.group(3).strip()
+        return ("search_files", _pack(normalize_target(m.group(1).strip())[:200], kw[:100]))
+    m = re.match(
+        r"^(?:帮我|请)?(?:在)?(.+?)(?:里|中|下|内)(?:找一下|找找|搜索|查找|找)"
+        r"(内容包含|内容含|包含|含|名字里有|文件名带)?\s*(.+?)(?:的)?(?:文件|文档)?[?？!！。]?$",
+        msg.strip(),
+    )
+    if m and m.group(1).strip() and m.group(3).strip() and _looks_like_path(m.group(1)):
+        marker = m.group(2) or ""
+        kw = ("content:" if marker.startswith("内容") else "") + m.group(3).strip()
+        return ("search_files", _pack(normalize_target(m.group(1).strip())[:200], kw[:100]))
+    m = re.match(
+        r"^(?:帮我|请)?(?:找一下|找找|搜索|查找|找)"
+        r"(内容包含|内容含|包含|含|名字里有|文件名带)?\s*(.+?)(?:的)?(文件|文档)?[?？!！。]?$",
+        msg.strip(),
+    )
+    if m and m.group(2).strip() and (m.group(1) or m.group(3)):
+        marker = m.group(1) or ""
+        kw = ("content:" if marker.startswith("内容") else "") + m.group(2).strip()
+        return ("search_files", _pack("", kw[:100]))
     return None
 
 
@@ -82,6 +116,13 @@ def unpack_paths(action: str, target: str) -> list[str]:
         try:
             parts = json.loads(target)
             return [str(p) for p in parts]
+        except Exception:
+            return []
+    if action == "search_files":
+        try:
+            parts = json.loads(target)
+            dir_spec = str(parts[0])
+            return [dir_spec] if dir_spec else []  # 空目录 = 全白名单搜索（执行端逐根校验）
         except Exception:
             return []
     return [target]
@@ -144,7 +185,7 @@ def mark_result(cmd_id: int, ok: bool, result: str) -> None:
         conn.execute(
             """UPDATE executor_commands SET status=?, result=?, executed_at=?
                WHERE id=?""",
-            ("done" if ok else "failed", result[:500], _now(), cmd_id),
+            ("done" if ok else "failed", result[:3000], _now(), cmd_id),
         )
         conn.commit()
     finally:

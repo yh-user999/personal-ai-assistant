@@ -185,3 +185,123 @@ def rename_impl(src: str, new_name: str) -> tuple[bool, str]:
     except (FileExistsError, shutil.Error) as e:
         return False, f"重命名失败（目标已存在同名项）：{e}"
     return True, f"已重命名：{src} → {new}"
+
+
+# ── 文件搜索（第 6.24 课）──────────────────────────────────
+# 桌面本地执行器与 Windows 采集器共用（远程入队同样受限白名单）。
+
+SEARCH_SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv", ".idea", ".vscode",
+    "AppData", "$Recycle.Bin", "System Volume Information", "Windows", "Program Files",
+}
+SEARCH_TEXT_EXTS = {
+    ".txt", ".md", ".py", ".json", ".log", ".csv", ".ini", ".cfg", ".yml", ".yaml",
+    ".html", ".js", ".ts", ".bat", ".cmd", ".ps1", ".java", ".c", ".h", ".cpp",
+}
+SEARCH_MAX_SCAN_FILES = 3000     # 每个根目录最多扫这么多文件（防全盘扫描拖死）
+SEARCH_MAX_TEXT_SCAN = 150       # 内容搜索最多打开的文件数
+SEARCH_MAX_FILE_SIZE = 300 * 1024  # 内容搜索跳过 >300KB 的文件
+SEARCH_MAX_DEPTH = 12            # 目录深度上限
+
+
+def search_files_impl(dir_spec: str, keyword: str) -> tuple[bool, str]:
+    """在指定目录（或全部白名单根目录）里找名字/内容含关键词的文件。
+
+    护栏：跳过系统/缓存目录、目录深度≤12、每根目录最多扫 3000 个文件、
+    内容搜索只开文本扩展名且 ≤300KB、最多打开 150 个文件。
+    keyword 以 "content:" 开头 = 内容搜索。0 命中也算成功（"没找到"不是错误）。
+    """
+    kw = keyword.strip().casefold()
+    if not kw:
+        return False, "搜索关键词为空"
+    content_mode = kw.startswith("content:")
+    if content_mode:
+        kw = kw[8:].strip()
+    if not kw:
+        return False, "搜索关键词为空"
+
+    roots = []
+    if not dir_spec or dir_spec == ".":
+        roots = get_roots()  # 全白名单搜索
+    else:
+        norm = os.path.normcase(os.path.abspath(dir_spec.replace("\\", "/")))
+        if not path_allowed(norm):
+            return False, "🔒 搜索目录超出白名单（EXECUTOR_ALLOWED_ROOTS），已拒绝"
+        roots = [norm]
+    if not roots:
+        return False, "未配置白名单目录（EXECUTOR_ALLOWED_ROOTS），无法搜索"
+
+    name_hits: list[str] = []
+    content_hits: list[str] = []
+    scanned = 0
+    truncated = False
+
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        walker = os.walk(root)
+        while True:
+            try:
+                dirpath, dirnames, filenames = next(walker)
+            except StopIteration:
+                break
+            except OSError:
+                break  # 权限错误：跳过该分支
+            depth = dirpath.replace(root, "").count(os.sep)
+            if depth > SEARCH_MAX_DEPTH:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in SEARCH_SKIP_DIRS and not d.startswith(".")
+            ]
+            for fn in filenames:
+                scanned += 1
+                if scanned > SEARCH_MAX_SCAN_FILES:
+                    truncated = True
+                    break
+                if kw in fn.casefold():
+                    name_hits.append(os.path.join(dirpath, fn))
+                elif (
+                    content_mode
+                    and len(content_hits) < SEARCH_MAX_TEXT_SCAN
+                    and os.path.splitext(fn)[1].lower() in SEARCH_TEXT_EXTS
+                ):
+                    full = os.path.join(dirpath, fn)
+                    try:
+                        if os.path.getsize(full) > SEARCH_MAX_FILE_SIZE:
+                            continue
+                        with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                            head = fh.read(64 * 1024)
+                        if kw in head.casefold():
+                            content_hits.append(full)
+                    except OSError:
+                        continue
+            if truncated:
+                break
+        if truncated:
+            break
+
+    limit = 20
+    shown = name_hits[:limit]
+    lines = [f"  {i + 1}. {p}" for i, p in enumerate(shown)]
+    extra_note = ""
+    if len(name_hits) > limit:
+        extra_note = f"（仅显示前 {limit} 条，共 {len(name_hits)} 个文件名匹配）"
+    if content_mode:
+        cshown = content_hits[: max(0, limit - len(shown))]
+        if cshown:
+            if lines:
+                lines.append("  —— 以下为内容匹配 ——")
+            lines += [f"  {len(shown) + i + 1}. {p}" for i, p in enumerate(cshown)]
+            extra_note = f"（文件名 {len(name_hits)} 个 + 内容 {len(content_hits)} 个匹配）"
+        elif not lines:
+            return True, f"没有找到名字或内容包含「{keyword.strip()}」的文件"
+    if not lines:
+        return True, f"没有找到名字包含「{keyword.strip()}」的文件"
+    where = dir_spec or "全部白名单目录"
+    tail = "，扫描已截断" if truncated else ""
+    return True, (
+        f"在「{where}」找到 {len(lines)} 条{extra_note}{tail}：\n" + "\n".join(lines)
+    )

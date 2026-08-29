@@ -98,3 +98,17 @@ class ApiClient:
         r.raise_for_status()
         d = r.json()
         return d if d.get("exists") else None
+
+    def due_reminders(self) -> list:
+        """到期提醒（服务器取出即标记已推送，桌面端只负责弹窗）。"""
+        try:
+            r = httpx.get(
+                f"{self.base_url}/api/reminders/due",
+                headers=self._headers(),
+                timeout=8,
+                trust_env=False,
+            )
+            r.raise_for_status()
+            return r.json().get("reminders", [])
+        except Exception:
+            return []

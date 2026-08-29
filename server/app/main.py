@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.api import chat, documents, events, executor, knowledge, reports, stats
+from app.api import chat, documents, events, executor, knowledge, reminders, reports, stats
 from app.config import settings
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("assistant")
 
-APP_VERSION = "0.2.0"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用
+APP_VERSION = "0.2.1"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用
 
 
 @asynccontextmanager
@@ -76,6 +76,7 @@ app.include_router(reports.router, prefix="/api", tags=["reports"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
 app.include_router(documents.router, prefix="/api", tags=["documents"])
 app.include_router(executor.router, prefix="/api", tags=["executor"])
+app.include_router(reminders.router, prefix="/api", tags=["reminders"])
 
 
 @app.get("/api/health")

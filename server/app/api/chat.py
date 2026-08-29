@@ -14,7 +14,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, goals, resume, unresolved, worklog
+from app.services import behavior_context, documents, executor, goals, reminders, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -130,6 +130,39 @@ async def chat(req: ChatRequest) -> ChatResponse:
     time_reply = parse_time_question(msg)
     if time_reply:
         return ChatResponse(reply=time_reply, memories_used=0)
+
+    # 定时提醒命令（第 6.24 课）：设提醒 / 查看 / 取消
+    reminder_cmd = reminders.parse_reminder_cmd(msg)
+    if reminder_cmd:
+        content, remind_at = reminder_cmd
+        reminders.add_reminder(content, remind_at)
+        return ChatResponse(
+            reply=f"⏰ 已设置提醒：{remind_at.strftime('%m月%d日 %H:%M')} → {content}\n"
+                  f"到点后桌面小月会弹窗提醒你（电脑开机状态下）",
+            memories_used=0,
+        )
+    if msg.strip() in ("我的提醒", "查看提醒", "有哪些提醒", "提醒列表"):
+        pending = reminders.list_pending()
+        if not pending:
+            return ChatResponse(reply="目前没有待办提醒。", memories_used=0)
+        lines = "\n".join(
+            f"  {i + 1}. {r['content']}（{r['remind_at']}）" for i, r in enumerate(pending)
+        )
+        return ChatResponse(reply=f"⏰ 待办提醒：\n{lines}", memories_used=0)
+    cancel_m = re.match(r"^(?:取消提醒|删除提醒)[：:\s]*(.+)$", msg)
+    if cancel_m:
+        n = reminders.cancel_by_keyword(cancel_m.group(1))
+        return ChatResponse(
+            reply=f"已取消 {n} 条相关提醒" if n else "没找到内容匹配的待办提醒",
+            memories_used=0,
+        )
+    if msg.startswith("提醒"):
+        return ChatResponse(
+            reply="⏰ 设置提醒的句式：\n"
+                  "• 明早9点提醒我开会\n• 30分钟后提醒我喝水\n• 今晚8点提醒我看球\n"
+                  "• 我的提醒（查看）\n• 取消提醒：开会（取消）",
+            memories_used=0,
+        )
 
     # 文档命令："写文档：标题XXX，内容：YYY" → LLM 生成 + 保存 + 进知识库
     doc_cmd = documents.parse_doc_command(msg)

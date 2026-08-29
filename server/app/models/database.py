@@ -177,6 +177,15 @@ CREATE TABLE IF NOT EXISTS novel_facts (
   content TEXT NOT NULL,           -- 设定条目正文
   created_at TEXT NOT NULL
 );
+
+-- ⑱ 定时提醒（第 6.24 课：机器人主动触达的最小通道）
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,           -- 提醒内容
+  remind_at TEXT NOT NULL,         -- 提醒时间（ISO, UTC）
+  status TEXT DEFAULT 'pending',   -- pending / notified / cancelled
+  created_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

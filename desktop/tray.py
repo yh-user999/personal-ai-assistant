@@ -216,6 +216,14 @@ class TrayIcon(QSystemTrayIcon):
         self._reminder_timer.start(30_000)
         self._check_reminders()
 
+        # 退出前收尸：轮询线程可能正在飞（提醒 30s 一次，比周报更频繁）
+        QApplication.instance().aboutToQuit.connect(self._shutdown)
+
+    def _shutdown(self) -> None:
+        for w in (self._report_worker, self._reminder_worker):
+            if w is not None:
+                w.wait(1500)
+
     def _open_panel(self) -> None:
         self.ball.show()      # 打开面板时顺带把机器人窗口找回来（防窗口意外丢失）
         self.ball.raise_()

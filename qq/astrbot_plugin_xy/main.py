@@ -15,8 +15,9 @@ v1.1 修复（相对 v1.0）：
 import httpx
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import MessageChain, Plain
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
+from astrbot.core.message.message_event_result import MessageChain
 
 REPLY_MAX_CHARS = 4000  # QQ 单条消息安全长度，超长截断并提示
 

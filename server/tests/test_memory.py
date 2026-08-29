@@ -60,3 +60,53 @@ def test_injection_format():
     mems = [{"ts": "2026-08-20T00:00:00+00:00", "content": "内容A", "summary": ""}]
     text = memory.format_injection(mems)
     assert "[记忆] 2026-08-20: 内容A" == text
+
+
+def test_bm25_memories_rare_term_wins():
+    """6.22：记忆 BM25 稀有词加权——'杀人变强'应压过高频闲聊。"""
+    import os
+    os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
+    from app.core import memory
+    from app.models.database import connect, init_db
+
+    init_db()
+    conn = connect()
+    conn.execute("DELETE FROM memories")
+    for i in range(6):
+        conn.execute(
+            "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
+            "VALUES ('user', ?, '', '[]', '2026-08-28T00:00:00+00:00', 1.0)",
+            (f"今天天气不错，继续写代码 {i}",),
+        )
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
+        "VALUES ('user', '李羽的能力设定是杀人变强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
+    )
+    conn.commit()
+    conn.close()
+    hits = memory._bm25_memories("李羽的能力是杀人变强吗", top_k=3)
+    assert hits, "应有命中"
+    assert "杀人变强" in hits[0]["content"]
+
+
+def test_deep_keyword_search_matches_grams():
+    import os
+    os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
+    from app.core import memory
+    from app.models.database import connect, init_db
+
+    init_db()
+    conn = connect()
+    conn.execute("DELETE FROM memories")
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
+        "VALUES ('user', '少爷的背景势力是地方豪强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
+    )
+    conn.execute(
+        "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
+        "VALUES ('assistant', '好的，设定记下了', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
+    )
+    conn.commit()
+    conn.close()
+    hits = memory.deep_keyword_search("少爷的背景势力", top_k=3)
+    assert hits and "地方豪强" in hits[0]["content"]

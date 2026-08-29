@@ -10,6 +10,7 @@ v0.2 采纳外部评审优化：
 """
 import json
 import logging
+import math
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -120,13 +121,95 @@ def _compute_topic_boost(topics_json: str, freq: Counter) -> float:
     return 1.0 + min(0.5, max_freq / 20.0)
 
 
-async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> list[dict]:
-    """检索相关记忆。向量优先，失败退化为关键词。
+def _bm25_memories(query: str, top_k: int = 20) -> list[dict]:
+    """记忆 BM25（2-gram + IDF + 词频饱和，与知识库同款）：精确词召回。
+
+    治"换问法就丢"：向量检索对语义近义敏感，但对"杀人变强/三四亩"
+    这类精确词组，BM25 的 IDF 稀有词加权才是主力。
+    """
+    from app.core.knowledge import _word_char  # noqa: 复用知识库的字过滤
+
+    grams = list(dict.fromkeys(
+        g for g in (query[i:i + 2] for i in range(max(1, len(query) - 1)))
+        if _word_char(g[0]) and _word_char(g[1])
+    ))
+    if not grams:
+        return []
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, sender, content, summary, ts, importance, topics FROM memories"
+        ).fetchall()
+    finally:
+        conn.close()
+    docs = [dict(r) for r in rows]
+    n = max(1, len(docs))
+    texts = [(d["content"] or "") + (d["summary"] or "") for d in docs]
+    lengths = [len(t) for t in texts]
+    avgdl = sum(lengths) / n if lengths else 1.0
+    df = {g: sum(1 for t in texts if g in t) for g in grams}
+    k1, b = 1.5, 0.75
+
+    def _idf(g: str) -> float:
+        c = df[g]
+        return math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
+
+    scored = []
+    for d, t, L in zip(docs, texts, lengths):
+        s = 0.0
+        for g in grams:
+            tf = t.count(g)
+            if tf:
+                s += tf * (k1 + 1) / (tf + k1 * (1 - b + b * L / avgdl)) * _idf(g)
+        if s > 0:
+            scored.append((s, d))
+    scored.sort(key=lambda x: -x[0])
+    return [d for _, d in scored[:top_k]]
+
+
+def deep_keyword_search(query: str, top_k: int = 5) -> list[dict]:
+    """全库关键词深挖：查询拆 2-gram 按命中数排序——"每句话都记得"的兜底。
+
+    在语义/BM25 都弱命中时调用：逐条扫描全部记忆，命中的 gram 越多越靠前。
+    """
+    from app.core.knowledge import _word_char
+
+    grams = list(dict.fromkeys(
+        g for g in (query[i:i + 2] for i in range(max(1, len(query) - 1)))
+        if _word_char(g[0]) and _word_char(g[1])
+    ))
+    if not grams:
+        return []
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, sender, content, summary, ts, importance, topics FROM memories"
+        ).fetchall()
+    finally:
+        conn.close()
+    scored = []
+    for r in rows:
+        d = dict(r)
+        t = (d["content"] or "") + (d["summary"] or "")
+        hits = sum(1 for g in grams if g in t)
+        if hits:
+            scored.append((hits, d["ts"], d))
+    # 命中数降序，同分时间新者优先
+    scored.sort(key=lambda x: (-x[0], str(x[1])))
+    out = []
+    for hits, _, d in scored[:top_k]:
+        d["score"] = min(1.0, hits / max(1, len(grams)))
+        out.append(d)
+    return out
+
+
+async def search(query: str, top_k: int = 8, min_similarity: float = 0.35) -> list[dict]:
+    """检索相关记忆：向量 + BM25 双通道 RRF 融合（6.22 课升级）。
 
     评分 = 相似度 × importance × 时间衰减 × 主题活跃度补偿
     返回: [{"id", "sender", "content", "summary", "ts", "topics", "score"}]
     """
-    rows: list[dict] = []
+    vec_rows: list[dict] = []
 
     # 1) 向量检索（sqlite-vec vec0 是 KNN 虚拟表，必须 MATCH + k 语法，
     #    不能像普通列那样 WHERE v.distance < ?——距离过滤在 Python 层做）
@@ -142,54 +225,51 @@ async def search(query: str, top_k: int = 5, min_similarity: float = 0.35) -> li
                 JOIN memories m ON m.id = v.memory_id
                 WHERE v.embedding MATCH ? AND k = ?
                 """,
-                (json.dumps(qvec), top_k * 2),
+                (json.dumps(qvec), 20),
             )
             for r in cur.fetchall():
-                rows.append(dict(r))
+                vec_rows.append(dict(r))
         finally:
             conn.close()
     except Exception as e:
         # 向量检索失败退化为关键词，但留痕排障（key 失效/服务宕机不该无声无息）
         logger.warning("向量检索失败，退化为关键词检索: %s", e)
 
-    # 2) 关键词兜底（向量不可用或无结果时）
-    if not rows:
-        conn = connect()
-        try:
-            kw = f"%{query}%"
-            cur = conn.execute(
-                """
-                SELECT id, sender, content, summary, ts, importance, topics, 0.5 AS distance
-                FROM memories
-                WHERE content LIKE ? OR summary LIKE ?
-                ORDER BY ts DESC LIMIT ?
-                """,
-                (kw, kw, top_k),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
+    # 2) BM25 通道（精确词召回，与向量并行融合）
+    bm25_rows = _bm25_memories(query, top_k=20)
 
-    if not rows:
+    # 3) RRF 融合（k=60）：双通道排名合并，取 top_k*2 候选
+    rrf: dict[int, float] = {}
+    by_id: dict[int, dict] = {}
+    for rank, r in enumerate(vec_rows, 1):
+        rrf[r["id"]] = rrf.get(r["id"], 0) + 1 / (60 + rank)
+        by_id[r["id"]] = r
+    for rank, r in enumerate(bm25_rows, 1):
+        rrf[r["id"]] = rrf.get(r["id"], 0) + 1.5 / (60 + rank)
+        by_id.setdefault(r["id"], r)
+    if not rrf:
         return []
+    candidates = [by_id[cid] for cid, _ in sorted(rrf.items(), key=lambda kv: -kv[1])[: top_k * 2]]
 
-    # 3) 主题活跃度补偿
+    # 4) 主题活跃度补偿
     conn = connect()
     try:
         freq = _topic_boost_map(conn)
     finally:
         conn.close()
 
-    # 4) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
-    #    distance 为 cosine 距离（0~2）：sim = 1 - distance
+    # 5) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
+    #    distance 为 cosine 距离（0~2）：sim = 1 - distance；
+    #    纯 BM25 候选没有 distance → 用 rrf 折算伪相似度
     now = time.time()
     scored = []
-    for r in rows:
+    for r in candidates:
         distance = r.get("distance")
-        if distance is None:  # 零向量等特例（真实 embedding 不会出现）
-            continue
-        sim = max(0.0, 1.0 - float(distance))
-        if sim < min_similarity:
+        if distance is not None:
+            sim = max(0.0, 1.0 - float(distance))
+        else:
+            sim = min(1.0, rrf.get(r["id"], 0.0) * 30)
+        if sim < min_similarity and distance is not None:
             continue
         imp = float(r.get("importance", 1.0))
         try:

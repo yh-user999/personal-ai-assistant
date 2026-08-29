@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     importance_decay_days: float = 30.0  # importance 半衰期
 
     # ── 多轮上下文 ──────────────────────────────────────────
-    history_limit: int = 8  # 携带最近 N 轮原文；更早的用摘要续接
+    history_limit: int = 10  # 携带最近 N 轮原文（6.22：窗口加宽更懂上下文）；更早的用摘要续接
 
     # ── 执行器白名单（第 11 课）────────────────────────────
     # list_dir/read_file 允许的根目录（逗号分隔）；留空=禁止这两类操作

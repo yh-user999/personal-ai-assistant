@@ -213,7 +213,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
     definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
 
     # 1) 检索：记忆 + 知识库双通道
-    mems = await memory.search(msg)
+    mems = await memory.search(msg, top_k=8)
+    # 弱命中兜底：语义/BM25 都没把握时全库关键词深挖（"每句话都记得"的保证）
+    if not mems or mems[0].get("score", 0) < 0.12:
+        deep = memory.deep_keyword_search(msg, top_k=5)
+        if deep:
+            known = {m["id"] for m in mems}
+            mems = deep + [m for m in mems if m["id"] not in known]
     injections = memory.format_injection(mems)
     knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
     # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；

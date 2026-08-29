@@ -111,6 +111,13 @@ def add_reminder(content: str, remind_at: datetime) -> int:
         conn.close()
 
 
+def _db_to_local(iso: str) -> str:
+    """库里的 UTC 字符串 → 北京时间展示。fromisoformat 对无时区标记的字符串
+    会按 naive 处理，必须先显式挂 UTC，否则 astimezone 会当成服务器本地时间。"""
+    dt = datetime.fromisoformat(iso).replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(TZ).strftime("%m月%d日 %H:%M")
+
+
 def list_pending() -> list[dict]:
     conn = connect()
     try:
@@ -124,9 +131,7 @@ def list_pending() -> list[dict]:
         {
             "id": r["id"],
             "content": r["content"],
-            "remind_at": datetime.fromisoformat(r["remind_at"])
-            .astimezone(TZ)
-            .strftime("%m月%d日 %H:%M"),
+            "remind_at": _db_to_local(r["remind_at"]),
         }
         for r in rows
     ]

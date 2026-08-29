@@ -111,3 +111,11 @@ def test_due_marks_notified_once(db):
     assert [i["content"] for i in first] == ["已到期"]
     assert reminders.due_reminders() == []  # 第二次轮询为空
     assert reminders.list_pending() == []   # 不再出现在待办列表
+
+
+def test_list_shows_beijing_time(db):
+    """回归：UTC 入库的字符串展示时必须先挂 UTC 再转东八区。
+    （曾把 naive 时间当服务器本地时间，09:00 显示成 01:00）"""
+    reminders.add_reminder("开会", datetime(2026, 8, 30, 9, 0, tzinfo=TZ))
+    items = reminders.list_pending()
+    assert items[0]["remind_at"] == "08月30日 09:00"

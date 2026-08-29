@@ -43,6 +43,18 @@ class _ReminderWorker(QThread):
             self.done.emit([])
 
 
+class _MoodWorker(QThread):
+    """后台轮询情绪状态（v5.1 第 6.28 课 C2：体贴模式）。"""
+    done = Signal(object)  # dict | None
+
+    def __init__(self, client) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        self.done.emit(self.client.mood_state())
+
+
 def make_robot_icon(size: int = 64, skin: str = "bender") -> QIcon:
     """自绘机器人托盘图标（三皮肤，与悬浮球/迷你头像同形象）。"""
     from PySide6.QtGui import QLinearGradient, QPainterPath
@@ -194,6 +206,7 @@ class TrayIcon(QSystemTrayIcon):
         self._known_daily_date = None
         self._report_worker = None
         self._reminder_worker = None
+        self._mood_worker = None
 
         menu = QMenu()
         menu.addAction("打开面板", self._open_panel)
@@ -216,11 +229,17 @@ class TrayIcon(QSystemTrayIcon):
         self._reminder_timer.start(30_000)
         self._check_reminders()
 
+        # 情绪状态：每 60 秒轮询一次（v5.1 第 6.28 课 C2：体贴模式）
+        self._mood_timer = QTimer(self)
+        self._mood_timer.timeout.connect(self._check_mood)
+        self._mood_timer.start(60_000)
+        self._check_mood()
+
         # 退出前收尸：轮询线程可能正在飞（提醒 30s 一次，比周报更频繁）
         QApplication.instance().aboutToQuit.connect(self._shutdown)
 
     def _shutdown(self) -> None:
-        for w in (self._report_worker, self._reminder_worker):
+        for w in (self._report_worker, self._reminder_worker, self._mood_worker):
             if w is not None:
                 w.wait(1500)
 
@@ -309,3 +328,24 @@ class TrayIcon(QSystemTrayIcon):
             QSystemTrayIcon.Information,
             15000,
         )
+
+    def _check_mood(self) -> None:
+        """轮询情绪状态 → 体贴模式开关（v5.1 第 6.28 课 C2）。"""
+        if self._mood_worker is not None:
+            return
+        self._mood_worker = _MoodWorker(self.ball._health_client)
+        self._mood_worker.done.connect(self._on_mood)
+        self._mood_worker.start()
+
+    def _on_mood(self, payload) -> None:
+        worker = self._mood_worker
+        self._mood_worker = None
+        if worker:
+            retire(worker)
+        if payload is None:
+            return  # 服务器不可达：保持现状，不闪状态
+        if payload.get("streak_active"):
+            if self.ball.state != "caring":
+                self.ball.set_state("caring")  # 暖色 + 缓呼吸
+        elif self.ball.state == "caring":
+            self.ball.set_state("online")  # 情绪转好自动恢复

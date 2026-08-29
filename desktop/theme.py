@@ -35,7 +35,7 @@ THEMES = {
         "border": "#333", "hover": "#2a2d35", "pressed": "#20242c",
         "btn_bg": "#23262f", "scrollbar": "#333a48",
         "accent": "#2b5cff", "accent_hover": "#3d6bff", "accent_pressed": "#2452d8",
-        "state": {"idle": "#60a5fa", "online": "#34d399", "thinking": "#fbbf24", "error": "#f87171"},
+        "state": {"idle": "#60a5fa", "online": "#34d399", "thinking": "#fbbf24", "error": "#f87171", "caring": "#f0a36b"},
     },
     "forest": {
         "card": "#182420", "input_bg": "#111a16",
@@ -44,7 +44,7 @@ THEMES = {
         "border": "#2c3d34", "hover": "#24352c", "pressed": "#1d2c24",
         "btn_bg": "#20302a", "scrollbar": "#31453a",
         "accent": "#0d9463", "accent_hover": "#16b178", "accent_pressed": "#0a7a51",
-        "state": {"idle": "#5eead4", "online": "#34d399", "thinking": "#fbbf24", "error": "#f87171"},
+        "state": {"idle": "#5eead4", "online": "#34d399", "thinking": "#fbbf24", "error": "#f87171", "caring": "#f0a36b"},
     },
     "twilight": {
         "card": "#211d2e", "input_bg": "#181525",
@@ -53,7 +53,7 @@ THEMES = {
         "border": "#37304a", "hover": "#2d2740", "pressed": "#251f36",
         "btn_bg": "#2b2740", "scrollbar": "#3f3856",
         "accent": "#8b5cf6", "accent_hover": "#9d73f8", "accent_pressed": "#7449d6",
-        "state": {"idle": "#c4b5fd", "online": "#6ee7b7", "thinking": "#f9a8d4", "error": "#fda4af"},
+        "state": {"idle": "#c4b5fd", "online": "#6ee7b7", "thinking": "#f9a8d4", "error": "#fda4af", "caring": "#f4a688"},
     },
     "obsidian": {
         "card": "#121212", "input_bg": "#0c0c0c",
@@ -62,7 +62,7 @@ THEMES = {
         "border": "#2e2e2e", "hover": "#232323", "pressed": "#1b1b1b",
         "btn_bg": "#1f1f1f", "scrollbar": "#3a352a",
         "accent": "#e5b567", "accent_hover": "#f0c47a", "accent_pressed": "#c99e4e",
-        "state": {"idle": "#e5b567", "online": "#9ccc65", "thinking": "#ffd700", "error": "#ef5350"},
+        "state": {"idle": "#e5b567", "online": "#9ccc65", "thinking": "#ffd700", "error": "#ef5350", "caring": "#f0a36b"},
     },
 }
 

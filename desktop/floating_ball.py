@@ -117,7 +117,8 @@ class FloatingBall(QWidget):
     # ── 动画 ───────────────────────────────────────────────
 
     def _tick(self) -> None:
-        self._phase += 0.06
+        # 体贴模式（caring）呼吸放缓：状态感从节奏上也能读出来
+        self._phase += 0.04 if self.state == "caring" else 0.06
         # 眨眼倒计时
         self._blink_cd -= 0.05
         if self._blink_cd <= 0 and self._blink == 0:

@@ -146,3 +146,57 @@ def test_state_injection_combines(db):
     _insert("烦躁")
     text = mood.get_state_injection()
     assert "今日情绪" in text and "倾听" in text
+
+
+# ── 第 6.28 课 C1：情绪周报统计 ────────────────────────────
+
+def test_weekly_stats_counts(db):
+    _insert("烦躁")
+    _insert("烦躁")
+    _insert("开心")
+    s = mood.get_weekly_stats(7)
+    assert s["total"] == 3
+    assert s["by_mood"] == {"烦躁": 2, "开心": 1}
+    assert s["peak_hours"]  # 非空（3 小时桶）
+
+
+def test_weekly_stats_negative_topics(db):
+    conn = connect()
+    conn.executemany(
+        "INSERT INTO mood_log (mood, snippet, created_at) VALUES (?, ?, ?)",
+        [
+            ("烦躁", "烦死了，bug又报错", mood._utc_now()),
+            ("烦躁", "烦死了，bug又报错", mood._utc_now()),
+            ("疲惫", "累死了，改了一天", mood._utc_now()),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    s = mood.get_weekly_stats(7)
+    assert s["negative_topics"] == ["烦死了，bug又报错", "累死了，改了一天"]
+
+
+def test_weekly_stats_excludes_old(db):
+    _insert("开心", hours_ago=8 * 24)  # 8 天前不计入
+    s = mood.get_weekly_stats(7)
+    assert s["total"] == 0
+    assert s["by_mood"] == {}
+
+
+def test_weekly_report_section(db):
+    conn = connect()
+    conn.execute(
+        "INSERT INTO mood_log (mood, snippet, created_at) VALUES ('烦躁', '烦死了，bug又报错', ?)",
+        (mood._utc_now(),),
+    )
+    conn.commit()
+    conn.close()
+    text = mood.weekly_report_section(7)
+    assert text.startswith("## 本周情绪")
+    assert "烦躁×1" in text
+    assert "烦死了，bug又报错" in text
+    assert "情绪高峰" in text
+
+
+def test_weekly_report_section_empty(db):
+    assert mood.weekly_report_section(7) == ""

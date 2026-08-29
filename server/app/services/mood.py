@@ -9,7 +9,7 @@
 """
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.models.database import connect
@@ -157,3 +157,54 @@ def get_state_injection() -> str:
     """今日曲线 + 连击降级，合并成一条注入（无则空串）。"""
     parts = [p for p in (get_today_injection(), get_streak_injection()) if p]
     return "\n".join(parts)
+
+
+# ── 第 6.28 课 C1：情绪周报统计 ────────────────────────────
+
+def get_weekly_stats(days: int = 7) -> dict:
+    """近 N 天（东八区）情绪聚合：总数 / 分布 / 负面话题 top5 / 高峰时段（3 小时桶）。"""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT mood, snippet, created_at FROM mood_log ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+    finally:
+        conn.close()
+    cutoff = datetime.now(TZ) - timedelta(days=days)
+    in_range = [r for r in rows if _row_local(r) >= cutoff]
+    if not in_range:
+        return {"total": 0, "by_mood": {}, "negative_topics": [], "peak_hours": ""}
+
+    by_mood = Counter(r["mood"] for r in in_range)
+    topic_counter: Counter = Counter()
+    for r in in_range:
+        if r["mood"] in NEGATIVE_MOODS and r["snippet"]:
+            topic_counter[r["snippet"]] += 1
+    negative_topics = [s for s, _ in topic_counter.most_common(5)]
+
+    hour_buckets = Counter(_row_local(r).hour // 3 * 3 for r in in_range)
+    top_bucket = hour_buckets.most_common(1)[0][0]
+    return {
+        "total": len(in_range),
+        "by_mood": dict(by_mood.most_common()),
+        "negative_topics": negative_topics,
+        "peak_hours": f"{top_bucket:02d}-{top_bucket + 2:02d} 点",
+    }
+
+
+def weekly_report_section(days: int = 7) -> str:
+    """周报"本周情绪"节（零 LLM，确定性生成；无数据返回空串）。"""
+    s = get_weekly_stats(days)
+    if not s["total"]:
+        return ""
+    lines = [
+        "## 本周情绪",
+        f"- 情绪记录 {s['total']} 条："
+        + "、".join(f"{k}×{v}" for k, v in s["by_mood"].items()),
+    ]
+    if s["peak_hours"]:
+        lines.append(f"- 情绪高峰：{s['peak_hours']}")
+    if s["negative_topics"]:
+        lines.append("- 最常触发负面情绪的话题：")
+        lines += [f"  {i}. {t}" for i, t in enumerate(s["negative_topics"], 1)]
+    return "\n".join(lines)

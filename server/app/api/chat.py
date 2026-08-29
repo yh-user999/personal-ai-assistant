@@ -429,3 +429,12 @@ async def recent_messages(limit: int = 30) -> dict:
 async def search_messages_api(q: str = "") -> dict:
     """消息全文搜索（第 6.26 课）：关键词 LIKE 全扫描，时间倒序。"""
     return message_search.search_messages(q)
+
+
+@router.get("/mood/state")
+async def mood_state() -> dict:
+    """情绪状态（第 6.28 课 C2）：悬浮球轮询——连击激活=体贴模式，今日曲线=问候呼应。"""
+    return {
+        "streak_active": bool(mood.get_streak_injection()),
+        "today_text": mood.get_today_injection(),
+    }

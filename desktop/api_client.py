@@ -127,3 +127,17 @@ class ApiClient:
             return r.json()
         except Exception:
             return None
+
+    def mood_state(self) -> dict | None:
+        """情绪状态（第 6.28 课 C2：体贴模式轮询）；失败返回 None。"""
+        try:
+            r = httpx.get(
+                f"{self.base_url}/api/mood/state",
+                headers=self._headers(),
+                timeout=8,
+                trust_env=False,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None

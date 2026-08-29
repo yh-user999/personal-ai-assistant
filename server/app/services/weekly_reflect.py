@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.core import llm
 from app.models.database import connect
+from app.services import mood
 
 REFLECT_PROMPT = """你是用户的私人 AI 助手，每周生成一份《学习进度反思》报告。
 基于以下材料，输出：
@@ -100,6 +101,10 @@ async def run_weekly_reflect() -> dict:
     if report:
         # 数据准确性兜底：LLM 可能抄错数字，概览区的关键数字直接用真实统计替换
         report = _enforce_real_numbers(report, stats)
+        # 第 6.28 课 C1：情绪周报——零 LLM 确定性追加，不依赖模型自觉
+        mood_section = mood.weekly_report_section(days=7)
+        if mood_section:
+            report = report.rstrip() + "\n\n" + mood_section
 
     conn = connect()
     try:

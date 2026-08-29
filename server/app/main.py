@@ -48,7 +48,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     每次请求实时读 settings.api_token（测试可 monkeypatch）。
     """
 
-    PUBLIC_PATHS = {"/", "/api/health"}
+    PUBLIC_PATHS = {"/", "/api/health", "/qr.png"}
 
     async def dispatch(self, request, call_next):
         if settings.api_token and request.url.path not in self.PUBLIC_PATHS:

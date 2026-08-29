@@ -194,6 +194,14 @@ CREATE TABLE IF NOT EXISTS writing_log (
   words INTEGER NOT NULL,          -- 本次字数
   created_at TEXT NOT NULL
 );
+
+-- ⑳ 情绪日志（第 6.27 课：情绪记忆层 + 反馈闭环）
+CREATE TABLE IF NOT EXISTS mood_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mood TEXT NOT NULL,              -- 疲惫 / 着急 / 烦躁 / 开心 / 低落
+  snippet TEXT DEFAULT '',         -- 触发消息摘要（≤80 字）
+  created_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

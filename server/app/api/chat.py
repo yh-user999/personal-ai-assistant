@@ -14,7 +14,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, goals, message_search, novel_writing, reminders, resume, unresolved, worklog
+from app.services import behavior_context, documents, executor, goals, message_search, mood, novel_writing, reminders, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -50,6 +50,9 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 用户当前状态（情绪感知，按指引调整语气；无则不出现）：
 {mood}
+
+今日情绪走势与连续状态（第 6.27 课：小月要延续情绪语境，按指引调整）：
+{mood_state}
 
 {injections}
 
@@ -119,6 +122,11 @@ def parse_time_question(msg: str) -> str | None:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
     msg = req.message.strip()
+
+    # 情绪记忆层（第 6.27 课 A 档）：每条用户消息先入情绪账（含命令类消息）
+    mood_name = mood.detect_mood_name(msg)
+    if mood_name:
+        mood.record_mood(mood_name, msg)
 
     # 工作日志命令："记录：…" / "记录 …"
     if msg.startswith("记录：") or msg.startswith("记录:"):
@@ -340,9 +348,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{unresolved}", open_issues or "（无）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
     # 情绪感知（第 6.23 课）：规则检测用户情绪 → 风格指引注入
-    from app.services.mood import detect_mood
-
-    system = system.replace("{mood}", detect_mood(msg) or "")
+    # 情绪记忆层 + 反馈闭环（第 6.27 课）：今日曲线 + 负面连击降级
+    system = system.replace("{mood}", mood.detect_mood(msg) or "")
+    system = system.replace("{mood_state}", mood.get_state_injection())
 
     # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感）
     history = memory.get_recent_history(settings.history_limit)

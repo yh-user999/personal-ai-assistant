@@ -202,6 +202,24 @@ CREATE TABLE IF NOT EXISTS mood_log (
   snippet TEXT DEFAULT '',         -- 触发消息摘要（≤80 字）
   created_at TEXT NOT NULL
 );
+
+-- ㉑ 健身台账（第 6.29 课：健身减脂助手）
+CREATE TABLE IF NOT EXISTS fitness_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,              -- weight / training
+  value REAL,                      -- 体重数值（训练记录为空）
+  detail TEXT DEFAULT '',          -- 训练内容描述
+  created_at TEXT NOT NULL
+);
+
+-- ㉒ 健身知识卡（第 6.29 课：权威指南提炼，仿小说设定卡）
+CREATE TABLE IF NOT EXISTS fitness_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book TEXT NOT NULL,              -- 固定 '健身'
+  keywords TEXT NOT NULL,          -- 触发词（逗号分隔）
+  content TEXT NOT NULL,           -- 权威条目正文（含出处年份）
+  created_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

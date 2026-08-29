@@ -14,7 +14,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, goals, message_search, mood, novel_writing, reminders, resume, unresolved, worklog
+from app.services import behavior_context, documents, executor, fitness, goals, message_search, mood, novel_writing, reminders, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -217,6 +217,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
             memories_used=0,
         )
 
+    # 健身减脂助手（第 6.29 课）：记录体重 / 训练记录 / 健身进度
+    weight = fitness.parse_weight(msg)
+    if weight is not None:
+        fitness.add_log("weight", weight, "")
+        return ChatResponse(reply=f"⚖️ 体重已记录：{weight} kg ✓", memories_used=0)
+    if msg.strip() in fitness.PROGRESS_WORDS:
+        return ChatResponse(reply=fitness.fitness_summary(), memories_used=0)
+    train = fitness.parse_training(msg)
+    if train:
+        fitness.add_log("training", None, train)
+        return ChatResponse(reply=f"🏋️ 训练已记录 ✓（{train}）", memories_used=0)
+
     # 小说写作增强（第 6.25 课）：写作记录 / 写作进度 / 设定冲突检查 / 续写
     log_cmd = novel_writing.parse_writing_log(msg)
     if log_cmd:
@@ -323,6 +335,15 @@ async def chat(req: ChatRequest) -> ChatResponse:
         knowledge_text = (
             "【小说设定卡（知识库权威资料，回答时直接采用）】\n- "
             + "\n- ".join(novel_facts)
+            + "\n\n"
+            + knowledge_text
+        )
+    # 健身知识卡注入（第 6.29 课）：权威指南条目，可直接作为回答依据并注明出处
+    fitness_cards = fitness.get_fitness_facts(msg)
+    if fitness_cards:
+        knowledge_text = (
+            "【健身知识卡（权威资料，回答时直接采用，可注明出处年份）】\n- "
+            + "\n- ".join(fitness_cards)
             + "\n\n"
             + knowledge_text
         )

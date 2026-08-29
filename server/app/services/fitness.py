@@ -23,7 +23,8 @@ PROGRESS_WORDS = ("健身进度", "健身统计", "健身台账", "健身记录�
 
 
 def _now_utc() -> str:
-    return datetime.now(TZ).astimezone(ZoneInfo("UTC")).isoformat()
+    from app.common.timeutil import utc_str
+    return utc_str()
 
 
 def parse_weight(msg: str) -> float | None:
@@ -177,7 +178,7 @@ def seed_fitness_cards() -> int:
          "常见误区：不吃主食/极端节食（掉肌肉+反弹）、只做有氧不练力量（保不住代谢）、"
          "指望减肥产品（未经医学评估别碰）——可持续的缺口+力量+睡眠才是长期答案"
          "（2024 食养指南 + 2025 肥胖诊疗指南）。"),
-        ("饮食记录,记录,吃",
+        ("饮食记录,记录饮食,吃了什么,饮食打卡,热量记录,记餐",
          "饮食记录是减脂性价比最高的工具：记录 3~7 天就能暴露隐形热量（饮料/酱料/零食）；"
          "先记录再调整，比凭感觉少吃可靠（2025 肥胖诊疗指南：行为干预）。"),
     ]

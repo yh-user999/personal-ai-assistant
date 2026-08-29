@@ -11,7 +11,7 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DB_PATH", "/tmp/test_thinking.db")
 
-from app.models.database import init_db  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
 from app.services.concern_tracker import (  # noqa: E402
     get_concerns_injection,
     get_stale_concerns,
@@ -30,8 +30,10 @@ def fresh_db():
     db_file = Path("/tmp/test_thinking.db")
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_file) + suffix).unlink(missing_ok=True)
+    reset_connections()  # 长驻连接缓存还握着被删的旧库句柄，必须丢弃
     init_db()
     yield
+    reset_connections()
 
 
 # ── 关切追踪 ──────────────────────────────────────────────

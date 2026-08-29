@@ -15,7 +15,7 @@ os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DB_PATH", "/tmp/test_assistant_memory.db")
 
 from app.core import memory  # noqa: E402
-from app.models.database import init_db  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

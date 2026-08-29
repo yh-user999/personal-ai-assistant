@@ -66,8 +66,13 @@ def search_messages(keyword: str, limit: int = MAX_HITS) -> dict:
         return {"query": keyword, "total": 0, "results": []}
     limit = max(1, min(limit, 50))
 
-    where = " AND ".join(["content LIKE ?"] * len(terms))
-    params = [f"%{t}%" for t in terms]
+    # 转义 LIKE 通配符：搜字面量 "100%" / "a_b" 不再被当模式，单独 "%" 不再匹配全表
+    # ESCAPE '\'：反斜杠声明为转义符（单字符）
+    where = " AND ".join(["content LIKE ? ESCAPE '\\'"] * len(terms))
+    params = [
+        "%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        for t in terms
+    ]
     conn = connect()
     try:
         total = conn.execute(

@@ -52,18 +52,19 @@ class _FakeResp:
 
 
 class _FakeAsyncClient:
+    is_closed = False  # 对齐 httpx.AsyncClient 接口（_get_client 检查用）
+
     def __init__(self, *args, **kwargs):
         self.calls = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        pass
 
     async def post(self, url, json=None, headers=None):
         self.calls.append({"url": url, "json": json, "headers": headers})
         return _FakeResp()
+
+
+def _use_client(monkeypatch, client):
+    """新实现用模块级长驻客户端，测试直接注入实例。"""
+    monkeypatch.setattr(qq_push, "_client", client)
 
 
 def test_push_disabled_without_config():
@@ -80,7 +81,7 @@ def test_push_sends_and_consumes(monkeypatch):
     monkeypatch.setattr(settings, "qq_push_token", "t-token")
     monkeypatch.setattr(settings, "qq_admin_id", "10001")
     fake = _FakeAsyncClient()
-    monkeypatch.setattr(qq_push.httpx, "AsyncClient", lambda **kw: fake)
+    _use_client(monkeypatch, fake)
     _seed_due_reminder()
 
     pushed = asyncio.run(qq_push.push_reminders())
@@ -105,8 +106,13 @@ def test_push_failure_counted_zero(monkeypatch):
         async def post(self, url, json=None, headers=None):
             return _FakeResp(status_code=500, payload={"status": "failed"})
 
-    monkeypatch.setattr(qq_push.httpx, "AsyncClient", lambda **kw: _BadClient())
+    _use_client(monkeypatch, _BadClient())
     assert asyncio.run(qq_push.push_reminders()) == 0
+    # 失败不消费：提醒留在 pending，下一分钟重推（防静默丢失的核心语义）
+    conn = connect()
+    status = conn.execute("SELECT status FROM reminders WHERE content='喝水'").fetchone()["status"]
+    conn.close()
+    assert status == "pending"
 
 
 # ── 电脑在线提示（chat 执行器分支）────────────────────────

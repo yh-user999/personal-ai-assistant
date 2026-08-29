@@ -9,17 +9,18 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from app.common.timeutil import TZ, now_local, utc_str
 from app.models.database import connect
 
 TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _now() -> datetime:
-    return datetime.now(TZ)
+    return now_local()
 
 
 def _utc_str(dt: datetime) -> str:
-    return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
+    return utc_str(dt)
 
 
 def _parse_abs_hour(text: str, base_date: datetime.date) -> datetime | None:
@@ -154,7 +155,12 @@ def cancel_by_keyword(keyword: str) -> int:
 
 
 def due_reminders() -> list[dict]:
-    """取出已到期的未提醒项，并立即标记为 notified（推一次）。"""
+    """取出已到期的未提醒项（不消费，调用方推送成功后 mark_notified）。
+
+    消费语义与推送解耦：QQ 是提醒的唯一通道，若"选中即标记"，NapCat
+    掉线期间的到期提醒会被静默吞掉（标记了但没推出去，永不重试）。
+    改为推送确认后消费，失败项下一轮重推。
+    """
     conn = connect()
     try:
         rows = conn.execute(
@@ -162,9 +168,23 @@ def due_reminders() -> list[dict]:
             "ORDER BY remind_at ASC LIMIT 10",
             (_utc_str(_now()),),
         ).fetchall()
-        for r in rows:
-            conn.execute("UPDATE reminders SET status='notified' WHERE id=?", (r["id"],))
-        conn.commit()
         return [{"id": r["id"], "content": r["content"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_notified(ids: list[int]) -> None:
+    """推送成功后消费（幂等：重复标记无副作用）。"""
+    if not ids:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE reminders SET status='notified' WHERE id IN ({})".format(
+                ",".join("?" * len(ids))
+            ),
+            ids,
+        )
+        conn.commit()
     finally:
         conn.close()

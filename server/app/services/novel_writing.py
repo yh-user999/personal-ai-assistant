@@ -30,7 +30,7 @@ LOG_RE = re.compile(
 _PATH_HINT_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]|盘|\.(?:txt|md|doc|docx)$")
 
 
-def _looks_like_file_path(s: str) -> bool:
+def looks_like_file_path(s: str) -> bool:
     return bool(_PATH_HINT_RE.search(s.strip()))
 
 
@@ -74,17 +74,30 @@ def parse_conflicts_json(text: str) -> list[dict]:
     return out
 
 
+def _build_authority(novel_facts: list[str], facts_text: str) -> tuple[str, int]:
+    """权威设定块拼装（设定冲突检查与续写共用，两处文案曾漂移）。
+
+    返回 (authority 文本, 已纳入设定条数)。
+    """
+    card_head = "【小说设定卡】"
+    facts_head = "【已确认设定（facts 永久层）】"
+    parts = []
+    count = 0
+    if novel_facts:
+        parts.append(card_head + "\n- " + "\n- ".join(novel_facts))
+        count += len(novel_facts)
+    if facts_text and facts_text != "（暂无）":
+        parts.append(facts_head + "\n" + facts_text)
+        count += facts_text.count("\n") + 1
+    authority = "\n\n".join(parts) if parts else "（暂无已确认设定）"
+    return authority, count
+
+
 async def check_conflicts(text: str) -> dict:
     """返回 {"reply": str}（已格式化，可直接当聊天回复）。"""
     novel_facts = knowledge.get_novel_facts(text)
     facts_text = memory.get_facts_injection()
-    authority_parts = []
-    if novel_facts:
-        authority_parts.append("【小说设定卡】\n- " + "\n- ".join(novel_facts))
-    if facts_text and facts_text != "（暂无）":
-        authority_parts.append("【已确认设定（facts 永久层）】\n" + facts_text)
-    authority = "\n\n".join(authority_parts) or "（暂无已确认设定）"
-    checked_count = len(novel_facts) + (facts_text.count("\n") + 1 if facts_text and facts_text != "（暂无）" else 0)
+    authority, checked_count = _build_authority(novel_facts, facts_text)
 
     system = (
         "你是资深小说设定审校员。用户提供【权威设定】（已确认的小说设定，不可违背）"
@@ -140,12 +153,7 @@ async def continue_story(text: str) -> str:
     background = knowledge.format_knowledge_injection(hits) or "（未检索到相关剧情背景）"
     facts_text = memory.get_facts_injection()
 
-    authority_parts = []
-    if novel_facts:
-        authority_parts.append("【小说设定卡】\n- " + "\n- ".join(novel_facts))
-    if facts_text and facts_text != "（暂无）":
-        authority_parts.append("【已确认设定】\n" + facts_text)
-    authority = "\n\n".join(authority_parts) or "（暂无已确认设定）"
+    authority, _ = _build_authority(novel_facts, facts_text)
 
     system = (
         "你是网络小说写手，文风参考《寂静杀戮》：冷静克制、短句有力、动作感强、"
@@ -250,3 +258,7 @@ def writing_summary() -> str:
         recent_lines,
     ]
     return "\n".join(lines)
+
+
+# 兼容别名（chat.py 曾直接调私有名；统一走公开名）
+_looks_like_file_path = looks_like_file_path

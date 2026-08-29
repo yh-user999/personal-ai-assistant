@@ -53,22 +53,20 @@ from PySide6.QtWidgets import (
 from robot_avatar import RobotAvatar
 
 
-class _InfoDialog(QDialog):
-    """统计/周报独立弹窗：不污染聊天流，可滚动可关闭。"""
+class _TextDialog(QDialog):
+    """文本弹窗基类：主题化 QTextBrowser + 关闭按钮 + Esc（统计/周报/搜索共用）。"""
 
-    def __init__(self, title: str, html_text: str, parent=None) -> None:
+    def __init__(self, title: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
-        self.resize(440, 520)
         lay = QVBoxLayout(self)
-        browser = QTextBrowser()
-        browser.setHtml(html_text)
-        browser.setStyleSheet(
+        self.browser = QTextBrowser()
+        self.browser.setStyleSheet(
             f"background: {theme.token('input_bg')}; color: {theme.token('text_main')};"
             "border: none; font-size: 13px;"
         )
-        lay.addWidget(browser, 1)
+        lay.addWidget(self.browser, 1)
         close_btn = QPushButton("关闭（Esc）")
         close_btn.clicked.connect(self.close)
         close_btn.setStyleSheet(
@@ -85,19 +83,26 @@ class _InfoDialog(QDialog):
         super().keyPressEvent(event)
 
 
-class _SearchDialog(QDialog):
+class _InfoDialog(_TextDialog):
+    """统计/周报独立弹窗：不污染聊天流，可滚动可关闭。"""
+
+    def __init__(self, title: str, html_text: str, parent=None) -> None:
+        super().__init__(title, parent=parent)
+        self.resize(440, 520)
+        self.browser.setHtml(html_text)
+
+
+class _SearchDialog(_TextDialog):
     """消息全文检索弹窗（第 6.26 课）：关键词输入 + 后台线程检索 + 纯文本结果。"""
 
     def __init__(self, client: ApiClient, parent=None) -> None:
-        super().__init__(parent)
+        super().__init__("🔍 消息全文检索", parent=parent)
         self.client = client
         self._worker = None
-        self.setWindowTitle("🔍 消息全文检索")
-        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
         self.resize(460, 560)
-        lay = QVBoxLayout(self)
+        lay = self.layout()
 
-        # 输入行：关键词 + 搜索按钮
+        # 输入行：关键词 + 搜索按钮（插在 browser 上方）
         input_row = QHBoxLayout()
         self.query_input = QLineEdit()
         self.query_input.setPlaceholderText("关键词（多词用空格分隔 = 同时包含）")
@@ -108,31 +113,11 @@ class _SearchDialog(QDialog):
         search_btn.clicked.connect(self._do_search)
         input_row.addWidget(self.query_input, 1)
         input_row.addWidget(search_btn)
-        lay.addLayout(input_row)
+        lay.insertLayout(0, input_row)
 
-        # 结果区（纯文本：消息内容不渲染 HTML，杜绝注入）
-        self.results = QTextBrowser()
-        self.results.setStyleSheet(
-            f"background: {theme.token('input_bg')}; color: {theme.token('text_main')};"
-            "border: none; font-size: 13px;"
-        )
+        # 结果区复用基类 browser（纯文本：消息内容不渲染 HTML，杜绝注入）
+        self.results = self.browser
         self.results.setPlainText("输入关键词后回车或点「搜索」。")
-        lay.addWidget(self.results, 1)
-
-        close_btn = QPushButton("关闭（Esc）")
-        close_btn.clicked.connect(self.close)
-        close_btn.setStyleSheet(
-            f"QPushButton {{ background: {theme.token('btn_bg')}; color: {theme.token('text_sub')}; border: 1px solid {theme.token('border')};"
-            f"border-radius: 8px; padding: 8px; }}"
-            f"QPushButton:hover {{ color: #fff; }}"
-        )
-        lay.addWidget(close_btn)
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
-            self.close()
-            return
-        super().keyPressEvent(event)
 
     def _do_search(self) -> None:
         q = self.query_input.text().strip()

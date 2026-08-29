@@ -78,7 +78,8 @@ def record_mood(mood_name: str, msg: str) -> int:
 
 
 def _utc_now() -> str:
-    return datetime.now(TZ).astimezone(ZoneInfo("UTC")).isoformat()
+    from app.common.timeutil import utc_str
+    return utc_str()
 
 
 def _row_local(row) -> datetime:
@@ -165,8 +166,12 @@ def get_weekly_stats(days: int = 7) -> dict:
     """近 N 天（东八区）情绪聚合：总数 / 分布 / 负面话题 top5 / 高峰时段（3 小时桶）。"""
     conn = connect()
     try:
+        # 时间下界在 SQL 层过滤（原 LIMIT 500 在重度使用时会静默漏掉旧记录）
+        cutoff_utc = (datetime.now(TZ) - timedelta(days=days)).astimezone(ZoneInfo("UTC")).isoformat()
         rows = conn.execute(
-            "SELECT mood, snippet, created_at FROM mood_log ORDER BY id DESC LIMIT 500"
+            "SELECT mood, snippet, created_at FROM mood_log "
+            "WHERE created_at >= ? ORDER BY id DESC LIMIT 5000",
+            (cutoff_utc,),
         ).fetchall()
     finally:
         conn.close()

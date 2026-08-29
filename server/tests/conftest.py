@@ -18,3 +18,30 @@ for _p in (SERVER_ROOT, REPO_ROOT):
 
 os.environ.setdefault("API_TOKEN", "")
 
+
+
+# ── 数据库测试共享设施 ────────────────────────────────────
+# 长驻线程本地连接（database.connect 缓存）要求切换 db_path 后 reset；
+# 各测试文件用共享的 db fixture（monkeypatch db_path → init_db → reset）。
+
+import pytest  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
+
+
+@pytest.fixture
+def db(tmp_path, monkeypatch):
+    """独立临时库 + 连接缓存重置。16 份重复 fixture 收编于此。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
+    init_db()
+    yield
+    reset_connections()
+
+
+@pytest.fixture(autouse=True)
+def _reset_conn_cache():
+    """任何测试结束后丢弃连接缓存，防止跨测试泄漏到下一个 db_path。"""
+    yield
+    reset_connections()

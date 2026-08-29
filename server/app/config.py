@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # 留空 = 不鉴权（仅限 Tailscale 内网等已隔离环境）
     api_token: str = ""
 
+    # ── 采集器心跳 ──────────────────────────────────────────
+    # 超过该秒数没心跳视为电脑不在线（执行器分支给 QQ 的提示文案用）
+    heartbeat_stale_seconds: int = 120
+
     # ── QQ 推送（第 8 课：提醒唯一通道，仅 JD .env 配置）────
     # NapCat onebot HTTP 服务地址 + token + 主人 QQ（勿进仓库）
     qq_push_url: str = ""
@@ -75,7 +79,15 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    # 配置校验 fail-fast：qq_admin_id 配错类型（非数字）曾导致推送每分钟
+    # 抛 ValueError 被吞、全灭且无告警——启动期直接报清楚
+    if s.qq_push_url and not s.qq_admin_id.strip().isdigit():
+        raise ValueError(
+            f"QQ_PUSH_URL 已配置但 QQ_ADMIN_ID='{s.qq_admin_id}' 不是数字，"
+            "推送通道不可用——请修正 .env 或清空 QQ_PUSH_URL"
+        )
+    return s
 
 
 settings = get_settings()

@@ -97,7 +97,8 @@ def test_cancel_by_keyword(db):
 
 
 def test_due_marks_notified_once(db):
-    """到期项取出即标 notified，不会重复推送。"""
+    """到期项取出时不消费（推送成功后 mark_notified 才消费）——
+    防止 NapCat 掉线期间提醒被静默吞掉。"""
     conn = connect()
     past = (datetime.now(TZ) - timedelta(minutes=1)).astimezone(ZoneInfo("UTC"))
     conn.execute(
@@ -109,8 +110,12 @@ def test_due_marks_notified_once(db):
     conn.close()
     first = reminders.due_reminders()
     assert [i["content"] for i in first] == ["已到期"]
-    assert reminders.due_reminders() == []  # 第二次轮询为空
-    assert reminders.list_pending() == []   # 不再出现在待办列表
+    # 未推送前不消费：仍然可见（下一轮会重取）
+    assert [i["content"] for i in reminders.due_reminders()] == ["已到期"]
+    # 推送成功后显式消费 → 消失
+    reminders.mark_notified([first[0]["id"]])
+    assert reminders.due_reminders() == []
+    assert reminders.list_pending() == []
 
 
 def test_list_shows_beijing_time(db):

@@ -18,7 +18,7 @@ os.environ.setdefault("DB_PATH", "/tmp/test_vec_search.db")
 os.environ.setdefault("EMBEDDING_DIMENSION", "1024")
 
 from app.core import memory  # noqa: E402
-from app.models.database import init_db  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
 
 DIM = 1024
 

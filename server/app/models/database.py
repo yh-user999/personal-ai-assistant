@@ -247,13 +247,39 @@ _SCHEMA = _BASE_SCHEMA + VEC_TABLE_SQL
 
 _vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过日志），避免每次连接刷屏
 
+# 线程本地连接缓存：一次聊天请求会开 20+ 连接（十几个注入器各开各的），
+# 每个连接都重跑 WAL pragma + 加载 sqlite-vec 扩展，是纯开销。
+# SQLite 连接不可跨线程，threading.local 正好每线程一条长驻连接。
+import threading  # noqa: E402
+
+_local = threading.local()
+
 
 def connect() -> sqlite3.Connection:
-    """打开数据库连接：WAL 模式（读写并发）+ busy_timeout（锁等待）。
+    """取当前线程的数据库连接（长驻复用）：WAL + busy_timeout + sqlite-vec。
 
-    WAL 允许读写并行：采集事件写入不会阻塞记忆检索查询。
+    同线程内所有调用共享一条连接——省掉每请求 20+ 次建连/加载扩展的开销。
+    注意：调用方沿用既有 `finally: conn.close()` 的写法也无妨（close 后
+    下次 connect 会自动重建）；新代码可以不关。
+    事务语义：长驻连接上多次 commit 互不干扰，与逐条连接行为一致。
     """
     global _vec_state
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.ProgrammingError:
+            # 连接已被 close()：重建
+            _local.conn = None
+        except sqlite3.OperationalError:
+            # 连接损坏：重建
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _local.conn = None
+
     db_file = settings.db_file
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_file), timeout=5.0)
@@ -275,7 +301,14 @@ def connect() -> sqlite3.Connection:
         if _vec_state is not False:
             logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
         _vec_state = False
+    _local.conn = conn
     return conn
+
+
+def reset_connections() -> None:
+    """丢弃所有线程的本地连接缓存（测试切换 db_path 后必须调用，否则
+    长驻连接仍指向旧库）。"""
+    _local.conn = None
 
 
 def init_db() -> None:

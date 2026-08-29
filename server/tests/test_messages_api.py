@@ -14,7 +14,7 @@ os.environ.setdefault("DB_PATH", "/tmp/test_messages.db")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
-from app.models.database import init_db, connect  # noqa: E402
+from app.models.database import init_db, connect, reset_connections  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +22,10 @@ def fresh_db():
     db_file = Path("/tmp/test_messages.db")
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_file) + suffix).unlink(missing_ok=True)
+    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
     init_db()
     yield
+    reset_connections()
 
 
 def _seed():

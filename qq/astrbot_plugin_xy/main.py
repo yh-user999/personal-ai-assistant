@@ -22,17 +22,33 @@ from astrbot.core.message.message_event_result import MessageChain
 REPLY_MAX_CHARS = 4000  # QQ 单条消息安全长度，超长截断并提示
 
 
+def should_handle(sender: str, group: str, owner_qq: str) -> bool:
+    """白名单判定（纯函数，可单测）。
+
+    规则：群聊一律不处理（隐私铁律）；owner 未配置=全拒（fail-closed）；
+    仅主人私聊返回 True。
+    """
+    if group:
+        return False
+    owner = str(owner_qq or "").strip()
+    if not owner or str(sender or "").strip() != owner:
+        return False
+    return True
+
+
 @register(
     "astrbot_plugin_xy",
     "小月接入",
     "小月 QQ 接入（借壳小白）：主人私聊直达小月服务，群聊/陌生人静默",
-    "v1.1.0",
+    "v1.2.0",
 )
 class XiaoYuePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.cfg = config or {}
-        self._client = httpx.AsyncClient(timeout=120)  # 小月 LLM 回复可能 30-60s
+        # trust_env=False：本机回环调用不走系统代理——宿主机若有 HTTP_PROXY
+        # 且 NO_PROXY 不含 127.0.0.1，Bearer token 会流经代理（全套已踩过的坑）
+        self._client = httpx.AsyncClient(timeout=120, trust_env=False)  # 小月 LLM 回复可能 30-60s
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -40,18 +56,17 @@ class XiaoYuePlugin(Star):
         sender = event.get_sender_id() or ""
         group = event.get_group_id() or ""
 
-        # 群聊：一律静默（隐私铁律）
-        if group:
+        # 白名单（纯函数）：群聊不处理；仅主人私聊放行
+        if not should_handle(sender, group, self.cfg.get("owner_qq", "")):
             event.should_call_llm(True)
-            return
-
-        # 私聊：仅主人
-        owner = str(self.cfg.get("owner_qq", "") or "").strip()
-        if not owner or sender != owner:
-            event.should_call_llm(True)
+            event.stop_event()
             return
         if not msg.strip():
+            # 空白消息同样拦默认 LLM（v1.2：漏拦会漏进宿主默认 LLM）
+            event.should_call_llm(True)
+            event.stop_event()
             return
+        event.stop_event()  # 主人消息本插件全权处理，阻断其他处理器
 
         base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
         token = str(self.cfg.get("api_token", "") or "").strip()

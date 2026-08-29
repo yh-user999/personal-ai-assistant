@@ -11,7 +11,7 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DB_PATH", "/tmp/test_self_reflect.db")
 
-from app.models.database import init_db  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
 from app.services.self_reflect import (  # noqa: E402
     count_lessons_since,
     detect_correction,
@@ -25,8 +25,10 @@ def fresh_db():
     db_file = Path("/tmp/test_self_reflect.db")
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_file) + suffix).unlink(missing_ok=True)
+    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
     init_db()
     yield
+    reset_connections()
 
 
 def test_detect_correction_signals():

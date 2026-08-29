@@ -28,7 +28,9 @@ logger = logging.getLogger("assistant.chat")
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def _computer_online(hb: dict | None, stale_seconds: int = 120) -> bool:
+def _computer_online(hb: dict | None, stale_seconds: int | None = None) -> bool:
+    if stale_seconds is None:
+        stale_seconds = settings.heartbeat_stale_seconds
     """采集器心跳新鲜 = 电脑在线（第 8 课）。"""
     if not hb or not hb.get("received_at"):
         return False
@@ -255,7 +257,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         return ChatResponse(reply=novel_writing.writing_summary(), memories_used=0)
     conflict_text = novel_writing.parse_conflict_command(msg)
     if conflict_text:
-        if novel_writing._looks_like_file_path(conflict_text):
+        if novel_writing.looks_like_file_path(conflict_text):
             return ChatResponse(
                 reply="📂 目前请直接粘贴正文来检查：把新写的内容贴在「检查设定冲突：」后面"
                       "（路径读取可先对文件说「读一下」拿到内容）",
@@ -469,8 +471,10 @@ async def recent_messages(limit: int = 30) -> dict:
 
 @router.get("/messages/search")
 async def search_messages_api(q: str = "") -> dict:
-    """消息全文搜索（第 6.26 课）：关键词 LIKE 全扫描，时间倒序。"""
-    return message_search.search_messages(q)
+    """消息全文搜索（第 6.26 课）：LIKE 全扫描是重 IO，to_thread 移出事件循环。"""
+    import asyncio
+
+    return await asyncio.to_thread(message_search.search_messages, q)
 
 
 @router.get("/mood/state")

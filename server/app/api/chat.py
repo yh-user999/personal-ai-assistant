@@ -14,7 +14,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, goals, novel_writing, reminders, resume, unresolved, worklog
+from app.services import behavior_context, documents, executor, goals, message_search, novel_writing, reminders, resume, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -235,6 +235,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
         reply = await novel_writing.continue_story(cont_text)
         return ChatResponse(reply=reply, memories_used=0)
 
+    # 消息全文搜索（第 6.26 课）：聊天记录关键词检索（LIKE 全扫描，时间倒序）
+    search_kw = message_search.parse_search_command(msg)
+    if search_kw is not None:
+        if not search_kw:
+            return ChatResponse(
+                reply="🔍 用法：搜索聊天记录：关键词\n"
+                      "多关键词用空格/逗号分隔（同时包含才算命中）",
+                memories_used=0,
+            )
+        return ChatResponse(reply=message_search.format_results(search_kw), memories_used=0)
+
     # 执行器命令（第 11 课）："帮我打开XX" / "看看XX目录" / "读一下XX文件"
     # 第 13 课扩展：复制/备份/移动/重命名（双路径白名单校验）
     # 第 6.24 课扩展：search_files（目录空=全白名单搜索，Windows 端逐根校验）
@@ -404,3 +415,9 @@ async def recent_messages(limit: int = 30) -> dict:
     finally:
         conn.close()
     return {"messages": [dict(r) for r in reversed(rows)]}
+
+
+@router.get("/messages/search")
+async def search_messages_api(q: str = "") -> dict:
+    """消息全文搜索（第 6.26 课）：关键词 LIKE 全扫描，时间倒序。"""
+    return message_search.search_messages(q)

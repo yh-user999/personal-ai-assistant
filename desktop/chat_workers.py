@@ -114,6 +114,19 @@ class _HistoryWorker(QThread):
             self.done.emit([])
 
 
+class _SearchWorker(QThread):
+    """后台消息全文检索（第 6.26 课）。"""
+    done = Signal(object)  # dict 结果或 None（请求失败）
+
+    def __init__(self, client: ApiClient, query: str) -> None:
+        super().__init__()
+        self.client = client
+        self.query = query
+
+    def run(self) -> None:
+        self.done.emit(self.client.search_messages(self.query))
+
+
 class _ApiWorker(QThread):
     """后台执行快捷查询（统计/周报），避免 UI 线程网络阻塞。"""
     done = Signal(str, str)  # (mode, text)

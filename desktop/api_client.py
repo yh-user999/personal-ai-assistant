@@ -112,3 +112,18 @@ class ApiClient:
             return r.json().get("reminders", [])
         except Exception:
             return []
+
+    def search_messages(self, query: str) -> dict | None:
+        """消息全文检索（第 6.26 课）；失败返回 None。"""
+        try:
+            r = httpx.get(
+                f"{self.base_url}/api/messages/search",
+                params={"q": query},
+                headers=self._headers(),
+                timeout=10,
+                trust_env=False,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None

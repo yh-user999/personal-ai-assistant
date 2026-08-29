@@ -33,6 +33,7 @@ from chat_workers import (
     _ExecResultWorker,
     _GreetingWorker,
     _HistoryWorker,
+    _SearchWorker,
     retire,
 )
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
@@ -82,6 +83,89 @@ class _InfoDialog(QDialog):
             self.close()
             return
         super().keyPressEvent(event)
+
+
+class _SearchDialog(QDialog):
+    """消息全文检索弹窗（第 6.26 课）：关键词输入 + 后台线程检索 + 纯文本结果。"""
+
+    def __init__(self, client: ApiClient, parent=None) -> None:
+        super().__init__(parent)
+        self.client = client
+        self._worker = None
+        self.setWindowTitle("🔍 消息全文检索")
+        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        self.resize(460, 560)
+        lay = QVBoxLayout(self)
+
+        # 输入行：关键词 + 搜索按钮
+        input_row = QHBoxLayout()
+        self.query_input = QLineEdit()
+        self.query_input.setPlaceholderText("关键词（多词用空格分隔 = 同时包含）")
+        self.query_input.setCursor(Qt.CursorShape.IBeamCursor)
+        self.query_input.returnPressed.connect(self._do_search)
+        search_btn = QPushButton("搜索")
+        search_btn.setCursor(Qt.PointingHandCursor)
+        search_btn.clicked.connect(self._do_search)
+        input_row.addWidget(self.query_input, 1)
+        input_row.addWidget(search_btn)
+        lay.addLayout(input_row)
+
+        # 结果区（纯文本：消息内容不渲染 HTML，杜绝注入）
+        self.results = QTextBrowser()
+        self.results.setStyleSheet(
+            f"background: {theme.token('input_bg')}; color: {theme.token('text_main')};"
+            "border: none; font-size: 13px;"
+        )
+        self.results.setPlainText("输入关键词后回车或点「搜索」。")
+        lay.addWidget(self.results, 1)
+
+        close_btn = QPushButton("关闭（Esc）")
+        close_btn.clicked.connect(self.close)
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background: {theme.token('btn_bg')}; color: {theme.token('text_sub')}; border: 1px solid {theme.token('border')};"
+            f"border-radius: 8px; padding: 8px; }}"
+            f"QPushButton:hover {{ color: #fff; }}"
+        )
+        lay.addWidget(close_btn)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def _do_search(self) -> None:
+        q = self.query_input.text().strip()
+        if not q or self._worker is not None:
+            return
+        self.results.setPlainText("正在检索…")
+        self._worker = _SearchWorker(self.client, q)
+        self._worker.done.connect(self._on_done)
+        self._worker.start()
+
+    def _on_done(self, payload) -> None:
+        worker = self._worker
+        self._worker = None
+        if worker:
+            retire(worker)
+        self.show_results(payload)
+
+    def show_results(self, payload) -> None:
+        """展示检索结果（独立方法，离屏验证可直接喂数据）。"""
+        if payload is None:
+            self.results.setPlainText("❌ 检索请求失败（服务器不可达？）")
+            return
+        hits = payload.get("results", [])
+        query = payload.get("query", "")
+        total = payload.get("total", 0)
+        if not hits:
+            self.results.setPlainText(f"没有找到包含「{query}」的消息")
+            return
+        lines = [f"关键词「{query}」：共 {total} 条命中" + (f"，显示前 {len(hits)} 条" if total > len(hits) else ""), ""]
+        for h in hits:
+            lines.append(f"[{h.get('ts_local', '')}] {h.get('sender_name', '')}：{h.get('snippet', '')}")
+            lines.append("")
+        self.results.setPlainText("\n".join(lines))
 
 
 def _fmt_ts(ts: str) -> str:
@@ -214,7 +298,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（按住标题可拖动窗口，双击最大化）
-        title = QLabel("🤖 Personal AI Assistant v4.9")
+        title = QLabel("🤖 Personal AI Assistant v5.0")
         title.setToolTip("按住拖动窗口 · 双击最大化/还原")
         title.installEventFilter(self)
         self._title = title
@@ -295,7 +379,10 @@ class ChatPanel(QWidget):
         history_btn = QPushButton("🕘 历史")
         history_btn.setToolTip("展开最近 10 条对话记录")
         history_btn.clicked.connect(self._load_history)
-        for b in (stats_btn, report_btn, daily_btn, history_btn):
+        search_btn = QPushButton("🔍 检索")
+        search_btn.setToolTip("全文搜索聊天记录（第 6.26 课）")
+        search_btn.clicked.connect(self._show_search)
+        for b in (stats_btn, report_btn, daily_btn, history_btn, search_btn):
             b.setProperty("quick", True)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
@@ -308,6 +395,7 @@ class ChatPanel(QWidget):
         quick_row.addWidget(report_btn)
         quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
+        quick_row.addWidget(search_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -797,6 +885,11 @@ class ChatPanel(QWidget):
 
     def _show_stats(self) -> None:
         self._run_api("stats")
+
+    def _show_search(self) -> None:
+        """打开消息全文检索弹窗（第 6.26 课）。"""
+        dlg = _SearchDialog(self.client, parent=self)
+        dlg.show()
 
     def _show_report(self) -> None:
         self._run_api("report")

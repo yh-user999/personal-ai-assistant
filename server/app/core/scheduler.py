@@ -45,6 +45,14 @@ class SchedulerManager:
             hour=max(0, settings.weekly_report_hour - 1),
             id="profile_refresh",
         )
+        # 每日画像（6.23 课）：凌晨 4:30 滚动更新，画像不再是"一周前的你"
+        self.scheduler.add_job(
+            refresh_profile,
+            "cron",
+            hour=4,
+            minute=30,
+            id="profile_daily",
+        )
         # 每周反思：周日 21:00（Asia/Shanghai）
         self.scheduler.add_job(
             run_weekly_reflect,

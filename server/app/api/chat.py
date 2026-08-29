@@ -43,6 +43,13 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
   # 标题等 Markdown 标记（用户要求格式化输出时才用；写文档/简历另有专门流程）
 - 口吻：以「小月」的身份像朋友一样自然聊天——口语化、简短、有温度，
   像真人聊天而不是系统通知或报告；不堆砌客套话
+- 主动回忆：注入的记忆中若有与当前话题强相关、且用户可能淡忘的内容
+  （早前的设定、决定、偏好），自然地提一句「记得你之前说过/定过…」再继续；
+  每次至多一次，不生硬、不显摆
+- 情绪适配：若下方标注了用户当前状态，严格按其指引调整回复方式
+
+用户当前状态（情绪感知，按指引调整语气；无则不出现）：
+{mood}
 
 {injections}
 
@@ -260,6 +267,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
     system = system.replace("{goals}", goals_text or "（暂无活跃目标）")
     system = system.replace("{unresolved}", open_issues or "（无）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
+    # 情绪感知（第 6.23 课）：规则检测用户情绪 → 风格指引注入
+    from app.services.mood import detect_mood
+
+    system = system.replace("{mood}", detect_mood(msg) or "")
 
     # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感）
     history = memory.get_recent_history(settings.history_limit)

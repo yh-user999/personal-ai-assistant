@@ -208,7 +208,8 @@ def writing_summary() -> str:
     week = 0
     day = 0
     days: set[str] = set()
-    latest_chapter = None
+    chapter_nums = [int(r["chapter"]) for r in rows if r["chapter"] and r["chapter"].isdigit()]
+    latest_chapter = max(chapter_nums) if chapter_nums else None
     for r in rows:
         dt = datetime.fromisoformat(r["created_at"]).astimezone(TZ)
         d = dt.date()
@@ -218,8 +219,6 @@ def writing_summary() -> str:
         if d == today:
             day += r["words"]
         days.add(d.isoformat())
-        if latest_chapter is None and r["chapter"]:
-            latest_chapter = r["chapter"]
 
     # 连续写作天数：从今天往回数
     streak = 0

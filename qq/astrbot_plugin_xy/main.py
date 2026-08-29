@@ -29,7 +29,7 @@ class XiaoYuePlugin(Star):
         self._client = httpx.AsyncClient(timeout=120)  # 小月 LLM 回复可能 30-60s
 
     @filter.on_llm_request(priority=0)
-    async def on_request(self, event: AstrMessageEvent):
+    async def on_request(self, event: AstrMessageEvent, req=None):
         msg = event.get_message_str() or ""
         sender = event.get_sender_id() or ""
         group = event.get_group_id() or ""

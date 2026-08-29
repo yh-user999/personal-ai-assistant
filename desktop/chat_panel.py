@@ -298,7 +298,7 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
 
         # 标题行 + 图钉 + 关闭按钮（按住标题可拖动窗口，双击最大化）
-        title = QLabel("🤖 Personal AI Assistant v5.1")
+        title = QLabel("🤖 Personal AI Assistant v5.2")
         title.setToolTip("按住拖动窗口 · 双击最大化/还原")
         title.installEventFilter(self)
         self._title = title

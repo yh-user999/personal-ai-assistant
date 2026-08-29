@@ -100,7 +100,7 @@ class ApiClient:
         return d if d.get("exists") else None
 
     def due_reminders(self) -> list:
-        """到期提醒（服务器取出即标记已推送，桌面端只负责弹窗）。"""
+        """到期提醒（第 8 课后桌面不再轮询：QQ 推送是唯一通道；保留供调试）。"""
         try:
             r = httpx.get(
                 f"{self.base_url}/api/reminders/due",

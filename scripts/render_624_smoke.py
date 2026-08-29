@@ -35,16 +35,17 @@ app.processEvents()
 title_label = panel._title
 title_text = title_label.text()
 print(f"面板标题: {title_text!r}")
-if "v4.9" not in title_text:
-    failures.append(f"面板标题未更新为 v4.9: {title_text!r}")
+if "v5.2" not in title_text:
+    failures.append(f"面板标题未更新为 v5.2: {title_text!r}")
 panel.grab().save(str(OUT / "624_panel.png"))
 print(f"面板已渲染 → {OUT / '624_panel.png'}")
 
-# ② 托盘：构造 + 提醒轮询定时器/worker 挂载断言（离屏下不实际弹窗）
+# ② 托盘：构造 + 情绪轮询定时器挂载断言（6.24 的提醒轮询已于第 8 课退役，改 QQ 推送）
 tray = TrayIcon(ball)
-assert tray._reminder_timer is not None, "提醒轮询定时器未挂载"
-assert tray._reminder_timer.interval() == 30000, "提醒轮询间隔应为 30 秒"
-print(f"托盘提醒轮询: 间隔 {tray._reminder_timer.interval() // 1000}s ✓")
+assert tray._mood_timer is not None, "情绪轮询定时器未挂载"
+assert tray._mood_timer.interval() == 60000, "情绪轮询间隔应为 60 秒"
+assert not hasattr(tray, "_reminder_timer"), "提醒轮询应已退役（第 8 课改 QQ 推送）"
+print(f"托盘情绪轮询: 间隔 {tray._mood_timer.interval() // 1000}s ✓（提醒轮询已退役）")
 tray_icon_pix = tray.icon().pixmap(64, 64)
 tray_icon_pix.save(str(OUT / "624_tray.png"))
 print(f"托盘图标已渲染 → {OUT / '624_tray.png'}")

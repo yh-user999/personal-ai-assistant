@@ -2,10 +2,10 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.core import knowledge, llm, memory
@@ -26,6 +26,19 @@ router = APIRouter()
 logger = logging.getLogger("assistant.chat")
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _computer_online(hb: dict | None, stale_seconds: int = 120) -> bool:
+    """采集器心跳新鲜 = 电脑在线（第 8 课）。"""
+    if not hb or not hb.get("received_at"):
+        return False
+    try:
+        ts = datetime.fromisoformat(hb["received_at"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() < stale_seconds
+    except (ValueError, TypeError):
+        return False
 
 SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工作风格、问题偏好和行为特征。
 
@@ -120,7 +133,7 @@ def parse_time_question(msg: str) -> str | None:
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     msg = req.message.strip()
 
     # 情绪记忆层（第 6.27 课 A 档）：每条用户消息先入情绪账（含命令类消息）
@@ -146,7 +159,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         reminders.add_reminder(content, remind_at)
         return ChatResponse(
             reply=f"⏰ 已设置提醒：{remind_at.strftime('%m月%d日 %H:%M')} → {content}\n"
-                  f"到点后桌面小月会弹窗提醒你（电脑开机状态下）",
+                  f"到点后我会推 QQ 消息提醒你（手机必达）",
             memories_used=0,
         )
     if msg.strip() in ("我的提醒", "查看提醒", "有哪些提醒", "提醒列表"):
@@ -281,9 +294,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
                         memories_used=0,
                     )
         cmd_id = executor.enqueue(action, target)
+        # 第 8 课：电脑在线状态提示（QQ 指挥时最有用——关机也能先记账）
+        hb = getattr(request.app.state, "collector_heartbeat", None)
+        offline_note = ""
+        if not _computer_online(hb):
+            offline_note = (
+                "\n⚠️ 电脑当前不在线（采集器心跳超时）：指令已入队，"
+                "开机后自动执行（30 分钟内有效）"
+            )
         return ChatResponse(
             reply=f"🤖 已收到指令（#{cmd_id}）：{action} → {target}\n"
-                  f"电脑上的执行器会处理，完成后我会在对话里告诉你结果",
+                  f"电脑上的执行器会处理，完成后我会在对话里告诉你结果{offline_note}",
             memories_used=0,
         )
 

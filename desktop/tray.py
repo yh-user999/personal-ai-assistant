@@ -28,21 +28,6 @@ class _ReportWorker(QThread):
             self.done.emit(None, None)
 
 
-class _ReminderWorker(QThread):
-    """后台轮询到期提醒（v4.9 第 6.24 课）。"""
-    done = Signal(object)  # list[dict]
-
-    def __init__(self, client) -> None:
-        super().__init__()
-        self.client = client
-
-    def run(self) -> None:
-        try:
-            self.done.emit(self.client.due_reminders())
-        except Exception:
-            self.done.emit([])
-
-
 class _MoodWorker(QThread):
     """后台轮询情绪状态（v5.1 第 6.28 课 C2：体贴模式）。"""
     done = Signal(object)  # dict | None
@@ -205,7 +190,6 @@ class TrayIcon(QSystemTrayIcon):
         self._known_week = None
         self._known_daily_date = None
         self._report_worker = None
-        self._reminder_worker = None
         self._mood_worker = None
 
         menu = QMenu()
@@ -223,23 +207,17 @@ class TrayIcon(QSystemTrayIcon):
         self._report_timer.start(30 * 60_000)
         self._check_new_report()
 
-        # 定时提醒：每 30 秒轮询一次（v4.9 第 6.24 课）
-        self._reminder_timer = QTimer(self)
-        self._reminder_timer.timeout.connect(self._check_reminders)
-        self._reminder_timer.start(30_000)
-        self._check_reminders()
-
         # 情绪状态：每 60 秒轮询一次（v5.1 第 6.28 课 C2：体贴模式）
         self._mood_timer = QTimer(self)
         self._mood_timer.timeout.connect(self._check_mood)
         self._mood_timer.start(60_000)
         self._check_mood()
 
-        # 退出前收尸：轮询线程可能正在飞（提醒 30s 一次，比周报更频繁）
+        # 退出前收尸：轮询线程可能正在飞
         QApplication.instance().aboutToQuit.connect(self._shutdown)
 
     def _shutdown(self) -> None:
-        for w in (self._report_worker, self._reminder_worker, self._mood_worker):
+        for w in (self._report_worker, self._mood_worker):
             if w is not None:
                 w.wait(1500)
 
@@ -304,30 +282,6 @@ class TrayIcon(QSystemTrayIcon):
                 QSystemTrayIcon.Information,
                 8000,
             )
-
-    def _check_reminders(self) -> None:
-        """轮询到期提醒 → 托盘弹窗（v4.9）。"""
-        if self._reminder_worker is not None:
-            return
-        self._reminder_worker = _ReminderWorker(self.ball._health_client)
-        self._reminder_worker.done.connect(self._on_reminders)
-        self._reminder_worker.start()
-
-    def _on_reminders(self, items) -> None:
-        worker = self._reminder_worker
-        self._reminder_worker = None
-        if worker:
-            retire(worker)
-        if not items:
-            return
-        first = items[0].get("content", "提醒")
-        more = f"（另有 {len(items) - 1} 条）" if len(items) > 1 else ""
-        self.showMessage(
-            "⏰ 提醒",
-            f"{first}{more}",
-            QSystemTrayIcon.Information,
-            15000,
-        )
 
     def _check_mood(self) -> None:
         """轮询情绪状态 → 体贴模式开关（v5.1 第 6.28 课 C2）。"""

@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # 留空 = 不鉴权（仅限 Tailscale 内网等已隔离环境）
     api_token: str = ""
 
+    # ── QQ 推送（第 8 课：提醒唯一通道，仅 JD .env 配置）────
+    # NapCat onebot HTTP 服务地址 + token + 主人 QQ（勿进仓库）
+    qq_push_url: str = ""
+    qq_push_token: str = ""
+    qq_admin_id: str = ""
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)

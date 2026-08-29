@@ -28,6 +28,7 @@ class SchedulerManager:
         from app.services.analyzer import evict_stale
         from app.services.backup import run_daily_backup
         from app.services.progress_sync import sync_progress_to_bot
+        from app.services.qq_push import push_reminders
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self.scheduler.add_job(
@@ -90,6 +91,14 @@ class SchedulerManager:
             hour=4,
             minute=10,
             id="progress_sync",
+        )
+
+        # QQ 提醒推送（第 8 课）：每分钟检查到期提醒并推主人 QQ（唯一通道）
+        self.scheduler.add_job(
+            push_reminders,
+            "interval",
+            seconds=60,
+            id="qq_reminder_push",
         )
 
         self.scheduler.start()

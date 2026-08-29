@@ -42,7 +42,8 @@ NEGATIVE_MOODS = ("烦躁", "疲惫", "低落")
 
 # 连续负面轮数阈值：达到即降级为倾听模式
 STREAK_THRESHOLD = 2
-STREAK_LOOKBACK = 10  # 最多回看最近多少条情绪记录
+STREAK_LOOKBACK = 10      # 最多回看最近多少条情绪记录
+STREAK_FRESH_HOURS = 2    # 连击时效：最近一次负面情绪超过 2 小时即过期（不跨天传染）
 
 
 def detect_mood_name(msg: str) -> str | None:
@@ -119,14 +120,24 @@ def get_today_injection() -> str:
 # ── 第 6.27 课：反馈闭环（B 档）────────────────────────────
 
 def get_streak_injection() -> str:
-    """最近情绪连击：连续 2+ 轮负面情绪 → 降级为倾听模式指引。否则空串。"""
+    """最近情绪连击：连续 2+ 轮负面情绪 → 降级为倾听模式指引。否则空串。
+
+    连击有时效：最近一条负面记录超过 STREAK_FRESH_HOURS 即视为过期——
+    昨天的烦躁不该让今天一整天都在倾听模式里。
+    """
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT mood FROM mood_log ORDER BY id DESC LIMIT ?", (STREAK_LOOKBACK,)
+            "SELECT mood, created_at FROM mood_log ORDER BY id DESC LIMIT ?",
+            (STREAK_LOOKBACK,),
         ).fetchall()
     finally:
         conn.close()
+    if not rows:
+        return ""
+    newest = _row_local(rows[0])
+    if (datetime.now(TZ) - newest).total_seconds() > STREAK_FRESH_HOURS * 3600:
+        return ""
     streak = 0
     for r in rows:
         if r["mood"] in NEGATIVE_MOODS:

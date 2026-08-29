@@ -134,6 +134,13 @@ def test_streak_single_negative_no_trigger(db):
     assert mood.get_streak_injection() == ""
 
 
+def test_streak_expires_after_two_hours(db):
+    """昨天的烦躁不该让今天一整天都在倾听模式里（时效护栏）。"""
+    _insert("烦躁", hours_ago=3)
+    _insert("烦躁", hours_ago=4)
+    assert mood.get_streak_injection() == ""
+
+
 def test_state_injection_combines(db):
     _insert("烦躁")
     _insert("烦躁")

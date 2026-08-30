@@ -51,9 +51,31 @@ async def push_reminders() -> int:
         if settings.qq_push_token
         else {}
     )
-    pushed_ids: list[int] = []
     client = _get_client()
-    for item in items:
+
+    # NapCat 长期掉线恢复后的积压防轰炸：超 24h 的老项合并成一条摘要推送
+    fresh = [it for it in items if not it.get("stale")]
+    stale = [it for it in items if it.get("stale")]
+    if stale:
+        digest = "\n".join(f"· {it['content']}" for it in stale)
+        try:
+            r = await client.post(
+                f"{settings.qq_push_url.rstrip('/')}/send_private_msg",
+                json={
+                    "user_id": int(settings.qq_admin_id),
+                    "message": f"📋 {len(stale)} 条过期提醒（摘要合并）：\n{digest}\n（已超 24 小时，如仍需要请重新设置）",
+                },
+                headers=headers,
+            )
+            if r.status_code == 200 and r.json().get("status") == "ok":
+                fresh.extend(stale)  # 摘要送达即消费，不再逐条轰炸
+            else:
+                logger.warning("积压提醒摘要推送失败: HTTP %s", r.status_code)
+        except Exception as e:
+            logger.warning("积压提醒摘要推送异常: %s", e)
+
+    pushed_ids: list[int] = []
+    for item in fresh:
         try:
             r = await client.post(
                 f"{settings.qq_push_url.rstrip('/')}/send_private_msg",

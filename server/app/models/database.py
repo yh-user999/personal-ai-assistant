@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS reminders (
   status TEXT DEFAULT 'pending',   -- pending / notified / cancelled
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
 
 -- ⑲ 写作台账（第 6.25 课：小说写作增强）
 CREATE TABLE IF NOT EXISTS writing_log (
@@ -242,7 +243,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
 );
 """
 
-_SCHEMA = _BASE_SCHEMA + VEC_TABLE_SQL
+# 记忆全文索引（FTS5）：gram 化文本 + memory_id 映射，替代检索时的
+# Python 全表扫描。unicode61 对中文不分词，gram 化在应用层做（memory.py）。
+FTS_TABLE_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  memory_id UNINDEXED,
+  grams
+);
+"""
+
+_SCHEMA = _BASE_SCHEMA + VEC_TABLE_SQL + FTS_TABLE_SQL
 
 
 _vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过日志），避免每次连接刷屏
@@ -332,3 +342,15 @@ def init_db() -> None:
             pass
     finally:
         conn.close()
+
+    # FTS 存量回填：FTS 表空而 memories 有数据（老库升级）时一次性补索引
+    try:
+        from app.core.memory import _fts_backfill
+
+        conn = connect()
+        try:
+            _fts_backfill(conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("FTS 回填失败（检索退化为空候选）: %s", e)

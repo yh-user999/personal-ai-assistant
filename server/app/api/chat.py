@@ -63,37 +63,28 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
   每次至多一次，不生硬、不显摆
 - 情绪适配：若下方标注了用户当前状态，严格按其指引调整回复方式
 
-用户当前状态（情绪感知，按指引调整语气；无则不出现）：
-{mood}
+快捷启动器（桌面端自动执行，你无需处理）：用户说"记住 打开X = 网址/程序路径"
+可注册常用软件与网页，之后"打开X""在X搜索 话题""用chrome打开X"由桌面直接执行。
+用户问能打开什么时，提醒他说"我的常用"查看已注册列表。
 
-今日情绪走势与连续状态（第 6.27 课：小月要延续情绪语境，按指引调整）：
-{mood_state}
-
-{injections}
-
-{profile}
+【稳定档案区】（以下内容长期稳定，LLM 前缀缓存的命中依赖这段在前——勿调整区块顺序）
 
 关于用户的持久事实（身份/项目/偏好，务必记住并使用）：
 {facts}
 
+用户画像：
+{profile}
+
 用户过往的纠正与偏好（务必遵守，违反即违背用户明确指示）：
 {lessons}
+
+用户认可过的回复风格（参照其形式，不必逐字模仿）：
+{style_examples}
 
 用户当前关切的话题：
 {concerns}
 
 {jargon}
-
-用户认可过的回复风格（参照其形式，不必逐字模仿）：
-{style_examples}
-
-知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
-{knowledge}
-
-用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
-{behavior}
-
-{older}
 
 用户的活跃目标（回答相关问题时主动关联）：
 {goals}
@@ -101,9 +92,25 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 用户尚未解决的问题（适时温和提醒续上）：
 {unresolved}
 
-快捷启动器（桌面端自动执行，你无需处理）：用户说"记住 打开X = 网址/程序路径"
-可注册常用软件与网页，之后"打开X""在X搜索 话题""用chrome打开X"由桌面直接执行。
-用户问能打开什么时，提醒他说"我的常用"查看已注册列表。
+【动态上下文区】（以下随每条消息变化，放在末尾以保住上方缓存）
+
+更早对话摘要：
+{older}
+
+相关记忆：
+{injections}
+
+知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
+{knowledge}
+
+用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
+{behavior}
+
+用户当前情绪（感知，按指引调整语气；无则不出现）：
+{mood}
+
+今日情绪走势与连续状态（小月要延续情绪语境，按指引调整）：
+{mood_state}
 """
 
 
@@ -134,27 +141,31 @@ def parse_time_question(msg: str) -> str | None:
     return f"现在是{period} {h12}:{now.minute:02d} 啦（{now.month}月{now.day}日 星期{weekday}）"
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, request: Request) -> ChatResponse:
-    msg = req.message.strip()
+# ── 命令路由注册表 ────────────────────────────────────────
+# 每个命令族一个 async handler：命中返回 ChatResponse，不命中返回 None。
+# chat() 按注册顺序遍历——顺序是隐式契约（"提醒"兜底分支必须挡在"提醒我
+# …"自然语言之前等），新增命令族在 _COMMAND_HANDLERS 里按语义插位。
 
-    # 情绪记忆层（第 6.27 课 A 档）：每条用户消息先入情绪账（含命令类消息）
-    mood_name = mood.detect_mood_name(msg)
-    if mood_name:
-        mood.record_mood(mood_name, msg)
 
-    # 工作日志命令："记录：…" / "记录 …"
-    if msg.startswith("记录：") or msg.startswith("记录:"):
-        content = re.sub(r"^记录[:：]\s*", "", msg)
-        worklog.add_log(content)
-        return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
+async def _handle_worklog(msg: str, request: Request) -> ChatResponse | None:
+    """工作日志命令："记录：…" / "记录 …" """
+    if not (msg.startswith("记录：") or msg.startswith("记录:")):
+        return None
+    content = re.sub(r"^记录[:：]\s*", "", msg)
+    worklog.add_log(content)
+    return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
 
-    # 时间/日期快速问答（零成本规则：不烧 LLM，格式确定不兜圈子）
-    time_reply = parse_time_question(msg)
-    if time_reply:
-        return ChatResponse(reply=time_reply, memories_used=0)
 
-    # 定时提醒命令（第 6.24 课）：设提醒 / 查看 / 取消
+async def _handle_time(msg: str, request: Request) -> ChatResponse | None:
+    """时间/日期快速问答（零成本规则：不烧 LLM）。"""
+    reply = parse_time_question(msg)
+    if reply is None:
+        return None
+    return ChatResponse(reply=reply, memories_used=0)
+
+
+async def _handle_reminders(msg: str, request: Request) -> ChatResponse | None:
+    """定时提醒命令（第 6.24 课）：设提醒 / 查看 / 取消 / 帮助。"""
     reminder_cmd = reminders.parse_reminder_cmd(msg)
     if reminder_cmd:
         content, remind_at = reminder_cmd
@@ -186,53 +197,65 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
                   "• 我的提醒（查看）\n• 取消提醒：开会（取消）",
             memories_used=0,
         )
+    return None
 
-    # 文档命令："写文档：标题XXX，内容：YYY" → LLM 生成 + 保存 + 进知识库
+
+async def _handle_documents(msg: str, request: Request) -> ChatResponse | None:
+    """文档命令："写文档：标题XXX，内容：YYY" → LLM 生成 + 保存 + 进知识库。"""
     doc_cmd = documents.parse_doc_command(msg)
-    if doc_cmd:
-        title, requirement = doc_cmd
-        result = await documents.generate_and_save(title, requirement)
-        if "error" in result:
-            return ChatResponse(reply=result["error"], memories_used=0)
-        return ChatResponse(
-            reply=f"📄 文档已保存（#{result['id']}）：《{result['title']}》，"
-                  f"{result['words']} 字，已同步进知识库可检索",
-            memories_used=0,
-        )
+    if not doc_cmd:
+        return None
+    title, requirement = doc_cmd
+    result = await documents.generate_and_save(title, requirement)
+    if "error" in result:
+        return ChatResponse(reply=result["error"], memories_used=0)
+    return ChatResponse(
+        reply=f"📄 文档已保存（#{result['id']}）：《{result['title']}》，"
+              f"{result['words']} 字，已同步进知识库可检索",
+        memories_used=0,
+    )
 
-    # 简历命令："优化简历：目标岗位=XX" → 生成优化版 + 导出 .docx
+
+async def _handle_resume(msg: str, request: Request) -> ChatResponse | None:
+    """简历命令："优化简历：目标岗位=XX" → 生成优化版 + 导出 .docx。"""
     resume_target = resume.parse_resume_command(msg)
-    if resume_target is not None:
-        result = await resume.optimize_resume(target_job=resume_target)
-        if "error" in result:
-            return ChatResponse(reply=result["error"], memories_used=0)
-        docx = result.get("docx", "")
-        return ChatResponse(
-            reply=f"📄 简历优化完成（#{result['id']}）：《{result['title']}》\n"
-                  f"Word 文件：{docx}\n（用 scp 或 SFTP 从服务器取回；内容也已同步知识库可对话修改）",
-            memories_used=0,
-        )
+    if resume_target is None:
+        return None
+    result = await resume.optimize_resume(target_job=resume_target)
+    if "error" in result:
+        return ChatResponse(reply=result["error"], memories_used=0)
+    docx = result.get("docx", "")
+    return ChatResponse(
+        reply=f"📄 简历优化完成（#{result['id']}）：《{result['title']}》\n"
+              f"Word 文件：{docx}\n（用 scp 或 SFTP 从服务器取回；内容也已同步知识库可对话修改）",
+        memories_used=0,
+    )
 
-    # 目标命令（第 12 课）："目标：XXX" / "目标完成：XXX" / "目标进度：XXX"
+
+async def _handle_goals(msg: str, request: Request) -> ChatResponse | None:
+    """目标命令（第 12 课）："目标：XXX" / "目标完成：XXX" / "目标进度：XXX"。"""
     goal_cmd = goals.parse_goal_command(msg)
-    if goal_cmd:
-        action, payload = goal_cmd
-        if action == "create":
-            goals.add_goal(payload)
-            return ChatResponse(reply=f"🎯 目标已记录：{payload}", memories_used=0)
-        if action == "done":
-            ok = goals.complete_goal(payload)
-            return ChatResponse(
-                reply=f"🎉 目标已标记完成：{payload}" if ok else f"未找到匹配的活跃目标：{payload}",
-                memories_used=0,
-            )
-        ok = goals.update_progress(payload)
+    if not goal_cmd:
+        return None
+    action, payload = goal_cmd
+    if action == "create":
+        goals.add_goal(payload)
+        return ChatResponse(reply=f"🎯 目标已记录：{payload}", memories_used=0)
+    if action == "done":
+        ok = goals.complete_goal(payload)
         return ChatResponse(
-            reply=f"📈 进度已更新：{payload}" if ok else "暂无活跃目标可更新（先说\"目标：XXX\"创建）",
+            reply=f"🎉 目标已标记完成：{payload}" if ok else f"未找到匹配的活跃目标：{payload}",
             memories_used=0,
         )
+    ok = goals.update_progress(payload)
+    return ChatResponse(
+        reply=f"📈 进度已更新：{payload}" if ok else "暂无活跃目标可更新（先说\"目标：XXX\"创建）",
+        memories_used=0,
+    )
 
-    # 健身减脂助手（第 6.29 课）：记录体重 / 训练记录 / 健身进度
+
+async def _handle_fitness(msg: str, request: Request) -> ChatResponse | None:
+    """健身减脂助手（第 6.29 课）：记录体重 / 训练记录 / 健身进度。"""
     weight = fitness.parse_weight(msg)
     if weight is not None:
         fitness.add_log("weight", weight, "")
@@ -243,8 +266,11 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     if train:
         fitness.add_log("training", None, train)
         return ChatResponse(reply=f"🏋️ 训练已记录 ✓（{train}）", memories_used=0)
+    return None
 
-    # 小说写作增强（第 6.25 课）：写作记录 / 写作进度 / 设定冲突检查 / 续写
+
+async def _handle_novel(msg: str, request: Request) -> ChatResponse | None:
+    """小说写作增强（第 6.25 课）：写作记录 / 写作进度 / 设定冲突检查 / 续写。"""
     log_cmd = novel_writing.parse_writing_log(msg)
     if log_cmd:
         chapter, words = log_cmd
@@ -269,46 +295,82 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     if cont_text:
         reply = await novel_writing.continue_story(cont_text)
         return ChatResponse(reply=reply, memories_used=0)
+    return None
 
-    # 消息全文搜索（第 6.26 课）：聊天记录关键词检索（LIKE 全扫描，时间倒序）
+
+async def _handle_search(msg: str, request: Request) -> ChatResponse | None:
+    """消息全文搜索（第 6.26 课）：聊天记录关键词检索。"""
     search_kw = message_search.parse_search_command(msg)
-    if search_kw is not None:
-        if not search_kw:
-            return ChatResponse(
-                reply="🔍 用法：搜索聊天记录：关键词\n"
-                      "多关键词用空格/逗号分隔（同时包含才算命中）",
-                memories_used=0,
-            )
-        return ChatResponse(reply=message_search.format_results(search_kw), memories_used=0)
-
-    # 执行器命令（第 11 课）："帮我打开XX" / "看看XX目录" / "读一下XX文件"
-    # 第 13 课扩展：复制/备份/移动/重命名（双路径白名单校验）
-    # 第 6.24 课扩展：search_files（目录空=全白名单搜索，Windows 端逐根校验）
-    exec_cmd = executor.parse_executor_command(msg)
-    if exec_cmd:
-        action, target = exec_cmd
-        if action != "open":
-            paths = executor.unpack_paths(action, target)
-            if not (action == "search_files" and not paths):
-                if not paths or not all(executor.check_roots(p) for p in paths):
-                    return ChatResponse(
-                        reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
-                        memories_used=0,
-                    )
-        cmd_id = executor.enqueue(action, target)
-        # 第 8 课：电脑在线状态提示（QQ 指挥时最有用——关机也能先记账）
-        hb = getattr(request.app.state, "collector_heartbeat", None)
-        offline_note = ""
-        if not _computer_online(hb):
-            offline_note = (
-                "\n⚠️ 电脑当前不在线（采集器心跳超时）：指令已入队，"
-                "开机后自动执行（30 分钟内有效）"
-            )
+    if search_kw is None:
+        return None
+    if not search_kw:
         return ChatResponse(
-            reply=f"🤖 已收到指令（#{cmd_id}）：{action} → {target}\n"
-                  f"电脑上的执行器会处理，完成后我会在对话里告诉你结果{offline_note}",
+            reply="🔍 用法：搜索聊天记录：关键词\n"
+                  "多关键词用空格/逗号分隔（同时包含才算命中）",
             memories_used=0,
         )
+    return ChatResponse(reply=message_search.format_results(search_kw), memories_used=0)
+
+
+async def _handle_executor(msg: str, request: Request) -> ChatResponse | None:
+    """执行器命令（第 11/13/6.24 课）：打开/列目录/读文件/文件手/搜索文件 + 心跳提示。"""
+    exec_cmd = executor.parse_executor_command(msg)
+    if not exec_cmd:
+        return None
+    action, target = exec_cmd
+    if action != "open":
+        paths = executor.unpack_paths(action, target)
+        if not (action == "search_files" and not paths):
+            if not paths or not all(executor.check_roots(p) for p in paths):
+                return ChatResponse(
+                    reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
+                    memories_used=0,
+                )
+    cmd_id = executor.enqueue(action, target)
+    # 第 8 课：电脑在线状态提示（QQ 指挥时最有用——关机也能先记账）
+    hb = getattr(request.app.state, "collector_heartbeat", None)
+    offline_note = ""
+    if not _computer_online(hb):
+        offline_note = (
+            "\n⚠️ 电脑当前不在线（采集器心跳超时）：指令已入队，"
+            "开机后自动执行（30 分钟内有效）"
+        )
+    return ChatResponse(
+        reply=f"🤖 已收到指令（#{cmd_id}）：{action} → {target}\n"
+              f"电脑上的执行器会处理，完成后我会在对话里告诉你结果{offline_note}",
+        memories_used=0,
+    )
+
+
+# 注册顺序 = 历史分支顺序（隐式契约，勿随意调换）
+_COMMAND_HANDLERS: list[tuple[str, object]] = [
+    ("worklog", _handle_worklog),
+    ("time", _handle_time),
+    ("reminders", _handle_reminders),
+    ("documents", _handle_documents),
+    ("resume", _handle_resume),
+    ("goals", _handle_goals),
+    ("fitness", _handle_fitness),
+    ("novel", _handle_novel),
+    ("search", _handle_search),
+    ("executor", _handle_executor),
+]
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+    msg = req.message.strip()
+
+    # 情绪记忆层（第 6.27 课 A 档）：每条用户消息先入情绪账（含命令类消息）
+    mood_name = mood.detect_mood_name(msg)
+    if mood_name:
+        mood.record_mood(mood_name, msg)
+
+    # 命令路由：按注册顺序试各命令族，命中即回
+    for name, handler in _COMMAND_HANDLERS:
+        resp = await handler(msg, request)
+        if resp is not None:
+            return resp
 
     # unresolved 追踪（第 12 课）：解决/未解决信号
     if unresolved.detect_resolved(msg):
@@ -335,7 +397,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
 
     # 1) 检索：记忆 + 知识库双通道
-    mems = await memory.search(msg, top_k=8)
+    mems = await memory.search(msg, top_k=settings.inject_top_k, min_similarity=settings.min_similarity)
     # 弱命中兜底：语义/BM25 都没把握时全库关键词深挖（"每句话都记得"的保证）
     if not mems or mems[0].get("score", 0) < 0.12:
         deep = memory.deep_keyword_search(msg, top_k=5)

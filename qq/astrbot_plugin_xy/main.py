@@ -51,17 +51,30 @@ def find_file_id(history_messages: list, name: str) -> str | None:
     return None
 
 
-# NapCat 容器路径 → 宿主机路径（onebot get_file 返回容器内路径，插件跑在宿主机）
-_CONTAINER_PATH_MAP = (
+# NapCat 容器路径 → 宿主机路径映射的默认值（可被 container_path_map 配置覆盖）
+_DEFAULT_PATH_MAP = (
     ("/app/.config/QQ/", "/opt/napcat/qq_config/"),
     ("/app/napcat/cache/", "/opt/napcat/cache/"),
     ("/app/napcat/config/", "/opt/napcat/config/"),
 )
 
 
-def to_host_path(p: str) -> str:
+def _parse_path_map(cfg_value: str) -> tuple:
+    """配置串 '容器前缀=宿主机前缀;...' → 映射元组；空/格式错回落默认。"""
+    if not str(cfg_value or "").strip():
+        return _DEFAULT_PATH_MAP
+    pairs = []
+    for seg in str(cfg_value).split(";"):
+        if "=" in seg:
+            cont, host = seg.split("=", 1)
+            if cont.strip() and host.strip():
+                pairs.append((cont.strip(), host.strip()))
+    return tuple(pairs) if pairs else _DEFAULT_PATH_MAP
+
+
+def to_host_path(p: str, path_map=_DEFAULT_PATH_MAP) -> str:
     """容器内路径翻译为宿主机路径（挂载点映射）；非容器路径原样返回。"""
-    for cont, host in _CONTAINER_PATH_MAP:
+    for cont, host in path_map:
         if p.startswith(cont):
             return host + p[len(cont):]
     return p
@@ -135,9 +148,10 @@ class XiaoYuePlugin(Star):
         # trust_env=False：本机回环调用不走系统代理——宿主机若有 HTTP_PROXY
         # 且 NO_PROXY 不含 127.0.0.1，Bearer token 会流经代理（全套已踩过的坑）
         self._client = httpx.AsyncClient(timeout=120, trust_env=False)  # 小月 LLM 回复可能 30-60s
-        # QQ 文件 CDN 对 JD 直连常 502（直连出网受限），下载兜底走本机 clash
+        # QQ 文件 CDN 直连常 502（出网受限），下载兜底走代理（可配置，默认 clash）
+        proxy = str(self.cfg.get("download_proxy", "") or "").strip()
         self._proxy_client = httpx.AsyncClient(
-            timeout=120, trust_env=False, proxy="http://127.0.0.1:7890"
+            timeout=120, trust_env=False, proxy=proxy or "http://127.0.0.1:7890"
         )
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -252,7 +266,10 @@ class XiaoYuePlugin(Star):
                 return None
             d = j.get("data") or {}
             if d.get("file"):
-                host_path = to_host_path(str(d["file"]))
+                host_path = to_host_path(
+                    str(d["file"]),
+                    _parse_path_map(self.cfg.get("container_path_map", "")),
+                )
                 if Path(host_path).exists():
                     return host_path
             if d.get("base64"):

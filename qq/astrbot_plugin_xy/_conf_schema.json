@@ -38,5 +38,21 @@
     "obvious_hint": true,
     "default": "",
     "restart_required": false
+  },
+  "download_proxy": {
+    "description": "文件下载代理（QQ CDN 直连 502 时的兜底通道）",
+    "type": "string",
+    "hint": "如 http://127.0.0.1:7890（clash）；留空 = 不走代理直连",
+    "obvious_hint": true,
+    "default": "",
+    "restart_required": false
+  },
+  "container_path_map": {
+    "description": "NapCat 容器路径 → 宿主机路径映射",
+    "type": "string",
+    "hint": "格式：容器前缀=宿主机前缀，多对用分号分隔；与部署的挂载点一致",
+    "obvious_hint": true,
+    "default": "/app/.config/QQ/=/opt/napcat/qq_config/;/app/napcat/cache/=/opt/napcat/cache/;/app/napcat/config/=/opt/napcat/config/",
+    "restart_required": false
   }
 }

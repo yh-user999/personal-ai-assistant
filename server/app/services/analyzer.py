@@ -84,6 +84,7 @@ async def evict_stale() -> dict:
 
     （6.22 课：chat 留存从 30 天放宽到 365 天——"记得聊过的每句话"要求
     旧对话多留一年；importance≥1 的记忆永不淘汰，重要设定早进 facts 层。）
+    删除行同步清理 memories_fts 索引（FTS 无外键，残留行会污染检索）。
     """
     conn = connect()
     try:
@@ -92,6 +93,17 @@ async def evict_stale() -> dict:
             "DELETE FROM behavior_events WHERE kind='manual' AND start_ts < ?", (noise_cutoff,)
         ).rowcount
         chat_cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        stale_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM memories WHERE ts < ? AND importance < 1.0", (chat_cutoff,)
+            ).fetchall()
+        ]
+        if stale_ids:
+            from app.core.memory import _fts_delete
+
+            for mid in stale_ids:
+                _fts_delete(conn, mid)
         n2 = conn.execute(
             "DELETE FROM memories WHERE ts < ? AND importance < 1.0", (chat_cutoff,)
         ).rowcount

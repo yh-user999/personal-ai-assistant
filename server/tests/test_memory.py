@@ -63,25 +63,30 @@ def test_injection_format():
 
 
 def test_bm25_memories_rare_term_wins():
-    """6.22：记忆 BM25 稀有词加权——'杀人变强'应压过高频闲聊。"""
+    """6.22：记忆 BM25 稀有词加权——'杀人变强'应压过高频闲聊。
+    （v0.3.2 起走 FTS5 倒排；直插 SQL 需手动同步 FTS 行，见 _fts_insert。）"""
     import os
     os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
     from app.core import memory
-    from app.models.database import connect, init_db
+    from app.models.database import connect, init_db, reset_connections
 
+    reset_connections()
     init_db()
     conn = connect()
     conn.execute("DELETE FROM memories")
+    conn.execute("DELETE FROM memories_fts")
+    cur = conn.execute(
+        "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
+        "VALUES ('user', '李羽的能力设定是杀人变强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
+    )
     for i in range(6):
-        conn.execute(
+        cur2 = conn.execute(
             "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
             "VALUES ('user', ?, '', '[]', '2026-08-28T00:00:00+00:00', 1.0)",
             (f"今天天气不错，继续写代码 {i}",),
         )
-    conn.execute(
-        "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
-        "VALUES ('user', '李羽的能力设定是杀人变强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
-    )
+        memory._fts_insert(conn, cur2.lastrowid, f"今天天气不错，继续写代码 {i}", "")
+    memory._fts_insert(conn, cur.lastrowid, "李羽的能力设定是杀人变强", "")
     conn.commit()
     conn.close()
     hits = memory._bm25_memories("李羽的能力是杀人变强吗", top_k=3)
@@ -93,19 +98,23 @@ def test_deep_keyword_search_matches_grams():
     import os
     os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
     from app.core import memory
-    from app.models.database import connect, init_db
+    from app.models.database import connect, init_db, reset_connections
 
+    reset_connections()
     init_db()
     conn = connect()
     conn.execute("DELETE FROM memories")
-    conn.execute(
+    conn.execute("DELETE FROM memories_fts")
+    cur1 = conn.execute(
         "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
         "VALUES ('user', '少爷的背景势力是地方豪强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
     )
-    conn.execute(
+    cur2 = conn.execute(
         "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
         "VALUES ('assistant', '好的，设定记下了', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
     )
+    memory._fts_insert(conn, cur1.lastrowid, "少爷的背景势力是地方豪强", "")
+    memory._fts_insert(conn, cur2.lastrowid, "好的，设定记下了", "")
     conn.commit()
     conn.close()
     hits = memory.deep_keyword_search("少爷的背景势力", top_k=3)

@@ -154,21 +154,33 @@ def cancel_by_keyword(keyword: str) -> int:
         conn.close()
 
 
-def due_reminders() -> list[dict]:
+def due_reminders(stale_hours: float = 24.0) -> list[dict]:
     """取出已到期的未提醒项（不消费，调用方推送成功后 mark_notified）。
 
     消费语义与推送解耦：QQ 是提醒的唯一通道，若"选中即标记"，NapCat
     掉线期间的到期提醒会被静默吞掉（标记了但没推出去，永不重试）。
     改为推送确认后消费，失败项下一轮重推。
+
+    stale_hours：超龄分组阈值。掉线超阈值的老项单独标 stale=True——
+    调用方可合并成摘要推送，避免 NapCat 恢复后积压轰炸。
     """
     conn = connect()
     try:
+        now = _utc_str(_now())
+        stale_cutoff = _utc_str(_now() - timedelta(hours=stale_hours))
         rows = conn.execute(
-            "SELECT id, content FROM reminders WHERE status='pending' AND remind_at <= ? "
+            "SELECT id, content, remind_at FROM reminders WHERE status='pending' AND remind_at <= ? "
             "ORDER BY remind_at ASC LIMIT 10",
-            (_utc_str(_now()),),
+            (now,),
         ).fetchall()
-        return [{"id": r["id"], "content": r["content"]} for r in rows]
+        return [
+            {
+                "id": r["id"],
+                "content": r["content"],
+                "stale": bool(r["remind_at"] and r["remind_at"] < stale_cutoff),
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 

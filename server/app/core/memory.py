@@ -27,6 +27,77 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── FTS5 全文索引（替代 Python 全表扫描）───────────────────
+# unicode61 tokenizer 对中文不分词，写入时把文本切成 2-gram 空格分隔——
+# 与旧 Python BM25 的 2-gram 语义完全一致，但倒排索引查询 O(log n)，
+# 不再随记忆总量线性变慢（全表 Python 打分是此前每条消息 2~3 次的固定开销）。
+
+def _grams_text(text: str) -> str:
+    """文本 → 2-gram 空格分隔串（FTS 索引与查询共用）。英文按字符对切，
+    与旧 BM25 行为一致；单字符查询词按原样保留。"""
+    from app.core.knowledge import _word_char
+
+    text = (text or "").strip()
+    if len(text) < 2:
+        return text
+    return " ".join(
+        g for g in (text[i:i + 2] for i in range(len(text) - 1))
+        if _word_char(g[0]) and _word_char(g[1])
+    )
+
+
+def _fts_insert(conn, memory_id: int, content: str, summary: str) -> None:
+    conn.execute(
+        "INSERT INTO memories_fts (memory_id, grams) VALUES (?, ?)",
+        (memory_id, _grams_text(content + " " + summary)),
+    )
+
+
+def _fts_delete(conn, memory_id: int) -> None:
+    conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+
+
+def _fts_backfill(conn) -> None:
+    """存量记忆一次性回填 FTS（init_db 时调用，FTS 空而 memories 非空才执行）。"""
+    n_mem = conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()["n"]
+    n_fts = conn.execute("SELECT COUNT(*) AS n FROM memories_fts").fetchone()["n"]
+    if n_mem == 0 or n_fts > 0:
+        return
+    logger.info("FTS 回填：%d 条存量记忆", n_mem)
+    for r in conn.execute("SELECT id, content, summary FROM memories").fetchall():
+        _fts_insert(conn, r["id"], r["content"], r["summary"] or "")
+    conn.commit()
+
+
+def _fts_query(query: str, top_k: int) -> list[dict]:
+    """FTS5 MATCH + 内置 bm25() 排序（替代 Python BM25/深挖两次全扫）。
+
+    查询词同样 gram 化；OR 语义（命中任一 gram 即候选，bm25 权重自然偏向
+    多命中者）——对应旧 deep_keyword_search 的"命中数排序"。
+    """
+    grams = _grams_text(query).split()
+    if not grams:
+        return []
+    match = " OR ".join(f'"{g}"' for g in grams)
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance, m.topics
+            FROM memories_fts f JOIN memories m ON m.id = f.memory_id
+            WHERE memories_fts MATCH ?
+            ORDER BY bm25(memories_fts) LIMIT ?
+            """,
+            (match, top_k),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("FTS 检索失败（退化为空候选）: %s", e)
+        return []
+    finally:
+        conn.close()
+
+
 # ── 写入 ──────────────────────────────────────────────────
 
 async def write_message(sender: str, content: str) -> int | None:
@@ -49,10 +120,11 @@ async def write_message(sender: str, content: str) -> int | None:
         if dup:
             return None
         cur = conn.execute(
-            "INSERT INTO memories (sender, content, ts, importance) VALUES (?, ?, ?, 1.0)",
+            "INSERT INTO memories (sender, content, ts, importance) VALUES (?, ?, ?, 0.9)",
             (sender, content, _now()),
         )
         memory_id = cur.lastrowid
+        _fts_insert(conn, memory_id, content, "")  # FTS 同步写入
         conn.commit()
     finally:
         conn.close()
@@ -82,6 +154,13 @@ async def update_summary(memory_id: int, summary: str, topics: list[str]) -> Non
             "UPDATE memories SET summary = ?, topics = ? WHERE id = ?",
             (summary, json.dumps(topics, ensure_ascii=False), memory_id),
         )
+        # 摘要并入 FTS 索引（删旧插新；摘要行常是检索主力，必须同步）
+        row = conn.execute(
+            "SELECT content FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if row is not None:
+            _fts_delete(conn, memory_id)
+            _fts_insert(conn, memory_id, row["content"], summary)
         conn.commit()
     finally:
         conn.close()
@@ -122,85 +201,27 @@ def _compute_topic_boost(topics_json: str, freq: Counter) -> float:
 
 
 def _bm25_memories(query: str, top_k: int = 20) -> list[dict]:
-    """记忆 BM25（2-gram + IDF + 词频饱和，与知识库同款）：精确词召回。
+    """记忆 BM25：FTS5 倒排 + 内置 bm25() 排序。
 
-    治"换问法就丢"：向量检索对语义近义敏感，但对"杀人变强/三四亩"
-    这类精确词组，BM25 的 IDF 稀有词加权才是主力。
+    旧实现把全表载入 Python 打 2-gram BM25 分——记忆只增不减，每条消息
+    2~3 次全表扫描，一年后单条消息延迟秒级。FTS 索引查询 O(log n)，
+    gram 化语义与旧实现完全一致。
     """
-    from app.core.knowledge import _word_char  # noqa: 复用知识库的字过滤
-
-    grams = list(dict.fromkeys(
-        g for g in (query[i:i + 2] for i in range(max(1, len(query) - 1)))
-        if _word_char(g[0]) and _word_char(g[1])
-    ))
-    if not grams:
-        return []
-    conn = connect()
-    try:
-        rows = conn.execute(
-            "SELECT id, sender, content, summary, ts, importance, topics FROM memories"
-        ).fetchall()
-    finally:
-        conn.close()
-    docs = [dict(r) for r in rows]
-    n = max(1, len(docs))
-    texts = [(d["content"] or "") + (d["summary"] or "") for d in docs]
-    lengths = [len(t) for t in texts]
-    avgdl = sum(lengths) / n if lengths else 1.0
-    df = {g: sum(1 for t in texts if g in t) for g in grams}
-    k1, b = 1.5, 0.75
-
-    def _idf(g: str) -> float:
-        c = df[g]
-        return math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
-
-    scored = []
-    for d, t, L in zip(docs, texts, lengths):
-        s = 0.0
-        for g in grams:
-            tf = t.count(g)
-            if tf:
-                s += tf * (k1 + 1) / (tf + k1 * (1 - b + b * L / avgdl)) * _idf(g)
-        if s > 0:
-            scored.append((s, d))
-    scored.sort(key=lambda x: -x[0])
-    return [d for _, d in scored[:top_k]]
+    return _fts_query(query, top_k)
 
 
 def deep_keyword_search(query: str, top_k: int = 5) -> list[dict]:
-    """全库关键词深挖：查询拆 2-gram 按命中数排序——"每句话都记得"的兜底。
+    """全库关键词深挖兜底：FTS OR 匹配 + bm25 权重（多命中者自然靠前）。
 
-    在语义/BM25 都弱命中时调用：逐条扫描全部记忆，命中的 gram 越多越靠前。
+    旧实现全表逐条数命中 gram；同语义改由 FTS 倒排完成。
     """
-    from app.core.knowledge import _word_char
+    hits = _fts_query(query, top_k)
+    grams_n = max(1, len(_grams_text(query).split()))
+    for d in hits:
+        d["score"] = min(1.0, 1.0 / grams_n)  # 保守命中分（与旧实现同量级）
+    return hits
 
-    grams = list(dict.fromkeys(
-        g for g in (query[i:i + 2] for i in range(max(1, len(query) - 1)))
-        if _word_char(g[0]) and _word_char(g[1])
-    ))
-    if not grams:
-        return []
-    conn = connect()
-    try:
-        rows = conn.execute(
-            "SELECT id, sender, content, summary, ts, importance, topics FROM memories"
-        ).fetchall()
-    finally:
-        conn.close()
-    scored = []
-    for r in rows:
-        d = dict(r)
-        t = (d["content"] or "") + (d["summary"] or "")
-        hits = sum(1 for g in grams if g in t)
-        if hits:
-            scored.append((hits, d["ts"], d))
-    # 命中数降序，同分时间新者优先
-    scored.sort(key=lambda x: (-x[0], str(x[1])))
-    out = []
-    for hits, _, d in scored[:top_k]:
-        d["score"] = min(1.0, hits / max(1, len(grams)))
-        out.append(d)
-    return out
+
 
 
 async def search(query: str, top_k: int = 8, min_similarity: float = 0.35) -> list[dict]:

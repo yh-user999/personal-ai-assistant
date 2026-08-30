@@ -85,7 +85,11 @@ class Executor:
                     json=item,
                     headers=self._headers(),
                 )
-                if resp.status_code != 200:
+                if resp.status_code == 409:
+                    # 服务端已接受/命令已过期/重复回传：对当前结果停止重试，
+                    # 否则一次网络重试后的 409 会让内存队列永久增长。
+                    logger.info("结果 #%s 已被服务端确认或拒绝重复回传", item["id"])
+                elif resp.status_code != 200:
                     logger.warning(
                         "结果回传失败 #%s（下轮重推）: HTTP %s",
                         item["id"], resp.status_code,

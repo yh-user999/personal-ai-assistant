@@ -61,8 +61,11 @@ class EventPusher:
         try:
             self._queue.put_nowait(event)
         except queue.Full:
-            # 背压：队列满则落盘，防止内存无限增长
-            self._save_to_disk([event])
+            # 背压：队列满则落盘，防止内存无限增长；磁盘满也不能杀死采集器。
+            try:
+                self._save_to_disk([event])
+            except OSError as e:
+                logger.error("队列满且落盘失败，丢弃 1 条事件: %s", e)
 
     def report_health(self, channel: str, ts: str = None) -> None:
         """采集通道报告心跳（成功完成一轮采集时调用）。"""
@@ -138,7 +141,10 @@ class EventPusher:
             logger.info("推送成功 %d 条", len(batch))
         except Exception as e:
             logger.warning("推送失败，落盘 %d 条: %s", len(batch), e)
-            self._save_to_disk(batch)
+            try:
+                self._save_to_disk(batch)
+            except OSError as save_error:
+                logger.error("推送失败且落盘失败，丢弃 %d 条事件: %s", len(batch), save_error)
 
     async def _send_heartbeat(self) -> None:
         payload = {"client": "collector", "channels": dict(self._health)}

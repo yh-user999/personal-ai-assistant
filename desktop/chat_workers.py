@@ -140,12 +140,15 @@ class _ApiWorker(QThread):
         try:
             if self.mode == "stats":
                 d = self.client.stats_summary(7)
+                # 应用名/域名来自行为采集的窗口标题——外部数据进 HTML 必须转义，
+                # 否则恶意/意外的标题片段会被 QTextBrowser 当标签渲染
+                esc = html_lib.escape
                 text = (
                     f"📊 近 7 天统计：<br>对话 {d['messages']} 条 · git 提交 {d['git_commits']} 次 · "
                     f"工作日志 {d['work_logs']} 条<br><br><b>应用时长 Top：</b><br>"
-                    + "".join(f"· {a['name']}: {a['hours']}h<br>" for a in d.get("top_apps", []))
+                    + "".join(f"· {esc(a['name'])}: {a['hours']}h<br>" for a in d.get("top_apps", []))
                     + "<br><b>浏览域名 Top：</b><br>"
-                    + "".join(f"· {b['name']}: {b['count']} 次<br>" for b in d.get("top_domains", []))
+                    + "".join(f"· {esc(b['name'])}: {b['count']} 次<br>" for b in d.get("top_domains", []))
                 )
                 self.done.emit("stats", text)
             elif self.mode == "daily":

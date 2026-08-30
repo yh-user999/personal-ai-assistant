@@ -33,11 +33,13 @@ def _now_iso() -> str:
 class EventPusher:
     def __init__(self, server_url: str, token: str = "", batch_size: int = 50,
                  flush_interval: float = 30.0, heartbeat_interval: float = 300.0,
+                 snapshot_interval: float = 30.0,
                  privacy_filter: bool = True, cache_dir: str = "./cache"):
         self.server_url = server_url.rstrip("/")
         self.token = token
         self.batch_size = batch_size
         self.flush_interval = flush_interval
+        self.snapshot_interval = snapshot_interval
         self.heartbeat_interval = heartbeat_interval
         self.privacy_filter = privacy_filter
         self.cache_dir = Path(cache_dir)
@@ -75,14 +77,23 @@ class EventPusher:
     # ── 消费侧（异步）──────────────────────────────────────
 
     async def run(self) -> None:
-        """消费循环：批量推送。"""
+        """消费循环：批量推送 + 周期性快照（防断电/强杀丢队列内存事件）。"""
         await self._retry_cache()
+        last_snapshot = time.time()
         while self._running:
             batch = self._drain(self.batch_size)
             if not batch:
+                # 空转期间每 snapshot_interval 秒把队列镜像落盘一次：
+                # 强杀/断电时最多丢一个快照窗口内的入队事件
+                if time.time() - last_snapshot >= self.snapshot_interval:
+                    self._snapshot_queue()
+                    last_snapshot = time.time()
                 await asyncio.sleep(1)
                 continue
             await self._push_batch(batch)
+            last_snapshot = time.time()
+            # 推送成功后刷新快照（队列内容已变）
+            self._snapshot_queue()
 
     async def heartbeat(self) -> None:
         """心跳循环：上报各通道最近成功时间。"""
@@ -146,8 +157,15 @@ class EventPusher:
             logger.warning("心跳发送失败: %s", e)
 
     async def _retry_cache(self) -> None:
-        """启动时推送历史落盘缓存。"""
-        for f in sorted(self.cache_dir.glob("pending_*.jsonl")):
+        """启动时推送历史落盘缓存（含上次的队列快照）。"""
+        files = [
+            f for f in sorted(self.cache_dir.glob("pending_*.jsonl"))
+            if f.name != self._SNAPSHOT_NAME
+        ]
+        snapshot = self.cache_dir / self._SNAPSHOT_NAME
+        if snapshot.exists():
+            files.append(snapshot)  # 快照最后重放（其内容最接近崩溃现场）
+        for f in files:
             events = []
             for line in f.read_text(encoding="utf-8").splitlines():
                 try:
@@ -157,6 +175,25 @@ class EventPusher:
             if events:
                 await self._push_batch(events)
             f.unlink(missing_ok=True)
+
+    _SNAPSHOT_NAME = "pending_snapshot.jsonl"
+
+    def _snapshot_queue(self) -> None:
+        """把当前内存队列镜像落盘（覆盖写）：强杀/断电后 _retry_cache 重放。
+
+        注意快照与 pending_*.jsonl 的关系：快照包含的条目在重放后从队列
+        清除（读后即删），不会双倍重放——queue 消费天然幂等。
+        """
+        items = list(self._queue.queue)  # deque 快照（不改队列状态）
+        f = self.cache_dir / self._SNAPSHOT_NAME
+        try:
+            if items:
+                lines = [json.dumps(ev, ensure_ascii=False) for ev in items]
+                f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            elif f.exists():
+                f.unlink()  # 队列已清空：陈旧快照作废
+        except OSError as e:
+            logger.warning("队列快照写盘失败: %s", e)
 
     def _save_to_disk(self, events: list[dict]) -> None:
         f = self.cache_dir / f"pending_{int(time.time())}.jsonl"

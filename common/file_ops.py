@@ -46,10 +46,15 @@ def human_size(n: int) -> str:
 # ── 白名单 ────────────────────────────────────────────────
 
 def get_roots(env_value: str | None = None) -> list[str]:
-    """白名单根目录，归一化为绝对路径。env_value 缺省读 EXECUTOR_ALLOWED_ROOTS；未配置=全禁止。"""
+    """白名单根目录，归一化为真实路径。env_value 缺省读 EXECUTOR_ALLOWED_ROOTS；未配置=全禁止。
+
+    realpath（非 abspath）：解析符号链接/junction——Windows 的 junction
+    （如 C:/Users/All Users → C:/ProgramData）可以让白名单内路径指向外部，
+    abspath 不解析会留下绕过口子。
+    """
     raw = os.environ.get("EXECUTOR_ALLOWED_ROOTS", "") if env_value is None else env_value
     return [
-        os.path.normcase(os.path.abspath(r.strip().replace("\\", "/")))
+        os.path.normcase(os.path.realpath(r.strip().replace("\\", "/")))
         for r in raw.replace(",", ";").split(";")
         if r.strip()
     ]
@@ -59,12 +64,12 @@ def path_allowed(target: str, env_value: str | None = None) -> bool:
     """目标须等于某根目录或位于其内部。
 
     根目录补尾分隔符再做前缀比较，堵住兄弟目录绕过
-    （C:/Users/wfy33-evil 不属于 C:/Users/wfy33）；abspath 已折叠 ../ 穿越。
+    （C:/Users/wfy33-evil 不属于 C:/Users/wfy33）；realpath 折叠 ../ 并解析链接。
     """
     roots = get_roots(env_value)
     if not roots:
         return False
-    norm = os.path.normcase(os.path.abspath(target.replace("\\", "/")))
+    norm = os.path.normcase(os.path.realpath(target.replace("\\", "/")))
     return any(norm == root or norm.startswith(root.rstrip("\\/") + os.sep) for root in roots)
 
 
@@ -225,7 +230,7 @@ def search_files_impl(dir_spec: str, keyword: str) -> tuple[bool, str]:
     if not dir_spec or dir_spec == ".":
         roots = get_roots()  # 全白名单搜索
     else:
-        norm = os.path.normcase(os.path.abspath(dir_spec.replace("\\", "/")))
+        norm = os.path.normcase(os.path.realpath(dir_spec.replace("\\", "/")))
         if not path_allowed(norm):
             return False, "🔒 搜索目录超出白名单（EXECUTOR_ALLOWED_ROOTS），已拒绝"
         roots = [norm]

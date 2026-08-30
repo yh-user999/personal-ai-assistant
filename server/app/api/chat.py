@@ -411,6 +411,8 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             known = {m["id"] for m in mems}
             mems = deep + [m for m in mems if m["id"] not in known]
     injections = memory.format_injection(mems)
+    # 检索已 FTS 化（不再有 Python 全表扫描）；嵌入调用是 async 网络 IO；
+    # 剩余同步 SQL 走线程本地连接缓存——直接 await，不嵌套事件循环
     knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
     # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
     # 1500字/块配 ±1 邻域 ≈ 一整场戏）

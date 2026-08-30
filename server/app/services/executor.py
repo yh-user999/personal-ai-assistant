@@ -201,9 +201,9 @@ def mark_result(cmd_id: int, ok: bool, result: str) -> bool:
 
 
 def _allowed_roots() -> list[str]:
-    """解析白名单根目录：归一化为绝对路径 + normcase（Windows 大小写/斜杠不敏感）。"""
+    """解析白名单根目录：realpath + normcase（解析链接，防 junction 绕过）。"""
     return [
-        os.path.normcase(os.path.abspath(r.strip().replace("\\", "/")))
+        os.path.normcase(os.path.realpath(r.strip().replace("\\", "/")))
         for r in settings.executor_allowed_roots.replace(",", ";").split(";")
         if r.strip()
     ]
@@ -215,7 +215,7 @@ def _path_in_roots(target: str, roots: list[str]) -> bool:
     根目录补尾分隔符再做前缀比较，堵住兄弟目录绕过
     （C:/Users/wfy33-evil 不属于 C:/Users/wfy33）；abspath 已折叠 ../ 穿越。
     """
-    norm = os.path.normcase(os.path.abspath(target.replace("\\", "/")))
+    norm = os.path.normcase(os.path.realpath(target.replace("\\", "/")))
     return any(norm == root or norm.startswith(root.rstrip("\\/") + os.sep) for root in roots)
 
 

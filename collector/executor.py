@@ -40,6 +40,7 @@ class Executor:
         self.interval = interval
         self._running = True
         self._client: httpx.AsyncClient | None = None  # 长驻客户端，避免每 5s 重建
+        self._pending_results: list[dict] = []  # 回传未确认的执行结果（下轮重推）
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
@@ -55,6 +56,11 @@ class Executor:
     async def _poll_once(self) -> None:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=15, trust_env=False)
+
+        # 先重传上次未确认的执行结果（幂等：服务器 mark_result 可重复回传）
+        if self._pending_results:
+            await self._flush_results()
+
         r = await self._client.get(
             f"{self.base_url}/api/executor/pending", headers=self._headers()
         )
@@ -65,14 +71,30 @@ class Executor:
             return
         logger.info("执行指令 #%s: %s %s", cmd["id"], cmd["action"], cmd["target"])
         ok, result = await asyncio.to_thread(self._execute, cmd["action"], cmd["target"])
-        resp = await self._client.post(
-            f"{self.base_url}/api/executor/result",
-            json={"id": cmd["id"], "ok": ok, "result": result},
-            headers=self._headers(),
-        )
-        if resp.status_code != 200:
-            # 指令已认领不会重跑，但结果丢了必须留痕排障
-            logger.warning("结果回传失败 #%s: HTTP %s", cmd["id"], resp.status_code)
+        # 回传失败不入库即丢——加入待确认队列下轮重推
+        self._pending_results.append({"id": cmd["id"], "ok": ok, "result": result})
+        await self._flush_results()
+
+    async def _flush_results(self) -> None:
+        """重传积压的执行结果；确认送达的从队列移除。"""
+        remaining = []
+        for item in self._pending_results:
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/executor/result",
+                    json=item,
+                    headers=self._headers(),
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "结果回传失败 #%s（下轮重推）: HTTP %s",
+                        item["id"], resp.status_code,
+                    )
+                    remaining.append(item)
+            except Exception as e:
+                logger.warning("结果回传异常 #%s（下轮重推）: %s", item["id"], e)
+                remaining.append(item)
+        self._pending_results = remaining
 
     def _execute(self, action: str, target: str) -> tuple[bool, str]:
         """执行单一指令（同步，to_thread 包裹）。"""

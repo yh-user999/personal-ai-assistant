@@ -6,7 +6,7 @@ summary / topics / facts(三元组) / relations，写回 memories 并更新 fact
 import json
 from datetime import datetime, timedelta, timezone
 
-from app.core import llm, memory
+from app.core import llm
 from app.models.database import connect
 
 CONSOLIDATION_PROMPT = """你是记忆整合系统，只输出 JSON。

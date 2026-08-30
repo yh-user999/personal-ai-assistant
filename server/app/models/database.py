@@ -5,7 +5,6 @@
 """
 import logging
 import sqlite3
-from pathlib import Path
 
 from app.config import settings
 
@@ -243,11 +242,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
 );
 """
 
-# 记忆全文索引（FTS5）：gram 化文本 + memory_id 映射，替代检索时的
-# Python 全表扫描。unicode61 对中文不分词，gram 化在应用层做（memory.py）。
+# 记忆全文索引（FTS5）：gram 化文本 + id 映射，替代检索时的
+# Python 全表扫描。unicode61 对中文不分词，gram 化在应用层做。
 FTS_TABLE_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   memory_id UNINDEXED,
+  grams
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+  chunk_id UNINDEXED,
   grams
 );
 """
@@ -261,6 +264,7 @@ _vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过�
 # 每个连接都重跑 WAL pragma + 加载 sqlite-vec 扩展，是纯开销。
 # SQLite 连接不可跨线程，threading.local 正好每线程一条长驻连接。
 import threading  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 
 _local = threading.local()
 
@@ -315,6 +319,23 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def db_connection():
+    """统一连接上下文：yield 当前线程的缓存连接，退出时不真正关闭
+    （连接属于缓存，close 只会丢失复用）。
+
+    推荐新代码用 `with db_connection() as conn:` 替代手写 try/finally
+    connect+close——语义更清晰，也不会误触缓存的重建开销。旧写法仍兼容。
+    """
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def reset_connections() -> None:
     """丢弃所有线程的本地连接缓存（测试切换 db_path 后必须调用，否则
     长驻连接仍指向旧库）。"""
@@ -343,14 +364,15 @@ def init_db() -> None:
     finally:
         conn.close()
 
-    # FTS 存量回填：FTS 表空而 memories 有数据（老库升级）时一次性补索引
-    try:
-        from app.core.memory import _fts_backfill
-
-        conn = connect()
+    # FTS 存量回填：FTS 表空而有数据（老库升级）时一次性补索引
+    for backfill in ("app.core.memory:_fts_backfill", "app.core.knowledge:_fts_backfill"):
         try:
-            _fts_backfill(conn)
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("FTS 回填失败（检索退化为空候选）: %s", e)
+            mod_name, fn_name = backfill.split(":")
+            mod = __import__(mod_name, fromlist=[fn_name])
+            conn = connect()
+            try:
+                getattr(mod, fn_name)(conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("FTS 回填失败 %s（检索退化为空候选）: %s", backfill, e)

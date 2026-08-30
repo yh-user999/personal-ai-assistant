@@ -88,21 +88,26 @@ def test_expand_chunks_empty():
 def test_bm25_idf_saturation():
     """词频饱和：稀有词证据块应压过高频词霸榜块。"""
     from app.core import knowledge
-    from app.models.database import connect, init_db
+    from app.models.database import connect, init_db, reset_connections
 
+    reset_connections()
     init_db()
     conn = connect()
     conn.execute("DELETE FROM knowledge_chunks")
-    conn.execute(
+    conn.execute("DELETE FROM knowledge_fts")
+    cur0 = conn.execute(
         "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
         "VALUES ('测试', 0, ?, '2026-01-01T00:00:00+00:00')",
         ("命丛 " * 50,),  # 高频霸榜块
     )
-    conn.execute(
+    cur1 = conn.execute(
         "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
         "VALUES ('测试', 1, ?, '2026-01-01T00:00:00+00:00')",
         ("蜃宗挖走了左志诚的命丛",),  # 稀有词证据块
     )
+    # FTS 同步（v0.3.2 起检索走 FTS5 倒排，直插 SQL 需手动补索引行）
+    knowledge._fts_sync_doc(conn, "测试", ["命丛 " * 50], [cur0.lastrowid])
+    knowledge._fts_sync_doc(conn, "测试", ["蜃宗挖走了左志诚的命丛"], [cur1.lastrowid])
     conn.commit()
     conn.close()
     hits = knowledge._bm25_rank("左志诚被谁挖走了命丛", top_k=10)

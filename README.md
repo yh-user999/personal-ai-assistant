@@ -87,7 +87,7 @@ cd personal-ai-assistant/server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp ../.env.example ../.env   # 填 LLM/Embedding Key + 生成 API_TOKEN
-setsid nohup .venv/bin/python run.py </dev/null > /tmp/assistant.log 2>&1 &
+sudo systemctl restart assistant   # systemd 管理（见 docs/OPS.md，首次配置一次）
 ```
 
 `.env` 要点：`API_TOKEN`（32 字节随机）、`LLM_BASE_URL`（OpenCode Go 或 DeepSeek 官方）、`EMBEDDING_DIMENSION`（智谱 embedding-3 = 2048）。

@@ -4,10 +4,12 @@ RAG 流水线：load → chunk → embed → store → search → generate。
 本模块负责 chunk/embed/store/search 四步；generate 在 chat.py。
 """
 import json
-import math
+import logging
 from datetime import datetime, timezone
 
 from app.core import embedding
+
+logger = logging.getLogger("assistant.knowledge")
 from app.core.chunker import chunk_text
 from app.models.database import connect
 
@@ -21,6 +23,47 @@ NOVEL_ALIASES = {
     "左志诚": ["左擎苍"],
     "左擎苍": ["左志诚"],
 }
+
+
+def _grams_text(text: str) -> str:
+    """文本 → 2-gram 空格分隔串（知识库 FTS 索引与查询共用）。"""
+    text = (text or "").strip()
+    if len(text) < 2:
+        return text
+    return " ".join(
+        g for g in (text[i:i + 2] for i in range(len(text) - 1))
+        if _word_char(g[0]) and _word_char(g[1])
+    )
+
+
+def _fts_sync_doc(conn, name: str, chunks: list[str], chunk_ids: list[int]) -> None:
+    """同步某文档全部 chunk 的 FTS 行（ingest 覆盖时先删后插）。"""
+    conn.execute(
+        "DELETE FROM knowledge_fts WHERE chunk_id IN "
+        "(SELECT id FROM knowledge_chunks WHERE doc_name=?)",
+        (name,),
+    )
+    for cid, chunk in zip(chunk_ids, chunks):
+        conn.execute(
+            "INSERT INTO knowledge_fts (chunk_id, grams) VALUES (?, ?)",
+            (cid, _grams_text(chunk)),
+        )
+
+
+def _fts_backfill(conn) -> None:
+    """存量 chunk 一次性回填 FTS（init_db 时调用，FTS 空而 chunks 非空才执行）。"""
+    n_chunk = conn.execute("SELECT COUNT(*) AS n FROM knowledge_chunks").fetchone()["n"]
+    n_fts = conn.execute("SELECT COUNT(*) AS n FROM knowledge_fts").fetchone()["n"]
+    if n_chunk == 0 or n_fts > 0:
+        return
+    logger.info("知识库 FTS 回填：%d 块", n_chunk)
+    ids, grams = [], []
+    for r in conn.execute("SELECT id, content FROM knowledge_chunks").fetchall():
+        ids.append(r["id"])
+        grams.append(_grams_text(r["content"]))
+    for cid, g in zip(ids, grams):
+        conn.execute("INSERT INTO knowledge_fts (chunk_id, grams) VALUES (?, ?)", (cid, g))
+    conn.commit()
 
 
 async def ingest_document(
@@ -56,6 +99,7 @@ async def ingest_document(
             ).fetchall()
             for r in old:
                 conn.execute("DELETE FROM chunk_vectors WHERE chunk_id=?", (r["id"],))
+                conn.execute("DELETE FROM knowledge_fts WHERE chunk_id=?", (r["id"],))
             conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
             conn.commit()
     finally:
@@ -75,6 +119,10 @@ async def ingest_document(
             conn.execute(
                 "INSERT INTO chunk_vectors (chunk_id, embedding) VALUES (?, ?)",
                 (cur.lastrowid, json.dumps(vec)),
+            )
+            conn.execute(
+                "INSERT INTO knowledge_fts (chunk_id, grams) VALUES (?, ?)",
+                (cur.lastrowid, _grams_text(chunk)),
             )
         conn.commit()
     finally:
@@ -119,52 +167,31 @@ def _word_char(ch: str) -> bool:
 
 
 def _bm25_rank(query: str, top_k: int = 10) -> list[dict]:
-    """BM25（字符 2-gram + IDF + 词频饱和 + 长度归一，k1=1.5，b=0.75）。
+    """BM25 排序：FTS5 倒排 + 内置 bm25()（v0.3.2 替代 Python 全表打分）。
 
-    词频饱和是关键：名词解释章里"命丛"出现 50 次只按 ~2.4 次计分，
-    不再线性霸榜；"挖走"这类稀有证据词得以浮出水面。
-    标点脏 gram（"丛，"等）过滤掉——它们只会帮倒忙。
+    gram 化语义与旧实现一致；词频饱和由 FTS5 内置 bm25 等价承担。
     """
-    grams = list(dict.fromkeys(
-        q for q in (query[i:i + 2] for i in range(max(1, len(query) - 1)))
-        if _word_char(q[0]) and _word_char(q[1])
-    ))
+    grams = _grams_text(query).split()
     if not grams:
         return []
+    match = " OR ".join(f'"{g}"' for g in grams)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, doc_name, chunk_index, content FROM knowledge_chunks"
+            """
+            SELECT c.id, c.doc_name, c.chunk_index, c.content
+            FROM knowledge_fts f JOIN knowledge_chunks c ON c.id = f.chunk_id
+            WHERE knowledge_fts MATCH ?
+            ORDER BY bm25(knowledge_fts) LIMIT ?
+            """,
+            (match, top_k),
         ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("知识库 FTS 检索失败（退化为空候选）: %s", e)
+        return []
     finally:
         conn.close()
-    docs = [dict(r) for r in rows]
-    n = max(1, len(docs))
-    lengths = [len(d["content"]) for d in docs]
-    avgdl = sum(lengths) / n if lengths else 1.0
-    df = {g: 0 for g in grams}
-    for d in docs:
-        for g in grams:
-            if g in d["content"]:
-                df[g] += 1
-    k1, b = 1.5, 0.75
-
-    def _idf(g: str) -> float:
-        c = df[g]
-        return math.log(1 + (n - c + 0.5) / (c + 0.5)) if c else 0.0
-
-    scored = []
-    for d, L in zip(docs, lengths):
-        s = 0.0
-        for g in grams:
-            tf = d["content"].count(g)
-            if tf:
-                norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * L / avgdl))
-                s += norm * _idf(g)
-        if s > 0:
-            scored.append((s, d))
-    scored.sort(key=lambda x: -x[0])
-    return [c for _, c in scored[:top_k]]
 
 
 async def hybrid_search(query: str, top_k: int = 3) -> list[dict]:

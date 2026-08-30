@@ -183,7 +183,18 @@ class XiaoYuePlugin(Star):
     async def _handle_file(self, event: AstrMessageEvent, comp) -> None:
         """文件 → 提取文本 → /api/knowledge/ingest → 回执。任何失败都给主人明确原因。"""
         name = safe_doc_name(getattr(comp, "name", "") or "未命名文档")
-        src = str(getattr(comp, "file", "") or "")
+        # AstrBot v4.27 的 File 组件必须 await get_file()——同步访问 .file
+        # 会在异步上下文卡死并拿不到真实路径（日志有官方警告实锤）
+        src = ""
+        try:
+            getter = getattr(comp, "get_file", None)
+            if callable(getter):
+                src = str(await getter() or "")
+            else:
+                src = str(getattr(comp, "file", "") or "")
+        except Exception as e:
+            logger.warning(f"[xy] get_file 失败: {type(e).__name__}: {e}")
+            src = ""
         tmp_path = ""
         try:
             # ① 拿到本地文件（已落盘 / URL 下载）

@@ -104,6 +104,10 @@ class XiaoYuePlugin(Star):
         # trust_env=False：本机回环调用不走系统代理——宿主机若有 HTTP_PROXY
         # 且 NO_PROXY 不含 127.0.0.1，Bearer token 会流经代理（全套已踩过的坑）
         self._client = httpx.AsyncClient(timeout=120, trust_env=False)  # 小月 LLM 回复可能 30-60s
+        # QQ 文件 CDN 对 JD 直连常 502（直连出网受限），下载兜底走本机 clash
+        self._proxy_client = httpx.AsyncClient(
+            timeout=120, trust_env=False, proxy="http://127.0.0.1:7890"
+        )
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -161,6 +165,22 @@ class XiaoYuePlugin(Star):
             await self._client.aclose()
         except Exception:
             pass
+        try:
+            await self._proxy_client.aclose()
+        except Exception:
+            pass
+
+    async def _download(self, url: str, dest: str) -> bool:
+        """下载 QQ 文件 URL：直连优先，失败走 clash 代理兜底。"""
+        for label, client in (("direct", self._client), ("proxy", self._proxy_client)):
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                Path(dest).write_bytes(resp.content)
+                return True
+            except Exception as e:
+                logger.warning(f"[xy] 文件下载失败({label}): {type(e).__name__}: {e}")
+        return False
 
     # ── 文件入库（仅主人）─────────────────────────────────
 
@@ -183,15 +203,15 @@ class XiaoYuePlugin(Star):
     async def _handle_file(self, event: AstrMessageEvent, comp) -> None:
         """文件 → 提取文本 → /api/knowledge/ingest → 回执。任何失败都给主人明确原因。"""
         name = safe_doc_name(getattr(comp, "name", "") or "未命名文档")
-        # AstrBot v4.27 的 File 组件必须 await get_file()——同步访问 .file
-        # 会在异步上下文卡死并拿不到真实路径（日志有官方警告实锤）
+        # 优先拿原始 URL 自己下载（AstrBot 内置下载器直连 QQ CDN 常 502，
+        # 且同步访问 .file 在异步上下文会卡死）——直连失败自动走 clash 代理
         src = ""
         try:
             getter = getattr(comp, "get_file", None)
             if callable(getter):
-                src = str(await getter() or "")
-            else:
-                src = str(getattr(comp, "file", "") or "")
+                src = str(await getter(allow_return_url=True) or "")
+            if not src:
+                src = str(getattr(comp, "url", "") or "")
         except Exception as e:
             logger.warning(f"[xy] get_file 失败: {type(e).__name__}: {e}")
             src = ""
@@ -200,9 +220,11 @@ class XiaoYuePlugin(Star):
             # ① 拿到本地文件（已落盘 / URL 下载）
             if src.startswith(("http://", "https://")):
                 tmp_path = str(Path(os.environ.get("TEMP", "/tmp")) / f"xy_ingest_{os.getpid()}_{name}")
-                resp = await self._client.get(src)
-                resp.raise_for_status()
-                Path(tmp_path).write_bytes(resp.content)
+                if not await self._download(src, tmp_path):
+                    await event.send(MessageChain([Plain(
+                        f"❌ 文件「{name}」下载失败（QQ 文件链接直连和代理都失败），稍后再发一次试试"
+                    )]))
+                    return
                 local = tmp_path
             elif src and Path(src).exists():
                 local = src

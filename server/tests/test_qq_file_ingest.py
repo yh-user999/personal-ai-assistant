@@ -24,6 +24,7 @@ extract_text = ns["extract_text"]
 safe_doc_name = ns["safe_doc_name"]
 FILE_MAX_BYTES = ns["FILE_MAX_BYTES"]
 find_file_id = ns["find_file_id"]
+to_host_path = ns["to_host_path"]
 
 
 def test_extract_txt(tmp_path):
@@ -109,6 +110,12 @@ def test_find_file_id_matches_name_latest():
     ]
     assert find_file_id(msgs, "b.pdf") == "new"
     assert find_file_id(msgs, "a.pdf") == "old"
+
+
+def test_to_host_path_translates_container_paths():
+    assert to_host_path("/app/.config/QQ/NapCat/temp/a.pdf") == "/opt/napcat/qq_config/NapCat/temp/a.pdf"
+    assert to_host_path("/app/napcat/cache/x.png") == "/opt/napcat/cache/x.png"
+    assert to_host_path("/tmp/other.txt") == "/tmp/other.txt"  # 非容器路径原样返回
 
 
 def test_find_file_id_falls_back_to_latest():

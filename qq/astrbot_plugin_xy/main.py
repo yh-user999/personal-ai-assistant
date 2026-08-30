@@ -51,6 +51,22 @@ def find_file_id(history_messages: list, name: str) -> str | None:
     return None
 
 
+# NapCat 容器路径 → 宿主机路径（onebot get_file 返回容器内路径，插件跑在宿主机）
+_CONTAINER_PATH_MAP = (
+    ("/app/.config/QQ/", "/opt/napcat/qq_config/"),
+    ("/app/napcat/cache/", "/opt/napcat/cache/"),
+    ("/app/napcat/config/", "/opt/napcat/config/"),
+)
+
+
+def to_host_path(p: str) -> str:
+    """容器内路径翻译为宿主机路径（挂载点映射）；非容器路径原样返回。"""
+    for cont, host in _CONTAINER_PATH_MAP:
+        if p.startswith(cont):
+            return host + p[len(cont):]
+    return p
+
+
 def should_handle(sender: str, group: str, owner_qq: str) -> bool:
     """白名单判定（纯函数，可单测）。
 
@@ -235,8 +251,10 @@ class XiaoYuePlugin(Star):
             if j.get("status") != "ok":
                 return None
             d = j.get("data") or {}
-            if d.get("file") and Path(str(d["file"])).exists():
-                return str(d["file"])
+            if d.get("file"):
+                host_path = to_host_path(str(d["file"]))
+                if Path(host_path).exists():
+                    return host_path
             if d.get("base64"):
                 import base64
 

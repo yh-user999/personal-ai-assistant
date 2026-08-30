@@ -22,7 +22,10 @@ def detect_correction(text: str) -> bool:
 
 
 def save_lesson(content: str, context: str = "") -> int:
-    """存一条教训：用户原话 + 被纠正的 AI 回复上下文。"""
+    """存一条教训：用户原话 + 被纠正的 AI 回复上下文（统一脱敏）。"""
+    from app.services.sanitize import sanitize
+    content = sanitize(content)
+    context = sanitize(context)
     conn = connect()
     try:
         cur = conn.execute(

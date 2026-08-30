@@ -18,6 +18,7 @@ v1.1 修复（相对 v1.0）：
 - should_call_llm 语义：True=禁止默认 LLM（v1.0 用 False 是反的）
 - 回复走 event.send()（置 _has_send_oper，双保险跳过默认 LLM）
 """
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -31,23 +32,33 @@ from astrbot.core.message.message_event_result import MessageChain
 
 REPLY_MAX_CHARS = 4000  # QQ 单条消息安全长度，超长截断并提示
 FILE_MAX_BYTES = 10 * 1024 * 1024  # 文件入库上限 10MB（图文 PDF 常超 2MB，文本提取成本低）
+FILE_TOTAL_TIMEOUT = 35  # 单个文件从取回到入库的总预算，避免 QQ 长时间无回复
 TEXT_EXTS = {".txt", ".md", ".markdown", ".csv", ".log", ".json"}
+
+
+class FileTooLargeError(Exception):
+    """NapCat 已提供文件大小，尚未下载就超过入库上限。"""
 # 文本提取失败时的安全文件名（防路径穿越/非法字符）
 _SAFE_NAME = re.compile(r'[\\/:*?"<>|]')
 
 
-def find_file_id(history_messages: list, name: str) -> str | None:
-    """从 NapCat 好友历史里找目标文件的 file_id（同名取最新，名字对不上取任意最新文件段）。"""
+def find_file_id(history_messages: list, name: str) -> tuple[str, int | None] | None:
+    """按文件名精确找最近一条 file_id 和大小；找不到绝不猜其他文件。"""
     for m in reversed(history_messages):
         for seg in m.get("message") or []:
-            if seg.get("type") == "file":
-                data = seg.get("data") or {}
-                if data.get("file") == name or name == "未命名文档":
-                    return data.get("file_id")
-    for m in reversed(history_messages):
-        for seg in m.get("message") or []:
-            if seg.get("type") == "file":
-                return (seg.get("data") or {}).get("file_id")
+            if seg.get("type") != "file":
+                continue
+            data = seg.get("data") or {}
+            if data.get("file") != name:
+                continue
+            fid = data.get("file_id")
+            if not fid:
+                return None
+            try:
+                size = int(data.get("file_size")) if data.get("file_size") else None
+            except (TypeError, ValueError):
+                size = None
+            return str(fid), size
     return None
 
 
@@ -162,15 +173,21 @@ class XiaoYuePlugin(Star):
 
         # 白名单（纯函数）：群聊不处理；仅主人私聊放行
         if not should_handle(sender, group, self.cfg.get("owner_qq", "")):
+            # 仅禁止默认 LLM；不 stop_event，避免影响 meme_manager 等其他插件的事件处理。
             event.should_call_llm(True)
-            event.stop_event()
             return
         event.stop_event()  # 主人消息本插件全权处理，阻断其他处理器
 
         # 文件分支（仅主人）：识别 File 组件 → 提取文本 → 入库知识库
         file_comp = self._find_file_component(event)
         if file_comp is not None:
-            await self._handle_file(event, file_comp)
+            try:
+                await asyncio.wait_for(
+                    self._handle_file(event, file_comp), timeout=FILE_TOTAL_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[xy] 文件处理超过总时限 %ss", FILE_TOTAL_TIMEOUT)
+                await event.send(MessageChain([Plain("❌ 文件处理超时（35秒），请稍后重发或先压缩文件")]))
             return
 
         if not msg.strip():
@@ -227,7 +244,7 @@ class XiaoYuePlugin(Star):
                 logger.warning(f"[xy] 文件下载失败({label}): {type(e).__name__}: {e}")
         return False
 
-    async def _napcat_get_file(self, name: str) -> str | None:
+    async def _napcat_get_file(self, name: str) -> tuple[str, bool] | None:
         """NapCat 会话下载：历史 API 找 file_id → onebot get_file → 本地路径/base64。
 
         这是最可靠的通道——NapCat 用 QQ 会话取文件，不经公网 CDN（直连会 502/挂起）。
@@ -251,9 +268,14 @@ class XiaoYuePlugin(Star):
             if payload.get("status") != "ok":
                 return None
             msgs = (payload.get("data") or {}).get("messages") or []
-            fid = find_file_id(msgs, name)
-            if not fid:
+            file_info = find_file_id(msgs, name)
+            if not file_info:
                 return None
+            fid, declared_size = file_info
+            if declared_size is not None and declared_size > FILE_MAX_BYTES:
+                raise FileTooLargeError(
+                    f"{declared_size / 1024 / 1024:.1f}MB 超过上限 {FILE_MAX_BYTES / 1024 / 1024:.0f}MB"
+                )
             r2 = await self._client.post(
                 f"{ob_url}/get_file",
                 json={"file_id": fid},
@@ -271,14 +293,16 @@ class XiaoYuePlugin(Star):
                     _parse_path_map(self.cfg.get("container_path_map", "")),
                 )
                 if Path(host_path).exists():
-                    return host_path
+                    return host_path, False
             if d.get("base64"):
                 import base64
 
                 dest = str(Path(os.environ.get("TEMP", "/tmp")) / f"xy_ingest_{os.getpid()}_{name}")
                 Path(dest).write_bytes(base64.b64decode(d["base64"]))
-                return dest
+                return dest, True
             return None
+        except FileTooLargeError:
+            raise
         except Exception as e:
             logger.warning(f"[xy] NapCat get_file 失败: {type(e).__name__}: {e}")
             return None
@@ -308,7 +332,14 @@ class XiaoYuePlugin(Star):
         try:
             # ① 拿到本地文件：优先 NapCat 会话下载（get_file，QQ 会话通道最可靠），
             #    失败退回 URL 自下载（直连→clash 代理），再退回已落盘路径
-            local = await self._napcat_get_file(name)
+            try:
+                file_result = await self._napcat_get_file(name)
+            except FileTooLargeError as e:
+                await event.send(MessageChain([Plain(f"❌ 文件「{name}」{e}，请拆分后再发")]))
+                return
+            local = file_result[0] if file_result else None
+            if file_result and file_result[1]:
+                tmp_path = local
             if not local:
                 src = ""
                 try:
@@ -341,7 +372,8 @@ class XiaoYuePlugin(Star):
                 return
 
             # ③ 提取文本
-            text, err = extract_text(local)
+            # PDF/docx 解析是同步 CPU/IO，放到线程避免阻塞 AstrBot 事件循环。
+            text, err = await asyncio.to_thread(extract_text, local)
             if err:
                 await event.send(MessageChain([Plain(f"❌ 「{name}」{err}")]))
                 return

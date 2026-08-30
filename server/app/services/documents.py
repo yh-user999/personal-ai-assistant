@@ -117,8 +117,12 @@ def export_docx(doc_id: int, out_dir: str = "") -> str:
         raise FileNotFoundError(f"document {doc_id} not found")
 
     out_dir = Path(out_dir) if out_dir else Path(__file__).resolve().parents[2] / "data" / "exports"
+    out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"doc-{doc_id}-{doc['title'][:20]}.docx"
+    safe_title = re.sub(r"[^\w\-.一-龥 ]", "_", Path(doc["title"]).name)[:20] or "document"
+    out_path = (out_dir / f"doc-{doc_id}-{safe_title}.docx").resolve()
+    if out_path.parent != out_dir:
+        raise ValueError("导出路径超出导出目录")
 
     d = DocxDocument()
     title_p = d.add_paragraph()

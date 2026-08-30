@@ -20,9 +20,11 @@ def detect_definition(text: str) -> str | None:
 
 
 def save_term(term: str, explanation: str) -> int:
-    """存术语（已存在则更新解释并刷新时间）。"""
+    """存术语（已存在则更新解释并刷新时间，入库前统一脱敏）。"""
     from datetime import datetime, timezone
-
+    from app.services.sanitize import sanitize
+    term = sanitize(term)
+    explanation = sanitize(explanation)
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()
     try:

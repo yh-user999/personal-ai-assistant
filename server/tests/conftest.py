@@ -17,6 +17,7 @@ for _p in (SERVER_ROOT, REPO_ROOT):
         sys.path.insert(0, _p)
 
 os.environ.setdefault("API_TOKEN", "")
+os.environ.setdefault("DEPLOYMENT_ENV", "test")
 
 
 

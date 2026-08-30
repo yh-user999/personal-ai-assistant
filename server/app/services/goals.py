@@ -31,6 +31,8 @@ def parse_goal_command(msg: str) -> tuple[str, str] | None:
 
 
 def add_goal(title: str) -> int:
+    from app.services.sanitize import sanitize
+    title = sanitize(title)
     conn = connect()
     try:
         cur = conn.execute(
@@ -62,6 +64,8 @@ def complete_goal(title: str) -> bool:
 
 def update_progress(title_or_text: str) -> bool:
     """"XX 做到第5周" 或 "目标进度：XX" → 更新最近活跃目标进度。"""
+    from app.services.sanitize import sanitize
+    title_or_text = sanitize(title_or_text)
     conn = connect()
     try:
         rows = conn.execute(

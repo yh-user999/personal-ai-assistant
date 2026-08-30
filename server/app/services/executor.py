@@ -17,6 +17,12 @@ from datetime import datetime, timedelta, timezone
 from app.config import settings
 from app.models.database import connect
 
+REMOTE_BLOCKED_EXTS = {
+    ".bat", ".cmd", ".py", ".pyw", ".ps1", ".js", ".jse", ".vbs", ".vbe",
+    ".wsf", ".wsh", ".hta", ".scr", ".jar", ".msi", ".reg",
+    ".exe", ".com", ".cpl", ".pif", ".lnk", ".url",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -179,15 +185,17 @@ def get_pending() -> dict | None:
         conn.close()
 
 
-def mark_result(cmd_id: int, ok: bool, result: str) -> None:
+def mark_result(cmd_id: int, ok: bool, result: str) -> bool:
+    """只接受已认领指令的一次性结果回传，防止伪造任意执行结果。"""
     conn = connect()
     try:
-        conn.execute(
+        cur = conn.execute(
             """UPDATE executor_commands SET status=?, result=?, executed_at=?
-               WHERE id=?""",
+               WHERE id=? AND status='claimed'""",
             ("done" if ok else "failed", result[:3000], _now(), cmd_id),
         )
         conn.commit()
+        return cur.rowcount == 1
     finally:
         conn.close()
 
@@ -209,6 +217,24 @@ def _path_in_roots(target: str, roots: list[str]) -> bool:
     """
     norm = os.path.normcase(os.path.abspath(target.replace("\\", "/")))
     return any(norm == root or norm.startswith(root.rstrip("\\/") + os.sep) for root in roots)
+
+
+def check_open_target(target: str) -> bool:
+    """服务端预检 open：拒绝 URL/可执行文件，Windows 路径白名单由采集器本地复核。
+
+    服务端运行在 Linux，不能用本机 abspath 判断 F:/ 等 Windows 路径；
+    采集器是实际执行点，必须再调用 path_allowed 做最终校验。
+    无路径参数仅作为已登记启动器别名交给采集器。
+    """
+    text = target.strip()
+    if not text or len(text) > 200:
+        return False
+    if re.match(r"^[a-z][a-z0-9+.-]*://", text, re.IGNORECASE):
+        return False
+    ext = os.path.splitext(text)[1].casefold()
+    if ext in REMOTE_BLOCKED_EXTS:
+        return False
+    return True
 
 
 def check_roots(target: str) -> bool:

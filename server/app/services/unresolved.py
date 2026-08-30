@@ -26,6 +26,9 @@ def detect_resolved(text: str) -> bool:
 
 
 def add_issue(topic: str, context: str = "") -> int:
+    from app.services.sanitize import sanitize
+    topic = sanitize(topic)
+    context = sanitize(context)
     conn = connect()
     try:
         cur = conn.execute(

@@ -7,6 +7,7 @@
 - 工作日志汇总
 """
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from app.models.database import connect
@@ -104,9 +105,14 @@ async def evict_stale() -> dict:
 
             for mid in stale_ids:
                 _fts_delete(conn, mid)
+                try:
+                    conn.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (mid,))
+                except sqlite3.OperationalError:
+                    pass  # sqlite-vec 未安装时基础功能仍可淘汰记忆
         n2 = conn.execute(
             "DELETE FROM memories WHERE ts < ? AND importance < 1.0", (chat_cutoff,)
         ).rowcount
+        # FTS5 不是外键表，先删索引再删 memories，避免孤儿索引长期膨胀。
         conn.commit()
         return {"deleted_noise": n1, "deleted_chat": n2}
     finally:

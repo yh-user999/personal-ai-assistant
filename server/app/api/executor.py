@@ -39,14 +39,17 @@ async def enqueue(req: EnqueueRequest) -> dict:
     """入队。白名单在此强制执行——聊天解析与 API 直调两条入口都受控。"""
     if req.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail=f"不支持的指令类型：{req.action}")
-    if req.action != "open":
-        paths = executor.unpack_paths(req.action, req.target)
-        # search_files 目录为空 = 全白名单搜索（执行端逐根校验）
-        if not (req.action == "search_files" and not paths):
-            if not paths or not all(executor.check_roots(p) for p in paths):
-                raise HTTPException(
-                    status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
-                )
+    # 所有涉及本机路径的动作都必须经过白名单；远程 open 不再享受黑名单豁免。
+    # 这样 API token 泄露也不能启动任意 exe/lnk/url。
+    paths = executor.unpack_paths(req.action, req.target)
+    if req.action == "open":
+        if not executor.check_open_target(req.target):
+            raise HTTPException(status_code=400, detail="打开目标不在白名单或不是已登记别名")
+    elif not (req.action == "search_files" and not paths):
+        if not paths or not all(executor.check_roots(p) for p in paths):
+            raise HTTPException(
+                status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
+            )
     cmd_id = executor.enqueue(req.action, req.target)
     return {"id": cmd_id}
 
@@ -76,7 +79,9 @@ async def results(since_id: int = 0) -> dict:
 
 @router.post("/executor/result")
 async def result(req: ResultRequest) -> dict:
-    executor.mark_result(req.id, req.ok, req.result)
+    accepted = executor.mark_result(req.id, req.ok, req.result)
+    if not accepted:
+        raise HTTPException(status_code=409, detail="指令不存在、未认领或结果已回传")
     # 结果写为 assistant 消息，用户下次聊天/看历史可见
     if req.result:
         text = f"[执行结果] {req.result}" if req.ok else f"[执行失败] {req.result}"

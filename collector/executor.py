@@ -78,13 +78,15 @@ class Executor:
         """执行单一指令（同步，to_thread 包裹）。"""
         try:
             if action == "open":
-                # 先查快捷启动器（用户注册的别名/网址优先；显式注册 = 用户授权）
+                # 注册别名是显式授权，可指向白名单外路径；原始路径则必须白名单。
                 launched, ok, text = launcher.try_launch(target)
                 if launched:
                     return ok, text
                 ext = os.path.splitext(target)[1].lower()
                 if ext in OPEN_BLOCKED_EXTS:
                     return False, f"出于安全考虑，不允许打开脚本/安装包类型：{ext}"
+                if not path_allowed(target):
+                    return False, "🔒 打开目标超出白名单（EXECUTOR_ALLOWED_ROOTS），本地已拒绝"
                 os.startfile(target)
                 return True, f"已打开 {target}"
             if action == "list_dir":

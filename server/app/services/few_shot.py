@@ -16,9 +16,10 @@ def detect_positive_feedback(text: str) -> bool:
 
 
 def save_example(content: str) -> int:
-    """存一条风格范例（用户满意的 AI 回复）。"""
+    """存一条风格范例（用户满意的 AI 回复，入库前统一脱敏）。"""
     from datetime import datetime, timezone
-
+    from app.services.sanitize import sanitize
+    content = sanitize(content)
     conn = connect()
     try:
         cur = conn.execute(

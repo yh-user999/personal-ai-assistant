@@ -37,7 +37,10 @@ def _parse_time_range(content: str) -> str:
 
 
 def add_log(content: str, project: str = "") -> int:
-    """新增一条工作日志。content 为去掉"记录："前缀后的文本。"""
+    """新增一条工作日志。入库前统一脱敏。"""
+    from app.services.sanitize import sanitize
+    content = sanitize(content)
+    project = sanitize(project)
     now = datetime.now(timezone.utc)
     conn = connect()
     try:

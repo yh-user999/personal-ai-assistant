@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # ── 服务 ────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000
+    deployment_env: str = "production"  # test/development 可显式关闭强制鉴权
 
     # ── LLM（OpenAI 兼容）───────────────────────────────────
     llm_base_url: str = "https://api.deepseek.com/v1"
@@ -87,6 +88,11 @@ def get_settings() -> Settings:
             f"QQ_PUSH_URL 已配置但 QQ_ADMIN_ID='{s.qq_admin_id}' 不是数字，"
             "推送通道不可用——请修正 .env 或清空 QQ_PUSH_URL"
         )
+    if s.deployment_env.casefold() == "production":
+        if not s.api_token or len(s.api_token) < 32 or s.api_token == "change-me-random-string":
+            raise ValueError(
+                "生产环境必须配置至少 32 字符的随机 API_TOKEN，不能使用空值或模板占位符"
+            )
     return s
 
 

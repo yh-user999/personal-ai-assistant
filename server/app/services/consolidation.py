@@ -65,12 +65,14 @@ async def consolidate_recent(hours: int = 2) -> dict:
             "UPDATE memories SET summary=?, topics=? WHERE id=?",
             (summary, json.dumps(topics, ensure_ascii=False), ids[0]),
         )
-        conn.execute(
-            "UPDATE memories SET summary='__merged__' WHERE id IN ({})".format(
-                ",".join("?" * (len(ids) - 1))
-            ),
-            ids[1:],
-        )
+        # 只有一条消息时没有“其余消息”，跳过空 IN () 更新。
+        if len(ids) > 1:
+            conn.execute(
+                "UPDATE memories SET summary='__merged__' WHERE id IN ({})".format(
+                    ",".join("?" * (len(ids) - 1))
+                ),
+                ids[1:],
+            )
         # facts 入库（去重：同三元组则更新 updated_at）
         now = datetime.now(timezone.utc).isoformat()
         for f in result.get("facts", []):

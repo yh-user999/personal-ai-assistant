@@ -14,6 +14,7 @@ MAX_LIST = 300  # 单次最多列出的条目数（防病态大目录刷屏）
 OPEN_BLOCKED_EXTS = (
     ".bat", ".cmd", ".py", ".pyw", ".ps1", ".js", ".jse", ".vbs", ".vbe",
     ".wsf", ".wsh", ".hta", ".scr", ".jar", ".msi", ".reg",
+    ".exe", ".com", ".cpl", ".pif", ".lnk", ".url",
 )
 SENSITIVE_PATTERN = re.compile(
     r"(恢复码|密码|口令|密钥|私钥|token|secret|password|api[_\-]?key)", re.IGNORECASE

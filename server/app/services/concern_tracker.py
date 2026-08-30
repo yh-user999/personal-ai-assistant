@@ -12,6 +12,8 @@ def upsert_concerns(topics: list[str]) -> int:
     """话题提及：存在则计数+1 并刷新时间，否则新建。返回更新的条数。"""
     if not topics:
         return 0
+    from app.services.sanitize import sanitize
+    topics = [sanitize(t or "") for t in topics]
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()
     try:

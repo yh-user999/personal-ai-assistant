@@ -108,8 +108,8 @@ def test_find_file_id_matches_name_latest():
         {"message": [{"type": "file", "data": {"file": "a.pdf", "file_id": "old"}}]},
         {"message": [{"type": "file", "data": {"file": "b.pdf", "file_id": "new"}}]},
     ]
-    assert find_file_id(msgs, "b.pdf") == "new"
-    assert find_file_id(msgs, "a.pdf") == "old"
+    assert find_file_id(msgs, "b.pdf") == ("new", None)
+    assert find_file_id(msgs, "a.pdf") == ("old", None)
 
 
 def test_to_host_path_translates_container_paths():
@@ -118,14 +118,21 @@ def test_to_host_path_translates_container_paths():
     assert to_host_path("/tmp/other.txt") == "/tmp/other.txt"  # 非容器路径原样返回
 
 
-def test_find_file_id_falls_back_to_latest():
+def test_find_file_id_does_not_guess_other_file():
     msgs = [
         {"message": [{"type": "file", "data": {"file": "a.pdf", "file_id": "old"}}]},
         {"message": [{"type": "file", "data": {"file": "c.pdf", "file_id": "latest"}}]},
     ]
-    assert find_file_id(msgs, "不存在的名字.pdf") == "latest"
+    assert find_file_id(msgs, "不存在的名字.pdf") is None
     assert find_file_id([], "x") is None
     assert find_file_id([{"message": [{"type": "text", "data": {"text": "hi"}}]}], "x") is None
+
+
+def test_find_file_id_returns_declared_size():
+    msgs = [{"message": [{"type": "file", "data": {
+        "file": "guide.pdf", "file_id": "fid", "file_size": "9126420"
+    }}]}]
+    assert find_file_id(msgs, "guide.pdf") == ("fid", 9126420)
 
 
 def test_whitelist_gates_file_channel_too():

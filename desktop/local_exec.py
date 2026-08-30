@@ -139,8 +139,12 @@ def _execute(action: str, target: str, extra: str = "") -> tuple[bool, str]:
     try:
         if action == "open":
             ext = os.path.splitext(target)[1].lower()
-            if ext in OPEN_BLOCKED_EXTS:
-                return False, f"出于安全考虑，不允许打开脚本/安装包类型：{ext}"
+            if ext in OPEN_BLOCKED_EXTS or ext in (".exe", ".com", ".cpl", ".pif", ".lnk", ".url"):
+                return False, f"出于安全考虑，不允许打开可执行/快捷方式类型：{ext}"
+            if re.match(r"^[a-z][a-z0-9+.-]*://", target, re.IGNORECASE):
+                return False, "出于安全考虑，未登记的外部 URL 不允许打开"
+            if not path_allowed(target):
+                return False, "🔒 打开目标超出白名单（EXECUTOR_ALLOWED_ROOTS），本地已拒绝"
             os.startfile(target)
             return True, f"已打开 {target}"
         if action == "list_dir":

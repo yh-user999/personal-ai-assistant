@@ -61,9 +61,16 @@ def parse_facts_json(text: str) -> list[dict]:
 
 
 def upsert_facts(triples: list[dict]) -> int:
-    """按 (subject, predicate) upsert；最新确认覆盖旧值。返回写入条数。"""
+    """按 (subject, predicate) upsert；写入前统一脱敏。"""
     if not triples:
         return 0
+    from app.services.sanitize import sanitize
+    triples = [
+        {**t, "subject": sanitize(str(t.get("subject", ""))),
+         "predicate": sanitize(str(t.get("predicate", ""))),
+         "object": sanitize(str(t.get("object", "")))}
+        for t in triples
+    ]
     conn = connect()
     n = 0
     try:

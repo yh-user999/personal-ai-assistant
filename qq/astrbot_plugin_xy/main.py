@@ -84,6 +84,9 @@ def extract_text(path: str) -> tuple[str, str]:
 
 def safe_doc_name(name: str) -> str:
     """文件名 → 安全文档名（去路径成分与非法字符，防穿越）。"""
+    # QQ 端文件名可能携带 Windows 反斜杠路径（..\\..\\evil.txt），
+    # 先统一成 / 再取 basename——Linux 上 Path().name 不认反斜杠分隔符
+    name = name.replace("\\", "/")
     name = Path(name).name  # 去目录成分
     return _SAFE_NAME.sub("_", name).strip() or "未命名文档"
 

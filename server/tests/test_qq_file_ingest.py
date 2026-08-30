@@ -23,6 +23,7 @@ ns = _load_pure_functions()
 extract_text = ns["extract_text"]
 safe_doc_name = ns["safe_doc_name"]
 FILE_MAX_BYTES = ns["FILE_MAX_BYTES"]
+find_file_id = ns["find_file_id"]
 
 
 def test_extract_txt(tmp_path):
@@ -98,7 +99,26 @@ def test_safe_doc_name_strips_path_and_illegal():
 
 
 def test_file_size_limit_constant():
-    assert FILE_MAX_BYTES == 2 * 1024 * 1024
+    assert FILE_MAX_BYTES == 10 * 1024 * 1024
+
+
+def test_find_file_id_matches_name_latest():
+    msgs = [
+        {"message": [{"type": "file", "data": {"file": "a.pdf", "file_id": "old"}}]},
+        {"message": [{"type": "file", "data": {"file": "b.pdf", "file_id": "new"}}]},
+    ]
+    assert find_file_id(msgs, "b.pdf") == "new"
+    assert find_file_id(msgs, "a.pdf") == "old"
+
+
+def test_find_file_id_falls_back_to_latest():
+    msgs = [
+        {"message": [{"type": "file", "data": {"file": "a.pdf", "file_id": "old"}}]},
+        {"message": [{"type": "file", "data": {"file": "c.pdf", "file_id": "latest"}}]},
+    ]
+    assert find_file_id(msgs, "不存在的名字.pdf") == "latest"
+    assert find_file_id([], "x") is None
+    assert find_file_id([{"message": [{"type": "text", "data": {"text": "hi"}}]}], "x") is None
 
 
 def test_whitelist_gates_file_channel_too():

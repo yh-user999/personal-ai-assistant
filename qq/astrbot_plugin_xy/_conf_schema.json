@@ -22,5 +22,21 @@
     "obvious_hint": true,
     "default": "",
     "restart_required": false
+  },
+  "onebot_http": {
+    "description": "NapCat onebot HTTP 地址（文件会话下载通道）",
+    "type": "string",
+    "hint": "同机 NapCat onebot HTTP 服务，如 http://127.0.0.1:3100；留空则文件下载退回 URL 直连/代理",
+    "obvious_hint": true,
+    "default": "http://127.0.0.1:3100",
+    "restart_required": false
+  },
+  "onebot_token": {
+    "description": "NapCat onebot HTTP Token",
+    "type": "string",
+    "hint": "与 NapCat onebot httpServers 配置的 token 一致",
+    "obvious_hint": true,
+    "default": "",
+    "restart_required": false
   }
 }

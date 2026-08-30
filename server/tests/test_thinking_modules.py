@@ -26,11 +26,13 @@ from app.services.jargon import detect_definition, get_jargon_injection, save_te
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db_file = Path("/tmp/test_thinking.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
-    reset_connections()  # 长驻连接缓存还握着被删的旧库句柄，必须丢弃
+def fresh_db(tmp_path, monkeypatch):
+    # 独立临时目录 + settings.db_path：固定 /tmp 路径跨次运行有残留，
+    # 配合长驻连接缓存曾导致 concerns 计数偶发翻倍
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
     yield
     reset_connections()

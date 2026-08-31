@@ -14,6 +14,8 @@
 - 所有任务包 _safe_job wrapper：异常捕获后经 qq_push 通道给主人推告警——
   定时任务失败不再只落在日志里（QQ 是唯一必达通道）。
 """
+import asyncio
+import inspect
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -55,13 +57,20 @@ async def _push_alert(text: str) -> None:
 def _wrap_job(func, job_id: str):
     """定时任务 wrapper 工厂：异常捕获 → QQ 告警，不再静默。
 
+    兼容同步与异步任务：同步任务（如 run_daily_backup）经 asyncio.to_thread
+    在后台线程执行——否则 await 普通函数返回的 dict 会报
+    "object dict can't be used in 'await' expression"，且阻塞 I/O
+    （sqlite3 热备份）也不该占住事件循环。
+
     用闭包而非 functools.partial——APScheduler 会用 signature() 校验
     可调用对象，partial 固定位置参数后与 job args 冲突报 ValueError。
     """
 
     async def _run(*args, **kwargs):
         try:
-            return await func(*args, **kwargs)
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **kwargs)
+            return await asyncio.to_thread(func, *args, **kwargs)
         except Exception as e:
             logger.exception("定时任务 %s 失败", job_id)
             await _push_alert(f"{job_id} 执行失败：{type(e).__name__}: {e}")

@@ -19,22 +19,25 @@ def detect_definition(text: str) -> str | None:
     return term[:40] if term else None
 
 
-def save_term(term: str, explanation: str) -> int:
+def save_term(term: str, explanation: str, user_id: str | None = None) -> int:
     """存术语（已存在则更新解释并刷新时间，入库前统一脱敏）。"""
     from datetime import datetime, timezone
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     term = sanitize(term)
     explanation = sanitize(explanation)
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()
     try:
         conn.execute(
-            """INSERT INTO jargon_terms (term, explanation, created_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(term) DO UPDATE SET
+            """INSERT INTO jargon_terms (user_id, term, explanation, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id, term) DO UPDATE SET
                  explanation = excluded.explanation,
                  created_at = excluded.created_at""",
-            (term, explanation[:500], now),
+            (uid, term, explanation[:500], now),
         )
         conn.commit()
     finally:
@@ -42,11 +45,16 @@ def save_term(term: str, explanation: str) -> int:
     return 1
 
 
-def get_jargon_injection(message: str, limit: int = 3) -> str:
+def get_jargon_injection(message: str, limit: int = 3, user_id: str | None = None) -> str:
     """消息中含已知术语 → 注入其解释（最多 limit 条）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
-        rows = conn.execute("SELECT term, explanation FROM jargon_terms").fetchall()
+        rows = conn.execute(
+            "SELECT term, explanation FROM jargon_terms WHERE user_id = ?", (uid,)
+        ).fetchall()
     finally:
         conn.close()
     hits = [(r["term"], r["explanation"]) for r in rows if r["term"] in message]

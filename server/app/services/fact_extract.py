@@ -60,11 +60,14 @@ def parse_facts_json(text: str) -> list[dict]:
     return out
 
 
-def upsert_facts(triples: list[dict]) -> int:
-    """按 (subject, predicate) upsert；写入前统一脱敏。"""
+def upsert_facts(triples: list[dict], user_id: str | None = None) -> int:
+    """按 (user_id, subject, predicate) upsert；写入前统一脱敏。"""
     if not triples:
         return 0
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     triples = [
         {**t, "subject": sanitize(str(t.get("subject", ""))),
          "predicate": sanitize(str(t.get("predicate", ""))),
@@ -76,8 +79,8 @@ def upsert_facts(triples: list[dict]) -> int:
     try:
         for t in triples:
             row = conn.execute(
-                "SELECT id FROM facts WHERE subject=? AND predicate=?",
-                (t["subject"], t["predicate"]),
+                "SELECT id FROM facts WHERE user_id=? AND subject=? AND predicate=?",
+                (uid, t["subject"], t["predicate"]),
             ).fetchone()
             if row:
                 conn.execute(
@@ -86,9 +89,9 @@ def upsert_facts(triples: list[dict]) -> int:
                 )
             else:
                 conn.execute(
-                    "INSERT INTO facts (subject, predicate, object, confidence, updated_at) "
-                    "VALUES (?, ?, ?, 0.9, ?)",
-                    (t["subject"], t["predicate"], t["object"], _now()),
+                    "INSERT INTO facts (user_id, subject, predicate, object, confidence, updated_at) "
+                    "VALUES (?, ?, ?, ?, 0.9, ?)",
+                    (uid, t["subject"], t["predicate"], t["object"], _now()),
                 )
             n += 1
         conn.commit()
@@ -103,7 +106,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def maybe_extract_facts(user_msg: str) -> int:
+async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:
     """命中信号词则提取并写入 facts；返回写入条数（未触发返回 0）。"""
     if not any(s in user_msg for s in FACT_SIGNALS):
         return 0
@@ -123,4 +126,4 @@ async def maybe_extract_facts(user_msg: str) -> int:
     if triples:
         logger.info("提取到持久事实 %d 条: %s", len(triples),
                     [(t["subject"], t["predicate"]) for t in triples])
-    return upsert_facts(triples)
+    return upsert_facts(triples, user_id=user_id)

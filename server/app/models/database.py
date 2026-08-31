@@ -14,6 +14,7 @@ _BASE_SCHEMA = """
 -- ① 对话记忆（情境记忆）
 CREATE TABLE IF NOT EXISTS memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',    -- 用户标识：主人 QQ 号 / 'owner'（未配置时）；访客为其 QQ 号
   sender TEXT NOT NULL,               -- 'user' / 'assistant'
   content TEXT NOT NULL,
   summary TEXT DEFAULT '',
@@ -22,24 +23,27 @@ CREATE TABLE IF NOT EXISTS memories (
   importance REAL DEFAULT 1.0
 );
 
--- ② 事实表（永久知识，三元组）
+-- ② 事实表（永久知识，三元组，按用户隔离）
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
   subject TEXT NOT NULL,
   predicate TEXT NOT NULL,
   object TEXT NOT NULL,
   source_memory_id INTEGER,
   confidence REAL DEFAULT 0.7,
   updated_at TEXT NOT NULL,
-  UNIQUE(subject, predicate, object)
+  UNIQUE(user_id, subject, predicate, object)
 );
 
--- ③ 画像表（四维度）
+-- ③ 画像表（四维度，按用户隔离）
 CREATE TABLE IF NOT EXISTS profile (
-  dimension TEXT PRIMARY KEY,         -- technical_background / work_habit / learning_rhythm / project_info
+  user_id TEXT NOT NULL DEFAULT '',
+  dimension TEXT NOT NULL,            -- technical_background / work_habit / learning_rhythm / project_info
   value TEXT NOT NULL,
   confidence REAL DEFAULT 0.5,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, dimension)
 );
 
 -- ④ 工作日志（手动记录）
@@ -76,6 +80,8 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
 );
 
 -- 查询索引（v0.3 采纳评审建议：常用查询字段建索引）
+-- 注意：idx_memories_user 依赖 user_id 列，老库迁移时在 _migrate_user_id 里
+-- 加列后再建（放这里会让老库的 executescript 中途炸掉）
 CREATE INDEX IF NOT EXISTS idx_memories_ts ON memories(ts);
 CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at);
 CREATE INDEX IF NOT EXISTS idx_worklog_created ON work_log(created_at);
@@ -96,24 +102,29 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
   created_at TEXT NOT NULL
 );
 
--- ⑨ 关切话题（用户最近在意的主题，mention_count 追踪活跃度）
+-- ⑨ 关切话题（用户最近在意的主题，mention_count 追踪活跃度，按用户隔离）
 CREATE TABLE IF NOT EXISTS concerns (
-  topic TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT '',
+  topic TEXT NOT NULL,
   mention_count INTEGER DEFAULT 1,
-  last_mentioned_at TEXT NOT NULL
+  last_mentioned_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, topic)
 );
 
--- ⑩ 术语词典（用户问过的技术名词 → 解释，保证口径一致）
+-- ⑩ 术语词典（用户问过的技术名词 → 解释，保证口径一致，按用户隔离）
 CREATE TABLE IF NOT EXISTS jargon_terms (
-  term TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT '',
+  term TEXT NOT NULL,
   explanation TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  times_used INTEGER DEFAULT 0
+  times_used INTEGER DEFAULT 0,
+  PRIMARY KEY(user_id, term)
 );
 
--- ⑪ 风格范例（用户满意的回复，few-shot 注入）
+-- ⑪ 风格范例（用户满意的回复，few-shot 注入，按用户隔离）
 CREATE TABLE IF NOT EXISTS style_examples (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -136,9 +147,10 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at TEXT NOT NULL
 );
 
--- ⑭ 目标（Goal 系统：用户的目标与进度，周报核对）
+-- ⑭ 目标（Goal 系统：用户的目标与进度，周报核对，按用户隔离）
 CREATE TABLE IF NOT EXISTS goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   status TEXT DEFAULT 'active',    -- active / done / paused
   progress TEXT DEFAULT '',        -- 进度备注
@@ -146,9 +158,10 @@ CREATE TABLE IF NOT EXISTS goals (
   updated_at TEXT NOT NULL
 );
 
--- ⑮ 未解决问题（unresolved：聊到一半被打断的话题）
+-- ⑮ 未解决问题（unresolved：聊到一半被打断的话题，按用户隔离）
 CREATE TABLE IF NOT EXISTS unresolved_issues (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
   topic TEXT NOT NULL,
   context TEXT DEFAULT '',
   status TEXT DEFAULT 'open',      -- open / resolved
@@ -228,6 +241,158 @@ _MIGRATIONS = [
     "ALTER TABLE executor_commands ADD COLUMN claimed_at TEXT",
 ]
 
+
+def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    return any(r[1] == col for r in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
+def _drop_legacy_fts(conn: sqlite3.Connection) -> None:
+    """老 FTS 表缺 user_id → 先删，让 _SCHEMA 用新结构重建。
+
+    两个坑逼出这个函数：①FTS5 虚表无法 ALTER 加列；②CREATE VIRTUAL TABLE
+    IF NOT EXISTS 对"已存在但 schema 不匹配"的虚表仍会抛 OperationalError
+    （IF NOT EXISTS 拦不住）——不先删的话整个 executescript 中途失败回滚，
+    连增量迁移都跑不到。数据无损：memories 原表不动，_fts_backfill 重建索引。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+    ).fetchone()
+    if row and "user_id" not in (row[0] or ""):
+        conn.execute("DROP TABLE memories_fts")
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _migrate_user_id(conn: sqlite3.Connection) -> None:
+    """v0.4 多人支持：8 张用户态表加 user_id 列，老数据回填主人身份。
+
+    简单加列用于无主键/唯一约束冲突的表；单列主键（profile/concerns/
+    jargon_terms）与三列唯一约束（facts）必须重建表。全部幂等：
+    有 user_id 列即跳过，回填只碰 user_id='' 的行；表缺失则跳过
+    （部分建成的残库也能迁，不因一张表缺位全盘失败）。
+    主人身份 = settings.qq_admin_id（QQ 推送已配），未配置回退 'owner'。
+    """
+    owner = settings.qq_admin_id.strip() or "owner"
+
+    # ① 简单加列（代理主键表；表缺失跳过）
+    for t in ("memories", "goals", "unresolved_issues", "style_examples"):
+        try:
+            if _table_exists(conn, t) and not _column_exists(conn, t, "user_id"):
+                conn.execute(
+                    f"ALTER TABLE {t} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+                )
+        except sqlite3.OperationalError:
+            pass
+
+    # ② 重建型：facts（UNIQUE 三列 → 四列）
+    if _table_exists(conn, "facts") and not _column_exists(conn, "facts", "user_id"):
+        conn.executescript(
+            """
+            CREATE TABLE facts_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id TEXT NOT NULL DEFAULT '',
+              subject TEXT NOT NULL,
+              predicate TEXT NOT NULL,
+              object TEXT NOT NULL,
+              source_memory_id INTEGER,
+              confidence REAL DEFAULT 0.7,
+              updated_at TEXT NOT NULL,
+              UNIQUE(user_id, subject, predicate, object)
+            );
+            INSERT INTO facts_new (id, subject, predicate, object, source_memory_id,
+                                   confidence, updated_at)
+              SELECT id, subject, predicate, object, source_memory_id,
+                     confidence, updated_at FROM facts;
+            DROP TABLE facts;
+            ALTER TABLE facts_new RENAME TO facts;
+            """
+        )
+
+    # ③ 重建型：profile（主键 → (user_id, dimension)）
+    if _table_exists(conn, "profile") and not _column_exists(conn, "profile", "user_id"):
+        conn.executescript(
+            """
+            CREATE TABLE profile_new (
+              user_id TEXT NOT NULL DEFAULT '',
+              dimension TEXT NOT NULL,
+              value TEXT NOT NULL,
+              confidence REAL DEFAULT 0.5,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(user_id, dimension)
+            );
+            INSERT INTO profile_new (dimension, value, confidence, updated_at)
+              SELECT dimension, value, confidence, updated_at FROM profile;
+            DROP TABLE profile;
+            ALTER TABLE profile_new RENAME TO profile;
+            """
+        )
+
+    # ④ 重建型：concerns（主键 → (user_id, topic)）
+    if _table_exists(conn, "concerns") and not _column_exists(conn, "concerns", "user_id"):
+        conn.executescript(
+            """
+            CREATE TABLE concerns_new (
+              user_id TEXT NOT NULL DEFAULT '',
+              topic TEXT NOT NULL,
+              mention_count INTEGER DEFAULT 1,
+              last_mentioned_at TEXT NOT NULL,
+              PRIMARY KEY(user_id, topic)
+            );
+            INSERT INTO concerns_new (topic, mention_count, last_mentioned_at)
+              SELECT topic, mention_count, last_mentioned_at FROM concerns;
+            DROP TABLE concerns;
+            ALTER TABLE concerns_new RENAME TO concerns;
+            """
+        )
+
+    # ⑤ 重建型：jargon_terms（主键 → (user_id, term)）
+    if _table_exists(conn, "jargon_terms") and not _column_exists(conn, "jargon_terms", "user_id"):
+        conn.executescript(
+            """
+            CREATE TABLE jargon_terms_new (
+              user_id TEXT NOT NULL DEFAULT '',
+              term TEXT NOT NULL,
+              explanation TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              times_used INTEGER DEFAULT 0,
+              PRIMARY KEY(user_id, term)
+            );
+            INSERT INTO jargon_terms_new (term, explanation, created_at, times_used)
+              SELECT term, explanation, created_at, times_used FROM jargon_terms;
+            DROP TABLE jargon_terms;
+            ALTER TABLE jargon_terms_new RENAME TO jargon_terms;
+            """
+        )
+
+    # ⑥ 老数据回填主人身份（幂等：只碰 user_id='' 的行；表缺失跳过）
+    for t in ("memories", "facts", "profile", "concerns", "jargon_terms",
+              "style_examples", "goals", "unresolved_issues"):
+        try:
+            if _table_exists(conn, t):
+                conn.execute(
+                    f"UPDATE {t} SET user_id = ? WHERE user_id = ''", (owner,)
+                )
+        except sqlite3.OperationalError:
+            pass
+
+    # ⑦ 依赖 user_id 的索引（加列之后再建，避免老库 executescript 中途炸）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, id)")
+
+    # ⑧ 兜底重建 FTS 表：主 schema 脚本若因老库中途失败，FTS 可能漏建；
+    #    IF NOT EXISTS 幂等，数据由 init_db 末尾的 _fts_backfill 回填
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
+        "memory_id UNINDEXED, user_id UNINDEXED, grams)"
+    )
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5("
+        "chunk_id UNINDEXED, grams)"
+    )
+
 # 向量表（sqlite-vec 虚拟表）。
 # 单独拆分：扩展不可用时 init_db 跳过此段，基础功能不受影响。
 # 维度跟随 .env 的 EMBEDDING_DIMENSION（不同向量模型维度不同：1024 / 2048）。
@@ -247,6 +412,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
 FTS_TABLE_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   memory_id UNINDEXED,
+  user_id UNINDEXED,   -- 按用户隔离检索：查询时 WHERE user_id = ?
   grams
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -345,22 +511,30 @@ def reset_connections() -> None:
 def init_db() -> None:
     conn = connect()
     try:
+        _drop_legacy_fts(conn)  # 老 FTS 缺 user_id 先删（虚表 schema 冲突会炸 executescript）
         conn.executescript(_SCHEMA)
+    except sqlite3.OperationalError as e:
+        # sqlite-vec 未安装时虚拟表建表失败：回滚，改用基础表（向量检索自动退化）
+        conn.rollback()
+        try:
+            _drop_legacy_fts(conn)
+            conn.executescript(_SCHEMA.replace(VEC_TABLE_SQL, ""))
+            logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
+        except sqlite3.OperationalError:
+            pass
+    # 增量迁移：两条建表路径（vec 可用/降级）都要跑——老库升级加列与 user_id 迁移
+    try:
         for sql in _MIGRATIONS:
             try:
                 conn.execute(sql)
             except sqlite3.OperationalError:
                 pass  # 列已存在（新库由 schema 直接建出）
+        _migrate_user_id(conn)  # v0.4 多人支持：老库加 user_id 并回填
         conn.commit()
     except sqlite3.OperationalError as e:
-        # sqlite-vec 未安装时虚拟表建表失败：回滚，改用基础表（向量检索自动退化）
+        # 极端情况（连基础表都没建成）下放弃迁移，功能退化为 v0.3 行为
         conn.rollback()
-        try:
-            conn.executescript(_SCHEMA.replace(VEC_TABLE_SQL, ""))
-            conn.commit()
-            logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
-        except sqlite3.OperationalError:
-            pass
+        logger.warning("增量迁移失败（基础表缺失？）: %s", e)
     finally:
         conn.close()
 

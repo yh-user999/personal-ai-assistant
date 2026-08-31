@@ -8,11 +8,14 @@ from datetime import datetime, timedelta, timezone
 from app.models.database import connect
 
 
-def upsert_concerns(topics: list[str]) -> int:
+def upsert_concerns(topics: list[str], user_id: str | None = None) -> int:
     """话题提及：存在则计数+1 并刷新时间，否则新建。返回更新的条数。"""
     if not topics:
         return 0
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     topics = [sanitize(t or "") for t in topics]
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()
@@ -22,12 +25,12 @@ def upsert_concerns(topics: list[str]) -> int:
             if not t:
                 continue
             conn.execute(
-                """INSERT INTO concerns (topic, mention_count, last_mentioned_at)
-                   VALUES (?, 1, ?)
-                   ON CONFLICT(topic) DO UPDATE SET
+                """INSERT INTO concerns (user_id, topic, mention_count, last_mentioned_at)
+                   VALUES (?, ?, 1, ?)
+                   ON CONFLICT(user_id, topic) DO UPDATE SET
                      mention_count = mention_count + 1,
                      last_mentioned_at = excluded.last_mentioned_at""",
-                (t, now),
+                (uid, t, now),
             )
         conn.commit()
     finally:
@@ -35,14 +38,17 @@ def upsert_concerns(topics: list[str]) -> int:
     return len(topics)
 
 
-def get_concerns_injection(limit: int = 6) -> str:
+def get_concerns_injection(limit: int = 6, user_id: str | None = None) -> str:
     """当前关切注入：最近提及的话题（含次数）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         rows = conn.execute(
             """SELECT topic, mention_count, last_mentioned_at FROM concerns
-               ORDER BY last_mentioned_at DESC LIMIT ?""",
-            (limit,),
+               WHERE user_id = ? ORDER BY last_mentioned_at DESC LIMIT ?""",
+            (uid, limit),
         ).fetchall()
     finally:
         conn.close()
@@ -60,16 +66,19 @@ def get_concerns_injection(limit: int = 6) -> str:
     return "\n".join(parts)
 
 
-def get_stale_concerns(days: int = 3) -> list[dict]:
+def get_stale_concerns(days: int = 3, user_id: str | None = None) -> list[dict]:
     """超过 days 天没再提及、且曾经至少提过 2 次的关切（需要提醒的）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     conn = connect()
     try:
         rows = conn.execute(
             """SELECT topic, mention_count, last_mentioned_at FROM concerns
-               WHERE mention_count >= 2 AND last_mentioned_at < ?
+               WHERE user_id = ? AND mention_count >= 2 AND last_mentioned_at < ?
                ORDER BY last_mentioned_at ASC""",
-            (cutoff,),
+            (uid, cutoff),
         ).fetchall()
     finally:
         conn.close()

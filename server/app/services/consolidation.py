@@ -30,17 +30,17 @@ CONSOLIDATION_PROMPT = """你是记忆整合系统，只输出 JSON。
 """
 
 
-async def consolidate_recent(hours: int = 2) -> dict:
-    """整合最近 hours 小时内的、尚未整合的用户消息。"""
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+async def _consolidate_user(uid: str, since: str) -> int:
+    """整合单个用户窗口内的未整合消息（v0.4 多人隔离版）。"""
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, content, ts FROM memories WHERE sender='user' AND summary='' AND ts >= ? ORDER BY ts LIMIT 50",
-            (since,),
+            "SELECT id, content, ts FROM memories WHERE user_id=? AND sender='user' "
+            "AND summary='' AND ts >= ? ORDER BY ts LIMIT 50",
+            (uid, since),
         ).fetchall()
         if not rows:
-            return {"messages": 0}
+            return 0
         conversation = "\n".join(f"{r['ts'][:16]} {r['content']}" for r in rows)
         ids = [r["id"] for r in rows]
     finally:
@@ -53,10 +53,10 @@ async def consolidate_recent(hours: int = 2) -> dict:
     summary = result.get("summary", "")
     topics = result.get("topics", [])
 
-    # 关切追踪：本批话题更新关切表（提及次数+1、刷新时间）
+    # 关切追踪：本批话题更新关切表（提及次数+1、刷新时间），限定当前用户
     from app.services.concern_tracker import upsert_concerns
 
-    upsert_concerns(topics)
+    upsert_concerns(topics, user_id=uid)
 
     conn = connect()
     try:
@@ -80,13 +80,31 @@ async def consolidate_recent(hours: int = 2) -> dict:
             if not (subj and pred and obj):
                 continue
             conn.execute(
-                """INSERT INTO facts (subject, predicate, object, source_memory_id, confidence, updated_at)
-                   VALUES (?, ?, ?, ?, 0.7, ?)
-                   ON CONFLICT(subject, predicate, object)
+                """INSERT INTO facts (user_id, subject, predicate, object, source_memory_id, confidence, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0.7, ?)
+                   ON CONFLICT(user_id, subject, predicate, object)
                    DO UPDATE SET updated_at=excluded.updated_at""",
-                (subj, pred, obj, ids[0], now),
+                (uid, subj, pred, obj, ids[0], now),
             )
         conn.commit()
-        return {"messages": len(rows), "summary": summary, "facts": len(result.get("facts", []))}
+        return len(rows)
     finally:
         conn.close()
+
+
+async def consolidate_recent(hours: int = 2) -> dict:
+    """整合最近 hours 小时内、尚未整合的用户消息（按用户逐个隔离整合）。"""
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM memories WHERE sender='user' AND summary='' AND ts >= ?",
+            (since,),
+        ).fetchall()
+    finally:
+        conn.close()
+    users = [r["user_id"] for r in rows if r["user_id"]]
+    total = 0
+    for uid in users:
+        total += await _consolidate_user(uid, since)
+    return {"messages": total}

@@ -30,14 +30,17 @@ def parse_goal_command(msg: str) -> tuple[str, str] | None:
     return None
 
 
-def add_goal(title: str) -> int:
+def add_goal(title: str, user_id: str | None = None) -> int:
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     title = sanitize(title)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO goals (title, created_at, updated_at) VALUES (?, ?, ?)",
-            (title, _now(), _now()),
+            "INSERT INTO goals (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (uid, title, _now(), _now()),
         )
         conn.commit()
         return cur.lastrowid
@@ -45,16 +48,19 @@ def add_goal(title: str) -> int:
         conn.close()
 
 
-def complete_goal(title: str) -> bool:
+def complete_goal(title: str, user_id: str | None = None) -> bool:
     """按标题模糊匹配最近活跃目标标记完成。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         cur = conn.execute(
             """UPDATE goals SET status='done', updated_at=?
-               WHERE status='active' AND title LIKE ? AND id = (
-                 SELECT id FROM goals WHERE status='active' AND title LIKE ?
+               WHERE user_id=? AND status='active' AND title LIKE ? AND id = (
+                 SELECT id FROM goals WHERE user_id=? AND status='active' AND title LIKE ?
                  ORDER BY id DESC LIMIT 1)""",
-            (_now(), f"%{title}%", f"%{title}%"),
+            (_now(), uid, f"%{title}%", uid, f"%{title}%"),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -62,14 +68,18 @@ def complete_goal(title: str) -> bool:
         conn.close()
 
 
-def update_progress(title_or_text: str) -> bool:
+def update_progress(title_or_text: str, user_id: str | None = None) -> bool:
     """"XX 做到第5周" 或 "目标进度：XX" → 更新最近活跃目标进度。"""
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     title_or_text = sanitize(title_or_text)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, title FROM goals WHERE status='active' ORDER BY id DESC LIMIT 1"
+            "SELECT id, title FROM goals WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (uid,),
         ).fetchall()
     finally:
         conn.close()
@@ -93,12 +103,16 @@ def update_progress(title_or_text: str) -> bool:
         conn.close()
 
 
-def get_goals_injection() -> str:
-    """活跃目标注入（含进度）。"""
+def get_goals_injection(user_id: str | None = None) -> str:
+    """活跃目标注入（含进度，限定当前用户）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT title, progress FROM goals WHERE status='active' ORDER BY id DESC LIMIT 5"
+            "SELECT title, progress FROM goals WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 5",
+            (uid,),
         ).fetchall()
     finally:
         conn.close()
@@ -108,12 +122,16 @@ def get_goals_injection() -> str:
     return "\n".join(parts)
 
 
-def get_all_goals_text() -> str:
-    """全部目标（周报核对用，含状态）。"""
+def get_all_goals_text(user_id: str | None = None) -> str:
+    """全部目标（周报核对用，含状态，限定当前用户）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT title, status, progress FROM goals ORDER BY id DESC LIMIT 10"
+            "SELECT title, status, progress FROM goals WHERE user_id=? ORDER BY id DESC LIMIT 10",
+            (uid,),
         ).fetchall()
     finally:
         conn.close()

@@ -15,16 +15,19 @@ def detect_positive_feedback(text: str) -> bool:
     return bool(_POSITIVE_RE.search(text)) and len(text) < 80  # 短消息才可能是反馈
 
 
-def save_example(content: str) -> int:
+def save_example(content: str, user_id: str | None = None) -> int:
     """存一条风格范例（用户满意的 AI 回复，入库前统一脱敏）。"""
     from datetime import datetime, timezone
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     content = sanitize(content)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO style_examples (content, created_at) VALUES (?, ?)",
-            (content[:400], datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO style_examples (user_id, content, created_at) VALUES (?, ?, ?)",
+            (uid, content[:400], datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
         return cur.lastrowid
@@ -32,12 +35,16 @@ def save_example(content: str) -> int:
         conn.close()
 
 
-def get_examples_injection(limit: int = 2) -> str:
-    """最近 N 条风格范例，few-shot 注入。"""
+def get_examples_injection(limit: int = 2, user_id: str | None = None) -> str:
+    """最近 N 条风格范例，few-shot 注入（限定当前用户）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT content FROM style_examples ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT content FROM style_examples WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (uid, limit),
         ).fetchall()
     finally:
         conn.close()

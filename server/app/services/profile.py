@@ -39,15 +39,24 @@ REFLECT_PROMPT = """你是用户画像分析师。基于本周提取的事实三
 
 
 async def refresh_profile() -> dict:
-    """读取本周 facts + 现有画像 → LLM 输出更新 → 写回。"""
+    """读取本周 facts + 现有画像 → LLM 输出更新 → 写回。
+
+    v0.4：定时画像刷新只服务主人（访客不建画像）；读本周 facts 与画像
+    均限定主人 user_id。
+    """
+    from app.core.memory import owner_user_id
+
+    uid = owner_user_id()
     conn = connect()
     try:
         week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         facts = conn.execute(
-            "SELECT subject, predicate, object FROM facts WHERE updated_at >= ? LIMIT 100",
-            (week_start,),
+            "SELECT subject, predicate, object FROM facts WHERE user_id=? AND updated_at >= ? LIMIT 100",
+            (uid, week_start),
         ).fetchall()
-        existing = conn.execute("SELECT dimension, value, confidence FROM profile").fetchall()
+        existing = conn.execute(
+            "SELECT dimension, value, confidence FROM profile WHERE user_id=?", (uid,)
+        ).fetchall()
     finally:
         conn.close()
 
@@ -71,11 +80,11 @@ async def refresh_profile() -> dict:
             if dim not in DIMENSIONS:
                 continue
             conn.execute(
-                """INSERT INTO profile (dimension, value, confidence, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(dimension) DO UPDATE
+                """INSERT INTO profile (user_id, dimension, value, confidence, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, dimension) DO UPDATE
                    SET value=excluded.value, confidence=excluded.confidence, updated_at=excluded.updated_at""",
-                (dim, u.get("value", ""), float(u.get("confidence", 0.5)), now),
+                (uid, dim, u.get("value", ""), float(u.get("confidence", 0.5)), now),
             )
             updated += 1
         conn.commit()
@@ -84,11 +93,16 @@ async def refresh_profile() -> dict:
     return {"updated": updated}
 
 
-def get_profile_injection() -> str:
-    """返回注入 prompt 的画像文本。"""
+def get_profile_injection(user_id: str | None = None) -> str:
+    """返回注入 prompt 的画像文本（v0.4：限定当前用户）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
-        rows = conn.execute("SELECT dimension, value FROM profile WHERE confidence >= 0.5").fetchall()
+        rows = conn.execute(
+            "SELECT dimension, value FROM profile WHERE user_id=? AND confidence >= 0.5", (uid,)
+        ).fetchall()
     finally:
         conn.close()
     if not rows:

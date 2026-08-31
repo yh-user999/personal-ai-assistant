@@ -85,8 +85,8 @@ def test_bm25_memories_rare_term_wins():
             "VALUES ('user', ?, '', '[]', '2026-08-28T00:00:00+00:00', 1.0)",
             (f"今天天气不错，继续写代码 {i}",),
         )
-        memory._fts_insert(conn, cur2.lastrowid, f"今天天气不错，继续写代码 {i}", "")
-    memory._fts_insert(conn, cur.lastrowid, "李羽的能力设定是杀人变强", "")
+        memory._fts_insert(conn, cur2.lastrowid, "owner", f"今天天气不错，继续写代码 {i}", "")
+    memory._fts_insert(conn, cur.lastrowid, "owner", "李羽的能力设定是杀人变强", "")
     conn.commit()
     conn.close()
     hits = memory._bm25_memories("李羽的能力是杀人变强吗", top_k=3)
@@ -113,8 +113,8 @@ def test_deep_keyword_search_matches_grams():
         "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
         "VALUES ('assistant', '好的，设定记下了', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
     )
-    memory._fts_insert(conn, cur1.lastrowid, "少爷的背景势力是地方豪强", "")
-    memory._fts_insert(conn, cur2.lastrowid, "好的，设定记下了", "")
+    memory._fts_insert(conn, cur1.lastrowid, "owner", "少爷的背景势力是地方豪强", "")
+    memory._fts_insert(conn, cur2.lastrowid, "owner", "好的，设定记下了", "")
     conn.commit()
     conn.close()
     hits = memory.deep_keyword_search("少爷的背景势力", top_k=3)

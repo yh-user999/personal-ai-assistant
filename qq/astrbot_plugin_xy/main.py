@@ -201,6 +201,7 @@ class XiaoYuePlugin(Star):
         # （否则陌生人私聊在 whitelist_check 阶段就被拦、到不了本插件），
         # 群聊事件因此会到达所有插件——这里 stop_event 兜底，阻止后续插件响应。
         if group:
+            logger.info("[xy] 群聊静默 stop_event group=%s sender=%s", group, sender)
             event.stop_event()
             event.should_call_llm(True)
             return

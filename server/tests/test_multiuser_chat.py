@@ -97,7 +97,7 @@ def test_guest_chat_isolated_context(env, captured):
 
     # 访客边界声明注入
     assert "QQ 用户 10002（访客" in system
-    assert "只有主人能用" in system
+    assert "功能对你不可用" in system
     # 主人数据零注入
     assert "青鸾" not in system, "主人的事实泄漏给访客"
     assert "回复别用 emoji" not in system, "主人的教训泄漏给访客"

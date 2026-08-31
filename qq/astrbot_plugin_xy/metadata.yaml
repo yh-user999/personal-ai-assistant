@@ -1,7 +1,7 @@
 name: astrbot_plugin_xy
 display_name: 小月接入
-desc: 小月 QQ 接入（借壳小白）：主人私聊直达小月服务（记忆/知识/命令全复用）；群聊一律静默（零个人信息暴露）；陌生私聊不理会。
-version: v1.3.0
+desc: 小月 QQ 接入（借壳小白）：私聊直达小月服务（多人按 QQ 号隔离记忆）；群聊一律静默（零个人信息暴露）。
+version: v1.4.0
 author: xy
 repo: https://github.com/yh-user999/personal-ai-assistant
 astrbot_version: ">=4.14.0"

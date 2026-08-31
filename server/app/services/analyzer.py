@@ -15,6 +15,7 @@ from app.models.database import connect
 
 def weekly_stats(days: int = 7) -> dict:
     """周报用的统计摘要（键值对，直接给 LLM）。"""
+    from app.core.memory import owner_user_id
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     conn = connect()
     try:
@@ -36,9 +37,10 @@ def weekly_stats(days: int = 7) -> dict:
             "SELECT COUNT(*) AS cnt FROM behavior_events WHERE kind='git_commit' AND start_ts >= ?",
             (since,),
         ).fetchone()["cnt"]
-        # 对话条数
+        # 对话条数（主人专属统计，v0.4 不含访客）
         msgs = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ?", (since,)
+            "SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ? AND user_id IN (?, '')",
+            (since, owner_user_id()),
         ).fetchone()["cnt"]
     finally:
         conn.close()
@@ -58,16 +60,18 @@ def weekly_stats(days: int = 7) -> dict:
 
 
 def top_topics(days: int = 7, limit: int = 5) -> list[dict]:
-    """热点话题：近 days 天 memories.topics 出现频次 Top-N。"""
+    """热点话题：近 days 天 memories.topics 出现频次 Top-N（主人专属，v0.4）。"""
     from collections import Counter
+
+    from app.core.memory import owner_user_id
 
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     counter: Counter = Counter()
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ?",
-            (since,),
+            "SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND user_id IN (?, '')",
+            (since, owner_user_id()),
         )
         for r in rows:
             try:
@@ -100,6 +104,19 @@ async def evict_stale() -> dict:
                 "SELECT id FROM memories WHERE ts < ? AND importance < 1.0", (chat_cutoff,)
             ).fetchall()
         ]
+        # v0.4 访客记忆更激进：30 天直接删（不限 importance——访客确认过的
+        # 设定已进 facts 层永久保留，原始聊天流水不必长留；也防陌生人灌库）
+        from app.core.memory import owner_user_id
+
+        guest_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        guest_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM memories WHERE ts < ? AND user_id NOT IN (?, '')",
+                (guest_cutoff, owner_user_id()),
+            ).fetchall()
+        ]
+        stale_ids = list(dict.fromkeys(stale_ids + guest_ids))
         if stale_ids:
             from app.core.memory import _fts_delete
 
@@ -110,8 +127,9 @@ async def evict_stale() -> dict:
                 except sqlite3.OperationalError:
                     pass  # sqlite-vec 未安装时基础功能仍可淘汰记忆
         n2 = conn.execute(
-            "DELETE FROM memories WHERE ts < ? AND importance < 1.0", (chat_cutoff,)
-        ).rowcount
+            "DELETE FROM memories WHERE id IN ({})".format(",".join("?" * len(stale_ids))),
+            stale_ids,
+        ).rowcount if stale_ids else 0
         # FTS5 不是外键表，先删索引再删 memories，避免孤儿索引长期膨胀。
         conn.commit()
         return {"deleted_noise": n1, "deleted_chat": n2}

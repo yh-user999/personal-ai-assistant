@@ -238,6 +238,9 @@ async def search_knowledge(query: str, top_k: int = 3, method: str = "hybrid") -
     支持人物别名多查询融合（小说知识库策划数据）：同一角色的多个名字
     （如 左志诚=左擎苍）各自检索后再按排名融合——跨名字指代的剧情问题
     才能命中"事件发生时的名字"所在场景。
+
+    v0.4：embedding 调用加降级保护——向量服务故障时退化为关键词检索，
+    不再让整个聊天请求 500（与记忆检索的降级策略一致）。
     """
     queries = [query]
     for alias, alts in NOVEL_ALIASES.items():
@@ -245,30 +248,34 @@ async def search_knowledge(query: str, top_k: int = 3, method: str = "hybrid") -
             for alt in alts:
                 if alt not in query:
                     queries.append(query.replace(alias, alt))
-    if len(queries) == 1:
-        if method == "vector":
-            return await _vector_search(query, top_k)
-        return await hybrid_search(query, top_k)
+    try:
+        if len(queries) == 1:
+            if method == "vector":
+                return await _vector_search(query, top_k)
+            return await hybrid_search(query, top_k)
 
-    # 多变体 RRF 融合：每个变体 top_k 个候选按排名加权合并
-    by_id: dict[int, dict] = {}
-    merged: dict[int, float] = {}
-    for q in queries:
-        hits = (
-            await hybrid_search(q, top_k)
-            if method == "hybrid"
-            else await _vector_search(q, top_k)
-        )
-        for rank, h in enumerate(hits, 1):
-            by_id[h["id"]] = h
-            merged[h["id"]] = merged.get(h["id"], 0) + 1 / (60 + rank)
-    ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
-    out = []
-    for cid, score in ranked:
-        item = dict(by_id[cid])
-        item["rrf"] = round(score, 4)
-        out.append(item)
-    return out
+        # 多变体 RRF 融合：每个变体 top_k 个候选按排名加权合并
+        by_id: dict[int, dict] = {}
+        merged: dict[int, float] = {}
+        for q in queries:
+            hits = (
+                await hybrid_search(q, top_k)
+                if method == "hybrid"
+                else await _vector_search(q, top_k)
+            )
+            for rank, h in enumerate(hits, 1):
+                by_id[h["id"]] = h
+                merged[h["id"]] = merged.get(h["id"], 0) + 1 / (60 + rank)
+        ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
+        out = []
+        for cid, score in ranked:
+            item = dict(by_id[cid])
+            item["rrf"] = round(score, 4)
+            out.append(item)
+        return out
+    except Exception as e:
+        logger.warning("知识库检索失败，退化为空候选: %s", e)
+        return []
 
 
 def expand_chunks(hits: list[dict], radius: int = 1, max_chars: int = 4000) -> list[dict]:

@@ -48,10 +48,17 @@ content 格式要求（Markdown，共 3-5 行）：
 
 
 async def run_daily_summary() -> dict:
-    """生成今天的每日小结并存储。返回 {date, content} 或 {'skipped': True}。"""
+    """生成今天的每日小结并存储。返回 {date, content} 或 {'skipped': True}。
+
+    v0.4：日报是主人专属——对话摘要只读主人自己的（访客数据不混入）。
+    """
+    from app.core.memory import _user_scope, owner_user_id
+
     now = datetime.now(TZ)
     today = now.date().isoformat()
     day_start = datetime(now.year, now.month, now.day, tzinfo=TZ).isoformat()
+    owner = owner_user_id()
+    clause, uargs = _user_scope(owner)
 
     conn = connect()
     try:
@@ -62,8 +69,8 @@ async def run_daily_summary() -> dict:
         if exists:
             return {"skipped": True, "reason": "今日小结已存在"}
         summaries = conn.execute(
-            "SELECT summary, topics FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? LIMIT 50",
-            (day_start,),
+            f"SELECT summary, topics FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} LIMIT 50",
+            (day_start, *uargs),
         ).fetchall()
         logs = conn.execute(
             "SELECT time_range, content FROM work_log WHERE date=? ORDER BY id LIMIT 20", (today,)

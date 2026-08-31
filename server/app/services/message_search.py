@@ -59,8 +59,15 @@ def _snippet(content: str, terms: list[str]) -> str:
     return prefix + text[start:end] + suffix
 
 
-def search_messages(keyword: str, limit: int = MAX_HITS) -> dict:
-    """返回 {"query": kw, "total": N, "results": [显示就绪的命中]}。"""
+def search_messages(keyword: str, limit: int = MAX_HITS, user_id: str | None = None) -> dict:
+    """返回 {"query": kw, "total": N, "results": [显示就绪的命中]}。
+
+    v0.4：只搜当前用户自己的聊天记录（主人兼容回填前的 '' 行）。
+    """
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, uargs = _user_scope(uid)
     terms = _split_terms(keyword)
     if not terms:
         return {"query": keyword, "total": 0, "results": []}
@@ -76,12 +83,13 @@ def search_messages(keyword: str, limit: int = MAX_HITS) -> dict:
     conn = connect()
     try:
         total = conn.execute(
-            f"SELECT COUNT(*) AS n FROM memories WHERE {where}", params
+            f"SELECT COUNT(*) AS n FROM memories WHERE {clause} AND {where}",
+            (*uargs, *params),
         ).fetchone()["n"]
         rows = conn.execute(
-            f"SELECT id, sender, content, ts FROM memories WHERE {where} "
+            f"SELECT id, sender, content, ts FROM memories WHERE {clause} AND {where} "
             "ORDER BY id DESC LIMIT ?",
-            (*params, limit),
+            (*uargs, *params, limit),
         ).fetchall()
     finally:
         conn.close()
@@ -111,9 +119,9 @@ def _db_to_local(iso: str) -> str:
     return dt.astimezone(TZ).strftime("%m-%d %H:%M")
 
 
-def format_results(keyword: str) -> str:
+def format_results(keyword: str, user_id: str | None = None) -> str:
     """聊天命令回复格式。"""
-    payload = search_messages(keyword)
+    payload = search_messages(keyword, user_id=user_id)
     hits = payload["results"]
     if not hits:
         return f"🔍 没有在聊天记录里找到「{keyword}」"

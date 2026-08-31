@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("assistant")
 
-APP_VERSION = "0.3.0"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用
+APP_VERSION = "0.4.0"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用（v0.4 多人隔离）
 
 
 @asynccontextmanager

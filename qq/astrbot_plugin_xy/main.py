@@ -1,13 +1,19 @@
-"""小月 QQ 接入插件 v1.3（借壳小白，第 8 课）。
+"""小月 QQ 接入插件 v1.4（借壳小白，第 8 课 + 第 9 课多人支持）。
 
 路由规则（隐私优先）：
 - 群聊：一律静默（should_call_llm(True) 禁止默认 LLM，零个人信息暴露）
-- 私聊：仅主人 QQ（owner_qq）→ 直调小月服务 /api/chat，直接 event.send 回复
-- 陌生私聊：静默
+- 私聊：任何 QQ 用户都能聊（v1.4 多人支持）——透传 sender QQ 号给
+  小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
+- 陌生私聊：可聊，但仅限对话；主人专属功能（执行器/提醒/文件入库等）只在主人会话生效
+- 文件入库：仅主人私聊可用（should_handle 白名单，与 v1.3 相同）
+
+v1.4 多人支持：
+- /api/chat 请求带 user_id=sender（QQ 号），小月按人隔离记忆/事实/目标
+- 群聊静默、owner 未配置 fail-closed 不变；访客不 stop_event（不挡其他插件）
 
 v1.3 新增：主人发文件 → 自动入库知识库
 - 支持 .txt/.md/.csv（直读）与 .docx/.pdf（解析提取）
-- 大小上限 2MB；同名文件覆盖旧版（ingest 按 doc_name 幂等）
+- 大小上限 10MB；同名文件覆盖旧版（ingest 按 doc_name 幂等）
 - 仅主人私聊可用（should_handle 白名单，与文本消息同闸门）
 - 临时文件入库后即删
 
@@ -92,7 +98,7 @@ def to_host_path(p: str, path_map=_DEFAULT_PATH_MAP) -> str:
 
 
 def should_handle(sender: str, group: str, owner_qq: str) -> bool:
-    """白名单判定（纯函数，可单测）。
+    """主人专属闸门（纯函数，可单测）——文件入库等主人功能用。
 
     规则：群聊一律不处理（隐私铁律）；owner 未配置=全拒（fail-closed）；
     仅主人私聊返回 True。
@@ -103,6 +109,19 @@ def should_handle(sender: str, group: str, owner_qq: str) -> bool:
     if not owner or str(sender or "").strip() != owner:
         return False
     return True
+
+
+def can_chat(sender: str, group: str, owner_qq: str) -> bool:
+    """聊天放行判定（v1.4 多人支持，纯函数，可单测）。
+
+    规则：群聊一律不处理；owner 未配置=全拒（fail-closed，与 v1.3 一致）；
+    私聊（含陌生人）一律放行——小月服务端按 sender QQ 号隔离记忆。
+    """
+    if group:
+        return False
+    if not str(owner_qq or "").strip():
+        return False  # owner 未配置：无法区分主人/文件权限，宁可全拒
+    return bool(str(sender or "").strip())
 
 
 def extract_text(path: str) -> tuple[str, str]:
@@ -149,8 +168,8 @@ def safe_doc_name(name: str) -> str:
 @register(
     "astrbot_plugin_xy",
     "小月接入",
-    "小月 QQ 接入（借壳小白）：主人私聊直达小月服务，群聊/陌生人静默",
-    "v1.3.0",
+    "小月 QQ 接入（借壳小白）：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
+    "v1.4.0",
 )
 class XiaoYuePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -170,25 +189,29 @@ class XiaoYuePlugin(Star):
         msg = event.get_message_str() or ""
         sender = event.get_sender_id() or ""
         group = event.get_group_id() or ""
+        owner = str(self.cfg.get("owner_qq", "") or "").strip()
 
-        # 白名单（纯函数）：群聊不处理；仅主人私聊放行
-        if not should_handle(sender, group, self.cfg.get("owner_qq", "")):
+        # 群聊一律静默（隐私铁律）；私聊放行闸门（v1.4：陌生人可聊）
+        if not can_chat(sender, group, owner):
             # 仅禁止默认 LLM；不 stop_event，避免影响 meme_manager 等其他插件的事件处理。
             event.should_call_llm(True)
             return
-        event.stop_event()  # 主人消息本插件全权处理，阻断其他处理器
+        # 主人消息本插件全权处理，阻断其他处理器；访客不 stop_event（留给其他插件）
+        if sender == owner:
+            event.stop_event()
 
         # 文件分支（仅主人）：识别 File 组件 → 提取文本 → 入库知识库
-        file_comp = self._find_file_component(event)
-        if file_comp is not None:
-            try:
-                await asyncio.wait_for(
-                    self._handle_file(event, file_comp), timeout=FILE_TOTAL_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[xy] 文件处理超过总时限 %ss", FILE_TOTAL_TIMEOUT)
-                await event.send(MessageChain([Plain("❌ 文件处理超时（35秒），请稍后重发或先压缩文件")]))
-            return
+        if should_handle(sender, group, owner):
+            file_comp = self._find_file_component(event)
+            if file_comp is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._handle_file(event, file_comp), timeout=FILE_TOTAL_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[xy] 文件处理超过总时限 %ss", FILE_TOTAL_TIMEOUT)
+                    await event.send(MessageChain([Plain("❌ 文件处理超时（35秒），请稍后重发或先压缩文件")]))
+                return
 
         if not msg.strip():
             # 空白消息同样拦默认 LLM（v1.2：漏拦会漏进宿主默认 LLM）
@@ -203,9 +226,10 @@ class XiaoYuePlugin(Star):
             return
 
         try:
+            # v1.4：透传 sender QQ 号——小月按人隔离记忆；空/非法值由服务端 400
             r = await self._client.post(
                 f"{base}/api/chat",
-                json={"message": msg.strip()},
+                json={"message": msg.strip(), "user_id": sender},
                 headers={"Authorization": f"Bearer {token}"},
             )
             r.raise_for_status()

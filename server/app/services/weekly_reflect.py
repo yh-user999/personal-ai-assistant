@@ -58,22 +58,31 @@ def _enforce_real_numbers(report: str, stats: dict) -> str:
 
 
 async def run_weekly_reflect() -> dict:
-    """生成本周反思并归档。返回 {week, report}。"""
+    """生成本周反思并归档。返回 {week, report}。
+
+    v0.4：周报是主人专属——记忆/画像只读主人自己的（访客数据不混入）。
+    """
+    from app.core.memory import _user_scope, owner_user_id
+
     now = datetime.now(timezone.utc)
     week = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
     since = (now - timedelta(days=7)).isoformat()
+    owner = owner_user_id()
+    clause, uargs = _user_scope(owner)
 
     conn = connect()
     try:
         summaries = conn.execute(
-            "SELECT summary, topics, ts FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? LIMIT 200",
-            (since,),
+            f"SELECT summary, topics, ts FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} LIMIT 200",
+            (since, *uargs),
         ).fetchall()
         logs = conn.execute(
             "SELECT date, time_range, content, project FROM work_log WHERE created_at >= ?",
             (since,),
         ).fetchall()
-        profile = conn.execute("SELECT dimension, value FROM profile").fetchall()
+        profile = conn.execute(
+            "SELECT dimension, value FROM profile WHERE user_id = ?", (owner,)
+        ).fetchall()
     finally:
         conn.close()
 

@@ -1,11 +1,17 @@
-"""小月 QQ 接入插件 v1.4（借壳小白，第 8 课 + 第 9 课多人支持）。
+"""小月 QQ 接入插件 v1.4.1（借壳小白，第 8 课 + 第 9 课多人支持）。
 
 路由规则（隐私优先）：
-- 群聊：一律静默（should_call_llm(True) 禁止默认 LLM，零个人信息暴露）
+- 群聊：一律静默且 stop_event（v1.4.1 兜底——AstrBot 会话白名单关闭后
+  群聊事件到达所有插件，这里先阻断后续插件响应）
 - 私聊：任何 QQ 用户都能聊（v1.4 多人支持）——透传 sender QQ 号给
   小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
 - 陌生私聊：可聊，但仅限对话；主人专属功能（执行器/提醒/文件入库等）只在主人会话生效
 - 文件入库：仅主人私聊可用（should_handle 白名单，与 v1.3 相同）
+
+v1.4.1：
+- AstrBot enable_id_white_list 必须为 False（否则陌生人私聊在
+  whitelist_check 阶段被 event.stop_event 拦截，插件根本收不到）；
+  群聊静默改由本插件 stop_event 兜底
 
 v1.4 多人支持：
 - /api/chat 请求带 user_id=sender（QQ 号），小月按人隔离记忆/事实/目标
@@ -169,7 +175,7 @@ def safe_doc_name(name: str) -> str:
     "astrbot_plugin_xy",
     "小月接入",
     "小月 QQ 接入（借壳小白）：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
-    "v1.4.0",
+    "v1.4.1",
 )
 class XiaoYuePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -191,7 +197,14 @@ class XiaoYuePlugin(Star):
         group = event.get_group_id() or ""
         owner = str(self.cfg.get("owner_qq", "") or "").strip()
 
-        # 群聊一律静默（隐私铁律）；私聊放行闸门（v1.4：陌生人可聊）
+        # 群聊一律静默（隐私铁律）。v1.4.1：AstrBot 会话白名单已关闭
+        # （否则陌生人私聊在 whitelist_check 阶段就被拦、到不了本插件），
+        # 群聊事件因此会到达所有插件——这里 stop_event 兜底，阻止后续插件响应。
+        if group:
+            event.stop_event()
+            event.should_call_llm(True)
+            return
+        # 私聊放行闸门（v1.4：陌生人可聊；owner 未配置 fail-closed）
         if not can_chat(sender, group, owner):
             # 仅禁止默认 LLM；不 stop_event，避免影响 meme_manager 等其他插件的事件处理。
             event.should_call_llm(True)

@@ -10,6 +10,7 @@ import math
 import random
 from pathlib import Path
 
+import robot_paint
 import theme
 from chat_panel import ChatPanel
 from chat_workers import _HealthWorker, retire
@@ -220,26 +221,9 @@ class FloatingBall(QWidget):
 
     # ── 班德金属风 · 硬核机械版（平顶切角外壳 + 内嵌小屏 + 散热格栅）──
 
-    @staticmethod
-    def _draw_hex(painter: QPainter, cx: float, cy: float, r: float,
-                  fill: QLinearGradient, stroke: QColor) -> None:
-        """六角螺栓（平边朝上），中心带压痕点。"""
-        p = QPainterPath()
-        for i in range(6):
-            ang = math.radians(60 * i)
-            px = cx + r * math.cos(ang)
-            py = cy + r * math.sin(ang)
-            if i == 0:
-                p.moveTo(px, py)
-            else:
-                p.lineTo(px, py)
-        p.closeSubpath()
-        painter.setBrush(fill)
-        painter.setPen(QPen(stroke, 1))
-        painter.drawPath(p)
-        painter.setBrush(QColor(0, 0, 0, 60))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(cx, cy), r * 0.32, r * 0.32)
+    # 六角螺栓绘制已移到 robot_paint.draw_hex_bolt（与 robot_avatar 共用，
+    # 此前两处逐字重复，改一处样式要记得同步另一处）。
+    _draw_hex = staticmethod(robot_paint.draw_hex_bolt)
 
     def _paint_bender(self, painter: QPainter, accent: QColor) -> None:
         limb_color = QColor("#454c5a")

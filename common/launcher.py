@@ -20,6 +20,7 @@ Windows 机器上，共用这一份文件——无需服务器中转，离线可
 """
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -146,9 +147,26 @@ def list_items() -> list[dict]:
     return items
 
 
-def find_item(alias: str, want: str = "open") -> dict | None:
+MIN_FUZZY_LEN = 2  # 模糊匹配的最短别名/查询长度（单字命中会劫持整个 open 通道）
+
+
+def looks_like_path(s: str) -> bool:
+    """目标是否像文件系统路径（盘符/斜杠/UNC）。
+
+    用于 open 的别名解析闸门：用户明确给出路径时不应被模糊匹配劫持——
+    'F:/我的微信资料' 曾因含"微信"子串命中注册项，被启动成 WeChat.exe，
+    等于绕过白名单与扩展名黑名单。
+    """
+    return bool(re.search(r"[A-Za-z]:[/\\]|^[/\\]{1,2}|[/\\]", s or ""))
+
+
+def find_item(alias: str, want: str = "open", strict: bool = False) -> dict | None:
     """按别名找条目。want='open' 需有可打开目标（url/app/shell）；
-    want='template' 需有搜索模板。精确命中 → 模糊包含（用得多、别名短者优先）。"""
+    want='template' 需有搜索模板。精确命中 → 模糊包含（用得多、别名短者优先）。
+
+    strict=True（open 通道使用）：查询形如路径时只允许精确命中，且模糊匹配
+    要求双方长度 ≥ MIN_FUZZY_LEN——防止单字/路径子串劫持成启动白名单外 exe。
+    """
     if not alias.strip():
         return None
     data = load()
@@ -157,6 +175,9 @@ def find_item(alias: str, want: str = "open") -> dict | None:
     field = "template" if want == "template" else None
     if exact is not None and (field is None or field in exact):
         return exact
+    # 查询像路径 → 不做模糊解析，交给白名单/扩展名校验走正常文件打开流程
+    if strict and looks_like_path(alias):
+        return None
     # 模糊：query 包含别名或别名包含 query
     cands = []
     for it in data["items"].values():
@@ -166,6 +187,9 @@ def find_item(alias: str, want: str = "open") -> dict | None:
             continue
         k = _key(it["alias"])
         if k == key:
+            continue
+        # 单字符子串（'微' 命中 '微信'）在 open 通道上等同于任意启动，必须挡住
+        if strict and (len(k) < MIN_FUZZY_LEN or len(key) < MIN_FUZZY_LEN):
             continue
         if k in key or key in k:
             cands.append(it)
@@ -187,15 +211,6 @@ def find_suggestions(alias: str, limit: int = 3) -> list[str]:
             scored.append((-overlap, len(k), it["alias"]))
     scored.sort()
     return [name for _, _, name in scored[:limit]]
-
-
-def bump(alias: str) -> None:
-    """使用次数 +1（接受显示别名，内部归一化）。"""
-    data = load()
-    item = data["items"].get(_key(alias))
-    if item is not None:
-        item["use_count"] = item.get("use_count", 0) + 1
-        save(data)
 
 
 # ── 浏览器与启动 ──────────────────────────────────────────
@@ -248,8 +263,12 @@ def _open_url(url: str, browser: str = "") -> None:
 
 
 def try_launch(target: str, browser: str = "") -> tuple[bool, bool, str]:
-    """open 动作的别名解析入口。返回 (是否命中注册项, 是否成功, 结果文本)。"""
-    item = find_item(target, want="open")
+    """open 动作的别名解析入口。返回 (是否命中注册项, 是否成功, 结果文本)。
+
+    strict=True：这是"别名可指向白名单外路径"的授权通道，解析必须收紧——
+    路径样式的目标与单字模糊匹配都不在此处理，落回调用方的白名单校验。
+    """
+    item = find_item(target, want="open", strict=True)
     if item is None:
         return False, False, ""
     ok, text = launch_item(item, browser)
@@ -283,3 +302,53 @@ def format_list() -> str:
         lines.append(f"· {it['alias']}（{kind}{extra}，用过 {n} 次）")
     lines.append("（补充：记住 打开X = 网址/程序路径；忘掉X 删除）")
     return "\n".join(lines)
+
+
+# ── 使用习惯：时段感知的常用推荐 ────────────────────────────
+# use_count 此前只用于列表排序与模糊匹配 tie-break，没有任何推荐应用；
+# 而 collector 一直在采 app_usage 时长——两份数据打通后才能做"这个点你
+# 通常用 X"。按小时分桶记录每次使用，样本够了就能给时段建议。
+
+_HOUR_BUCKETS = "hours"  # item 内的时段统计字段：{"9": 3, "14": 7}
+
+
+def bump(alias: str) -> None:
+    """使用次数 +1，并按当前小时分桶（接受显示别名，内部归一化）。"""
+    import datetime as _dt
+
+    data = load()
+    item = data["items"].get(_key(alias))
+    if item is None:
+        return
+    item["use_count"] = item.get("use_count", 0) + 1
+    buckets = item.setdefault(_HOUR_BUCKETS, {})
+    hour = str(_dt.datetime.now().hour)
+    buckets[hour] = buckets.get(hour, 0) + 1
+    save(data)
+
+
+def suggest_for_hour(hour: int | None = None, limit: int = 3) -> list[dict]:
+    """当前时段最可能要用的条目。
+
+    评分 = 该时段命中次数 × 3 + 总次数（时段信号权重更高，但样本少时
+    仍由总使用量兜底，避免新注册项永远排不上）。相邻小时也计入一半权重——
+    "上午 9 点常开的东西" 10 点大概也想开。
+    """
+    import datetime as _dt
+
+    if hour is None:
+        hour = _dt.datetime.now().hour
+    scored = []
+    for it in load()["items"].values():
+        if not ({"url", "app", "shell"} & set(it)):
+            continue  # 纯搜索模板不能直接打开
+        buckets = it.get(_HOUR_BUCKETS, {})
+        exact = int(buckets.get(str(hour), 0))
+        near = sum(
+            int(buckets.get(str((hour + d) % 24), 0)) for d in (-1, 1)
+        )
+        score = exact * 3 + near * 1.5 + it.get("use_count", 0)
+        if score > 0:
+            scored.append((score, it))
+    scored.sort(key=lambda pair: (-pair[0], len(_key(pair[1]["alias"]))))
+    return [it for _, it in scored[:limit]]

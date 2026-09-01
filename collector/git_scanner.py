@@ -37,6 +37,25 @@ class GitScanner:
         except Exception:
             return {}
 
+    @staticmethod
+    def _to_dt(ts: str) -> datetime | None:
+        """ISO 时间戳 → aware datetime（UTC）。解析失败返回 None。
+
+        必须按真实时刻比较，不能比字符串：%cI 带时区偏移，
+        '2024-05-01T10:00:00+08:00' > '2024-05-01T03:30:00+00:00' 字符串为 True
+        而真实时序为 False——旧实现据此推进游标会把游标顶到未来时刻，
+        其间的提交永久漏采（游标已落盘，没有补采路径）。
+        """
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(ts.strip())
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     def _save_cursors(self) -> None:
         self.cursor_file.write_text(json.dumps(self._cursors), encoding="utf-8")
 
@@ -71,7 +90,7 @@ class GitScanner:
                 if out.returncode != 0:
                     continue
                 commits = []
-                latest = since
+                latest_dt = self._to_dt(since)
                 for line in (out.stdout or "").strip().splitlines():  # 空输出防御
                     if not line:
                         continue
@@ -86,11 +105,16 @@ class GitScanner:
                         "detail": detail,
                         "start_ts": ts,
                     })
-                    if ts > latest:
-                        latest = ts
+                    # 按真实时刻取最大值（跨时区提交的字符串比较会得出相反结论）
+                    ts_dt = self._to_dt(ts)
+                    if ts_dt is not None and (latest_dt is None or ts_dt > latest_dt):
+                        latest_dt = ts_dt
                 for c in commits:
                     self.pusher.add_event(c)
-                self._cursors[repo] = latest
+                # 游标统一按 UTC 存储：下次 --since 传 UTC 时刻，git 能正确解析，
+                # 且与本地时区变化（出差/夏令时）无关。
+                if latest_dt is not None:
+                    self._cursors[repo] = latest_dt.isoformat()
             except Exception as e:
                 logger.warning("%s 扫描出错: %s", repo, e)
         self._save_cursors()

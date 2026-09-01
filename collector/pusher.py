@@ -51,6 +51,10 @@ class EventPusher:
         self._health: dict = {}
         self._running = True
         self._client: httpx.AsyncClient | None = None  # 长驻客户端，避免每批次重建
+        # 通道停滞检测：各通道预期间隔 + 已告警标记（避免同一次停滞反复告警）
+        self._channel_interval: dict[str, float] = {}
+        self._stalled: set[str] = set()
+        self._stop_event: asyncio.Event | None = None
 
     # ── 生产者侧（任意线程调用，同步）────────────────────────
 
@@ -68,8 +72,23 @@ class EventPusher:
                 logger.error("队列满且落盘失败，丢弃 1 条事件: %s", e)
 
     def report_health(self, channel: str, ts: str = None) -> None:
-        """采集通道报告心跳（成功完成一轮采集时调用）。"""
+        """采集通道报告心跳（成功完成一轮采集时调用）。
+
+        顺带解除停滞标记：通道恢复后下次停滞仍会重新告警。
+        """
         self._health[channel] = ts or _now_iso()
+        if channel in self._stalled:
+            self._stalled.discard(channel)
+            logger.info("采集通道 %s 已恢复", channel)
+
+    def register_channel(self, channel: str, interval: float) -> None:
+        """登记通道的预期采集间隔（用于停滞判定）。
+
+        没有这层登记，report_health 上报的时间戳没人消费——通道静默死亡
+        （window_monitor 曾是裸 except: pass）时进程还活着，用户毫无感知。
+        """
+        self._channel_interval[channel] = interval
+        self._health.setdefault(channel, _now_iso())
 
     def flush_to_disk(self) -> None:
         """停止前把内存队列剩余事件落盘（下次启动时重试推送）。"""
@@ -99,13 +118,58 @@ class EventPusher:
             self._snapshot_queue()
 
     async def heartbeat(self) -> None:
-        """心跳循环：上报各通道最近成功时间。"""
+        """心跳循环：上报各通道最近成功时间 + 检测通道停滞。
+
+        先上报再等待：旧实现循环首行就 sleep(300)，启动后 5 分钟内服务器看不到
+        任何心跳，会误判"采集停滞"（chat 的电脑在线判定就依赖这个）。
+        用 Event.wait 代替 sleep：stop() 后立即退出，不必等满一个周期。
+        """
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
         while self._running:
-            await asyncio.sleep(self.heartbeat_interval)
             await self._send_heartbeat()
+            self._check_stalled_channels()
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self.heartbeat_interval
+                )
+                return  # 收到停止信号
+            except asyncio.TimeoutError:
+                continue  # 正常到期，继续下一轮
+
+    def _check_stalled_channels(self) -> None:
+        """通道超过预期间隔 3 倍没产出数据 → 上报一条 collector_alert 事件。
+
+        走事件通道而不是只记日志：机器人能据此提示"浏览器采集已停 30 分钟"，
+        否则用户只能靠翻日志发现通道死了。
+        """
+        now = datetime.now(timezone.utc)
+        for channel, interval in self._channel_interval.items():
+            last = self._health.get(channel)
+            if not last or channel in self._stalled:
+                continue
+            try:
+                last_dt = datetime.fromisoformat(last)
+            except (ValueError, TypeError):
+                continue
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            idle = (now - last_dt).total_seconds()
+            if idle > interval * 3:
+                self._stalled.add(channel)
+                mins = int(idle // 60)
+                logger.warning("采集通道 %s 已停滞 %d 分钟", channel, mins)
+                self.add_event({
+                    "kind": "collector_alert",
+                    "name": channel,
+                    "detail": f"{channel} 采集通道已停滞约 {mins} 分钟（预期每 {int(interval)}s 一轮）",
+                    "start_ts": _now_iso(),
+                })
 
     async def stop(self) -> None:
         self._running = False
+        if self._stop_event is not None:
+            self._stop_event.set()  # 唤醒心跳循环，不必等满一个周期
         self.flush_to_disk()
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
@@ -129,7 +193,12 @@ class EventPusher:
             self._client = httpx.AsyncClient(timeout=10, trust_env=False)
         return self._client
 
-    async def _push_batch(self, batch: list[dict]) -> None:
+    async def _push_batch(self, batch: list[dict], save_on_fail: bool = True) -> bool:
+        """推送一批事件。返回是否成功。
+
+        save_on_fail=False 用于缓存重放——重放失败时不该再落一份新盘文件
+        （原文件还在，重复落盘会让缓存文件数在长期断网下线性膨胀）。
+        """
         try:
             r = await self._get_client().post(
                 f"{self.server_url}/api/events",
@@ -139,12 +208,17 @@ class EventPusher:
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
             logger.info("推送成功 %d 条", len(batch))
+            return True
         except Exception as e:
+            if not save_on_fail:
+                logger.warning("重放失败 %d 条（保留缓存文件下次再试）: %s", len(batch), e)
+                return False
             logger.warning("推送失败，落盘 %d 条: %s", len(batch), e)
             try:
                 self._save_to_disk(batch)
             except OSError as save_error:
                 logger.error("推送失败且落盘失败，丢弃 %d 条事件: %s", len(batch), save_error)
+            return False
 
     async def _send_heartbeat(self) -> None:
         payload = {"client": "collector", "channels": dict(self._health)}
@@ -178,9 +252,17 @@ class EventPusher:
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-            if events:
-                await self._push_batch(events)
-            f.unlink(missing_ok=True)
+            if not events:
+                f.unlink(missing_ok=True)  # 空/全损坏文件直接清掉
+                continue
+            # 只有推送成功才删文件。旧实现无论成败都 unlink——依赖"失败会重新
+            # 落盘"兜底，可是那条路径在磁盘满时只 log.error 就丢事件，
+            # 于是断网 + 磁盘紧张会静默丢掉整批历史事件。
+            if await self._push_batch(events, save_on_fail=False):
+                f.unlink(missing_ok=True)
+            else:
+                logger.info("缓存 %s 保留，下次启动或恢复网络后重试", f.name)
+                break  # 网络不通，后面的文件不必再试
 
     _SNAPSHOT_NAME = "pending_snapshot.jsonl"
 

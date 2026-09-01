@@ -60,11 +60,12 @@ async def _consolidate_user(uid: str, since: str) -> int:
 
     conn = connect()
     try:
-        # 第一个消息作为代表写入 summary（其余置空避免重复整合）
-        conn.execute(
-            "UPDATE memories SET summary=?, topics=? WHERE id=?",
-            (summary, json.dumps(topics, ensure_ascii=False), ids[0]),
-        )
+        # 第一个消息作为代表写入 summary（其余置空避免重复整合）。
+        # 走 update_summary_sync 而不是裸 UPDATE：摘要必须同步进 memories_fts，
+        # 否则提炼出来的 summary 检索不到（BM25 与"更早对话摘要"都依赖它）。
+        from app.core.memory import update_summary_sync
+
+        update_summary_sync(conn, ids[0], summary, topics)
         # 只有一条消息时没有“其余消息”，跳过空 IN () 更新。
         if len(ids) > 1:
             conn.execute(

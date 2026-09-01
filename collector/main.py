@@ -41,19 +41,41 @@ from executor import Executor  # noqa: E402
 
 
 async def main() -> None:
+    # 缓存目录统一走 settings.cache_path（绝对路径，以 collector/ 为基准）。
+    # 此前 pusher 用默认 "./cache"、两个游标各自写 "./cache/xxx.json"，
+    # 都按进程 CWD 解析——开机自启时 CWD 是 System32，队列与游标写去别处。
+    cache = settings.cache_path
+    cache.mkdir(parents=True, exist_ok=True)
     pusher = EventPusher(
         settings.server_url,
         token=settings.api_token,
         privacy_filter=settings.privacy_filter,
+        cache_dir=str(cache),
     )
 
     collectors = []
     if settings.collect_window:
         collectors.append(WindowMonitor(pusher, interval=settings.window_interval))
+        pusher.register_channel("window", settings.window_interval)
     if settings.collect_browser:
-        collectors.append(BrowserHistoryCollector(pusher, interval=settings.browser_interval))
+        collectors.append(
+            BrowserHistoryCollector(
+                pusher,
+                interval=settings.browser_interval,
+                cursor_file=str(cache / "browser_cursor.json"),
+            )
+        )
+        pusher.register_channel("browser", settings.browser_interval)
     if settings.collect_git:
-        collectors.append(GitScanner(pusher, repos=settings.git_repos, interval=settings.git_interval))
+        collectors.append(
+            GitScanner(
+                pusher,
+                repos=settings.git_repos,
+                interval=settings.git_interval,
+                cursor_file=str(cache / "git_cursor.json"),
+            )
+        )
+        pusher.register_channel("git", settings.git_interval)
 
     if not collectors:
         logger.warning("没有启用的采集通道，检查 .env 配置")

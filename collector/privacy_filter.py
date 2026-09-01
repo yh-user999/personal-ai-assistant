@@ -3,40 +3,26 @@
 规则可配置（settings.privacy_filter），默认开启。
 过滤字段：detail（窗口标题/页面标题/commit message）+ name（域名/窗口名——
 浏览器地址栏里的公网 IP 也会被打码；内网/本机地址保持原样）。
+
+规则本体在 common/redact.py，与服务端 app/services/sanitize.py 共用。
+此前两端各维护一份正则，已经漂移出实际漏洞（中文键名"密码：xxx"、
+GitHub/AWS/JWT token、中文相邻的手机号全部漏脱敏），故合并为单一来源。
 """
-import re
+import sys
+from pathlib import Path
 
-SENSITIVE_PATTERNS: list[tuple[str, str]] = [
-    # (正则, 替换串)
-    (r"(?i)(password|passwd|pwd)\s*[=:]\s*\S+", r"\1=[REDACTED]"),
-    (r"(?i)(token|api[_-]?key|secret)\s*[=:]\s*[\w\-\.]+", r"\1=[REDACTED]"),
-    (r"\b4[0-9]{12}(?:[0-9]{3})?\b", "[CARD]"),          # 银行卡号（Luhn 未验，粗筛）
-    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL]"),
-    (r"\bsk-[A-Za-z0-9_\-]{8,}\b", "[API_KEY]"),          # OpenAI 风格密钥
-    (r"\b1[3-9]\d{9}\b", "[PHONE]"),                      # 大陆手机号
-]
+# 采集器以 collector/ 或仓库根为工作目录运行，显式把仓库根加进 sys.path
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-RE_PUBLIC_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-
-
-def _mask_public_ip(m: re.Match) -> str:
-    """公网 IP 打码（如 1.2.3.4 → 1.2.*.*）；内网/本机地址保持原样。"""
-    parts = m.group(0).split(".")
-    a = int(parts[0])
-    b = int(parts[1]) if len(parts) > 1 else 0
-    if a in (127, 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168):
-        return m.group(0)
-    return f"{parts[0]}.{parts[1]}.*.*"
+from common.redact import RE_IP as RE_PUBLIC_IP  # noqa: E402,F401  （兼容旧引用）
+from common.redact import redact  # noqa: E402
 
 
 def sanitize(text: str) -> str:
     """对一段文本做脱敏。空文本原样返回。"""
-    if not text:
-        return text
-    for pattern, repl in SENSITIVE_PATTERNS:
-        text = re.sub(pattern, repl, text)
-    text = RE_PUBLIC_IP.sub(_mask_public_ip, text)
-    return text
+    return redact(text)
 
 
 def sanitize_event(event: dict) -> dict:

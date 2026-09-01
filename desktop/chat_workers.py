@@ -183,3 +183,30 @@ class _HealthWorker(QThread):
 
     def run(self) -> None:
         self.result.emit(self.client.health())
+
+
+class _LocalExecWorker(QThread):
+    """后台执行本地指令（文件操作/脚本/文件搜索）。
+
+    为什么必须离开 UI 线程：try_execute 内部可能跑
+    subprocess.run(timeout=120) 的脚本、或 search_files_impl 扫最多 3000 个
+    文件并打开 150 个读 64KB。这些原先直接在 _send 里同步调用，面板会假死
+    到操作结束——项目本身已有完整 worker 体系，只有这条路径绕过了。
+
+    done 携带 handled：False 表示"这不是本地指令"，UI 侧据此转发给服务器。
+    """
+    done = Signal(bool, str)  # (handled, text)
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def run(self) -> None:
+        try:
+            from local_exec import try_execute
+
+            handled, text = try_execute(self.message)
+            self.done.emit(handled, text)
+        except Exception as e:
+            # 本地执行异常不该静默：报回聊天流，且视为已处理（避免又发给服务器）
+            self.done.emit(True, f"❌ 本地执行出错：{e}")

@@ -9,44 +9,28 @@
 
 接入点：记忆写入 / 知识库入库 / 文档保存 / 行为事件入库。
 """
-import re
+import sys
+from pathlib import Path
 
 from app.config import settings
 
-RE_PHONE = re.compile(r"1[3-9]\d{9}")
-RE_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-RE_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-RE_IDCARD = re.compile(r"\b\d{17}[\dXx]\b")
+# 规则本体在 common/redact.py（与采集器共用，防止两端规则漂移）。
+# 服务端以 server/ 为工作目录运行（systemd WorkingDirectory），仓库根不在
+# sys.path 上，这里显式加入——部署时 common/ 与 server/ 同级，必然存在。
+_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
+from common.redact import redact  # noqa: E402
 
-def _mask_phone(m: re.Match) -> str:
-    s = m.group(0)
-    return s[:3] + "****" + s[-4:]
-
-
-def _mask_email(m: re.Match) -> str:
-    local, domain = m.group(0).split("@", 1)
-    return local[:3] + "***@" + domain
-
-
-def _is_private_ip(s: str) -> bool:
-    parts = s.split(".")
-    a = int(parts[0])
-    b = int(parts[1]) if len(parts) > 1 else 0
-    return a in (127, 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
-
-
-def _mask_ip(m: re.Match) -> str:
-    s = m.group(0)
-    if _is_private_ip(s):
-        return s
-    parts = s.split(".")
-    return f"{parts[0]}.{parts[1]}.*.*"
-
-
-def _mask_idcard(m: re.Match) -> str:
-    s = m.group(0)
-    return s[:6] + "********" + s[-4:]
+# 兼容原有引用（旧测试/脚本按名字导入这些正则）
+from common.redact import (  # noqa: E402,F401
+    RE_EMAIL,
+    RE_IDCARD,
+    RE_IP,
+    RE_PHONE,
+    is_private_ip as _is_private_ip,
+)
 
 
 def _custom_terms() -> list[str]:
@@ -60,14 +44,12 @@ def _custom_terms() -> list[str]:
 def sanitize(text: str) -> str:
     """对文本做统一脱敏。不可逆，原值只在用户本地保存。
 
-    顺序：身份证在前（18 位数字里可能嵌着 11 位手机号模式的子串，必须先处理）。
+    通用规则（手机/邮箱/IP/身份证/各类 token/键值型密码）走 common.redact，
+    自定义敏感词（.env SENSITIVE_TERMS）是服务端专属，在这里追加。
     """
     if not text:
         return text
-    t = RE_IDCARD.sub(_mask_idcard, text)
-    t = RE_PHONE.sub(_mask_phone, t)
-    t = RE_EMAIL.sub(_mask_email, t)
-    t = RE_IP.sub(_mask_ip, t)
+    t = redact(text)
     for term in _custom_terms():
         t = t.replace(term, "已脱敏")
     return t

@@ -21,6 +21,48 @@ SENSITIVE_PATTERN = re.compile(
 )  # 名称疑似含敏感信息的预警（脱敏原则）
 
 
+# ── 扩展名安全判定（三处执行器唯一判据）────────────────────
+# 背景：曾用 os.path.splitext(t)[1].casefold() 直接比黑名单，被四类变形绕过——
+#   'x.bat.'        → splitext 得 '.'          （Windows 打开时剥掉尾点仍执行 x.bat）
+#   'x.bat '        → splitext 得 '.bat '      （尾空格同理被剥掉）
+#   'x.bat::$DATA'  → splitext 得 '.bat::$data'（NTFS 备用数据流，仍执行）
+#   'x.bat:extra'   → 同上（单冒号流名）
+# 修复思路：先把这些"Windows 会自行剥掉"的装饰全部归一化掉，再取扩展名。
+# 归一化必须与三处执行器共用，否则一处漏改全线失守。
+
+def normalize_exec_path(target: str) -> str:
+    """归一化路径用于安全判定：剥离 NTFS 数据流后缀与尾部点/空格。
+
+    仅用于**判定**，不用于实际打开——实际打开仍用原始字符串，
+    这样"合法文件名恰好以空格结尾"的罕见情况不会被静默改写。
+    """
+    text = (target or "").strip()
+    # NTFS 备用数据流：盘符冒号（C:）之后再出现冒号即为流名，截断
+    # （从索引 2 开始找，避开 'C:/x' 的盘符冒号）
+    stream = text.find(":", 2)
+    if stream != -1:
+        text = text[:stream]
+    # Windows 打开时会剥掉结尾的点与空格（'x.bat.' 等价于 'x.bat'）
+    return text.rstrip(". \t")
+
+
+def exec_ext(target: str) -> str:
+    """取用于黑名单比较的扩展名（已归一化，小写）。"""
+    return os.path.splitext(normalize_exec_path(target))[1].casefold()
+
+
+def is_blocked_open(target: str) -> bool:
+    """open 动作是否应被拒绝：命中脚本/可执行扩展名黑名单。
+
+    对含数据流标记（':' 出现在盘符之后）的路径一律拒绝——正常业务路径
+    不会用到备用数据流，出现即为绕过尝试。
+    """
+    text = (target or "").strip()
+    if text.find(":", 2) != -1:
+        return True
+    return exec_ext(text) in OPEN_BLOCKED_EXTS
+
+
 def natural_key(name: str) -> list:
     """自然排序键：大小写不敏感 + 数字按数值比（f2 < f10）。"""
     return [int(t) if t.isdigit() else t.casefold() for t in re.split(r"(\d+)", name)]

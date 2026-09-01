@@ -136,12 +136,23 @@ def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]
 
 # ── 写入 ──────────────────────────────────────────────────
 
-async def write_message(sender: str, content: str, user_id: str | None = None) -> int | None:
+async def write_message(
+    sender: str,
+    content: str,
+    user_id: str | None = None,
+    precomputed_vec: list[float] | None = None,
+) -> int | None:
     """写入一条对话记忆并向量化。返回 memory_id（重复时返回 None）。
 
     入库前统一脱敏（手机号/邮箱/公网IP/自定义敏感词）——
     服务器不保存用户明文敏感信息。
     去重与写入都限定在 user_id 自己的记忆流内（v0.4 多人隔离）。
+
+    precomputed_vec：调用方已经为**同一文本**算过向量时直接复用，省一次
+    embedding 网络往返与一份 token 费用。聊天主路径就是这种情况——
+    memory.search(msg) 刚为 msg 算过 query 向量，紧接着 write_message(msg)
+    又算一次完全相同的向量。注意只有脱敏后文本与送去 embed 的文本一致时
+    才可复用，故由调用方明确传入而不是在这里猜。
     """
     from app.services.sanitize import sanitize
 
@@ -169,7 +180,7 @@ async def write_message(sender: str, content: str, user_id: str | None = None) -
 
     # 向量化（失败不阻塞写入）
     try:
-        vec = (await embedding.embed([content]))[0]
+        vec = precomputed_vec if precomputed_vec is not None else (await embedding.embed([content]))[0]
         conn = connect()
         try:
             conn.execute(
@@ -185,20 +196,38 @@ async def write_message(sender: str, content: str, user_id: str | None = None) -
     return memory_id
 
 
+def update_summary_sync(conn, memory_id: int, summary: str, topics: list[str]) -> None:
+    """写入摘要/话题并同步 FTS 索引（复用调用方的连接与事务）。
+
+    为什么必须同步 FTS：摘要是检索主力（consolidation 把一批碎片消息压成
+    一句 summary，后续"更早对话摘要"与 BM25 都依赖它）。此前 consolidation
+    直接 UPDATE memories 而不碰 memories_fts，摘要内容检索不到；本函数
+    原本是为此准备的，但形参写错（少传 user_id）且没有任何调用方，
+    属于带 bug 的死代码。现在修好签名并真正接进 consolidation。
+    """
+    conn.execute(
+        "UPDATE memories SET summary = ?, topics = ? WHERE id = ?",
+        (summary, json.dumps(topics, ensure_ascii=False), memory_id),
+    )
+    row = conn.execute(
+        "SELECT user_id, content FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    if row is not None:
+        _fts_delete(conn, memory_id)
+        _fts_insert(
+            conn,
+            memory_id,
+            row["user_id"] or owner_user_id(),
+            row["content"],
+            summary,
+        )
+
+
 async def update_summary(memory_id: int, summary: str, topics: list[str]) -> None:
+    """独立事务版（供脚本/单点调用）。"""
     conn = connect()
     try:
-        conn.execute(
-            "UPDATE memories SET summary = ?, topics = ? WHERE id = ?",
-            (summary, json.dumps(topics, ensure_ascii=False), memory_id),
-        )
-        # 摘要并入 FTS 索引（删旧插新；摘要行常是检索主力，必须同步）
-        row = conn.execute(
-            "SELECT content FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
-        if row is not None:
-            _fts_delete(conn, memory_id)
-            _fts_insert(conn, memory_id, row["content"], summary)
+        update_summary_sync(conn, memory_id, summary, topics)
         conn.commit()
     finally:
         conn.close()
@@ -264,6 +293,22 @@ def deep_keyword_search(query: str, top_k: int = 5, user_id: str | None = None) 
 
 
 
+# 最近一次 search 算出的 query 向量（文本 → 向量），供 write_message 复用。
+# 只缓存一条：聊天主路径是"search(msg) 紧接着 write_message(msg)"，
+# 不需要真正的缓存结构。键用脱敏后文本，确保与入库文本一致才复用。
+_last_query_vec: tuple[str, list[float]] | None = None
+
+
+def take_query_vec(text: str) -> list[float] | None:
+    """取出上一次为 text 算过的 query 向量（取走即失效，避免误用陈旧向量）。"""
+    global _last_query_vec
+    if _last_query_vec is not None and _last_query_vec[0] == text:
+        vec = _last_query_vec[1]
+        _last_query_vec = None
+        return vec
+    return None
+
+
 async def search(
     query: str, top_k: int = 8, min_similarity: float = 0.35, user_id: str | None = None
 ) -> list[dict]:
@@ -281,7 +326,12 @@ async def search(
     # 1) 向量检索（sqlite-vec vec0 是 KNN 虚拟表，必须 MATCH + k 语法，
     #    不能像普通列那样 WHERE v.distance < ?——距离过滤在 Python 层做）
     try:
+        global _last_query_vec
         qvec = (await embedding.embed([query]))[0]
+        # 记下来给紧随其后的 write_message 复用（同一条消息不必再算一次）
+        from app.services.sanitize import sanitize as _sanitize
+
+        _last_query_vec = (_sanitize(query), qvec)
         conn = connect()
         try:
             cur = conn.execute(

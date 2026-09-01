@@ -197,12 +197,18 @@ def test_search_and_history_isolated(db):
     # 主人检索只看到自己的
     owner_hits = asyncio.run(memory.search("RAG 向量", top_k=5, user_id=None))
     assert owner_hits and all("RAG" in h.get("content", "") for h in owner_hits)
-    # 访客检索只看到自己的
+    # 访客检索只看到自己的：断言隔离性（不含主人内容）而非"每条都含关键词"——
+    # 配了真实 embedding key 时，同会话的"好的，帮你梳理"会被语义通道正常召回
+    # （相似度 0.55 > min_similarity），那是检索生效的表现，不是串味。
     guest_hits = asyncio.run(memory.search("小说提纲", top_k=5, user_id="10002"))
-    assert guest_hits and all("小说" in h.get("content", "") for h in guest_hits)
-    # 主人检索不到访客内容
+    assert guest_hits
+    assert any("小说" in h.get("content", "") for h in guest_hits)
+    assert not any("RAG" in h.get("content", "") for h in guest_hits)
+    # 主人检索不到访客内容（隔离铁律）。注意不能断言"结果为空"——有 embedding
+    # key 时主人自己的消息会被弱相似度召回，那是自己的数据，不违反隔离。
     owner_novel = asyncio.run(memory.search("小说提纲", top_k=5, user_id=None))
-    assert not owner_novel
+    assert not any("访客" in h.get("content", "") for h in owner_novel)
+    assert not any("梳理" in h.get("content", "") for h in owner_novel)
 
     # 多轮历史隔离
     guest_hist = memory.get_recent_history(10, user_id="10002")

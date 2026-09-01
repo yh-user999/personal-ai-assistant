@@ -5,9 +5,16 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]  # collector/ 的上一级 = 仓库根
+
+
 class CollectorSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parents[2] / ".env",
+        # parents[1] 才是仓库根（collector/config.py → 仓库根）。
+        # 原先写 parents[2] 会指到仓库外层目录，.env 从未被 pydantic 读到——
+        # 只因 main.py 先跑 load_dotenv 注入环境变量才碰巧生效；
+        # 单独导入本模块（测试/脚本）时全部配置静默回落默认值。
+        env_file=_REPO_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -33,8 +40,21 @@ class CollectorSettings(BaseSettings):
     # 隐私过滤：事件离开本机前脱敏（密码/token/手机号/邮箱等）
     privacy_filter: bool = True
 
-    # 浏览器历史缓存位置（增量游标）
+    # 缓存位置（断网落盘队列 + 浏览器/git 增量游标）
     cache_dir: str = "./cache"
+
+    @property
+    def cache_path(self) -> Path:
+        """缓存目录的绝对路径。
+
+        相对路径以 collector/ 为基准而非进程 CWD——开机自启时 CWD 常是
+        C:\\Windows\\System32，按 CWD 解析会把队列与游标写到意外位置
+        （甚至因无权限写入而静默丢事件）。
+        """
+        p = Path(self.cache_dir)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent / p
+        return p
 
 
 @lru_cache

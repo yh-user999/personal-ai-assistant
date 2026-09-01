@@ -11,12 +11,15 @@ v0.4 修复（来自 Windows 实测）：
 """
 import asyncio
 import ctypes
+import logging
 import os
 import sys
 import time
 from datetime import datetime, timezone
 
 from pusher import EventPusher
+
+logger = logging.getLogger("collector.window")
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -101,8 +104,12 @@ class WindowMonitor:
             try:
                 await asyncio.to_thread(self._tick)
                 self.pusher.report_health("window")
-            except Exception:
-                pass
+            except Exception as e:
+                # 曾是裸 pass（连日志都没有，其余采集器都有 warning）——
+                # 通道静默死亡时进程还活着，用户完全无感。
+                # 现在留痕，且 report_health 不再被调用 →
+                # pusher._check_stalled_channels 会上报 collector_alert。
+                logger.warning("窗口采集失败: %s", e)
             await asyncio.sleep(self.interval)
 
     def _tick(self) -> None:

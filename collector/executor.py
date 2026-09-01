@@ -17,8 +17,9 @@ import httpx
 
 from common import launcher
 from common.file_ops import (
-    OPEN_BLOCKED_EXTS,
     copy_impl,
+    exec_ext,
+    is_blocked_open,
     list_dir_text,
     move_impl,
     path_allowed,
@@ -105,12 +106,16 @@ class Executor:
         try:
             if action == "open":
                 # 注册别名是显式授权，可指向白名单外路径；原始路径则必须白名单。
+                # 注意顺序：只有"不像路径"的目标才允许走别名解析——否则用户给出
+                # 明确路径（F:/我的微信资料）会被模糊匹配劫持成启动 exe，
+                # 等于绕过白名单与扩展名黑名单（见 launcher.try_launch 的 strict 参数）。
                 launched, ok, text = launcher.try_launch(target)
                 if launched:
                     return ok, text
-                ext = os.path.splitext(target)[1].lower()
-                if ext in OPEN_BLOCKED_EXTS:
-                    return False, f"出于安全考虑，不允许打开脚本/安装包类型：{ext}"
+                if is_blocked_open(target):
+                    return False, (
+                        f"出于安全考虑，不允许打开脚本/安装包类型：{exec_ext(target) or target}"
+                    )
                 if not path_allowed(target):
                     return False, "🔒 打开目标超出白名单（EXECUTOR_ALLOWED_ROOTS），本地已拒绝"
                 os.startfile(target)

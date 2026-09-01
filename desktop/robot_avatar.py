@@ -2,6 +2,7 @@
 import math
 import random
 
+import robot_paint
 import skins
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
@@ -114,26 +115,8 @@ class RobotAvatar(QWidget):
             painter.setBrush(dot)
             painter.drawEllipse(QPointF(px, py), 1.6, 1.6)
 
-    @staticmethod
-    def _draw_hex(painter: QPainter, cx: float, cy: float, r: float,
-                  fill: QLinearGradient, stroke: QColor) -> None:
-        """六角螺栓（平边朝上）。"""
-        p = QPainterPath()
-        for i in range(6):
-            ang = math.radians(60 * i)
-            px = cx + r * math.cos(ang)
-            py = cy + r * math.sin(ang)
-            if i == 0:
-                p.moveTo(px, py)
-            else:
-                p.lineTo(px, py)
-        p.closeSubpath()
-        painter.setBrush(fill)
-        painter.setPen(QPen(stroke, 1))
-        painter.drawPath(p)
-        painter.setBrush(QColor(0, 0, 0, 60))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(cx, cy), r * 0.32, r * 0.32)
+    # 六角螺栓绘制已移到 robot_paint.draw_hex_bolt（与 floating_ball 共用）
+    _draw_hex = staticmethod(robot_paint.draw_hex_bolt)
 
     def _paint_bender(self, painter: QPainter) -> None:
         """班德金属风 · 硬核机械版迷你头像：平顶切角壳 + 小内嵌屏 + 散热格栅。"""

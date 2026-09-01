@@ -33,6 +33,7 @@ from chat_workers import (
     _ExecResultWorker,
     _GreetingWorker,
     _HistoryWorker,
+    _LocalExecWorker,
     _SearchWorker,
     retire,
 )
@@ -224,6 +225,8 @@ class ChatPanel(QWidget):
         self._worker = None
         self._history_worker = None
         self._api_worker = None
+        self._local_worker = None   # 本地指令执行线程（脚本/文件操作可能耗时很久）
+        self._pending_msg = ""      # 本地未命中时转发给服务器的原消息
         self._pinned = False
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
@@ -883,7 +886,14 @@ class ChatPanel(QWidget):
         self._run_api("daily")
 
     def _run_api(self, mode: str) -> None:
-        """快捷查询统一走后台线程，结果弹独立窗口（不混入聊天流）。"""
+        """快捷查询统一走后台线程，结果弹独立窗口（不混入聊天流）。
+
+        重入保护：连点按钮会覆盖 self._api_worker，被覆盖的 QThread 失去最后
+        一个引用 → GC 回收正在运行的线程对象 → sizedFree 堆损坏崩溃
+        （本文件头注释记载过这类崩溃）。其余 worker 早有同样的守卫。
+        """
+        if self._api_worker is not None:
+            return
         worker = _ApiWorker(self.client, mode)
         worker.done.connect(self._on_api_done)
         self._api_worker = worker
@@ -902,25 +912,43 @@ class ChatPanel(QWidget):
 
     def _send(self) -> None:
         msg = self.input.text().strip()
-        if not msg or self._worker is not None:
+        if not msg or self._worker is not None or self._local_worker is not None:
             return
         self.input.clear()
         self._append("user", msg, "")
 
         # 本地执行器优先：执行类命令在本地直行，不经过服务器
-        # （零延迟 + 文件内容不出本机 + 服务器挂机也可用）
-        from local_exec import try_execute
+        # （零延迟 + 文件内容不出本机 + 服务器挂机也可用）。
+        # 走后台线程：脚本最长 120s、文件搜索要扫几千个文件，
+        # 同步调用会让面板假死到操作结束。
+        if self.ball:
+            self.ball.set_state("thinking")
+        self._show_typing()
+        self._local_worker = _LocalExecWorker(msg)
+        self._local_worker.done.connect(self._on_local_done)
+        self._pending_msg = msg
+        self._local_worker.start()
 
-        handled, text = try_execute(msg)
+    def _on_local_done(self, handled: bool, text: str) -> None:
+        """本地执行结果回到 UI 线程：命中即展示，未命中则转发服务器。"""
+        worker = self._local_worker
+        self._local_worker = None
+        if worker:
+            retire(worker)
+        msg = self._pending_msg
+        self._pending_msg = ""
         if handled:
+            self._remove_typing()
             self._append("assistant", text, "")
             if self.ball:
                 self.ball.set_state("online")
             return
-
-        if self.ball:
-            self.ball.set_state("thinking")  # 机器人进入思考状态（琥珀灯+圆嘴）
-        self._show_typing()  # 聊天流里出现"正在想"动画头像行
+        # 不是本地指令 → 交给服务器（typing 行继续留着，接上 LLM 回复）
+        if not msg:
+            self._remove_typing()
+            if self.ball:
+                self.ball.set_state("online")
+            return
         self._worker = _ChatWorker(self.client, msg)
         self._worker.done.connect(self._on_done)
         self._worker.start()

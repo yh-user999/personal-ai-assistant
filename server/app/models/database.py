@@ -196,6 +196,27 @@ CREATE TABLE IF NOT EXISTS novel_facts (
   created_at TEXT NOT NULL
 );
 
+-- ㉔ 小说实体表（专名索引，不是答案缓存）
+-- 动因：问"有哪些命丛"时向量检索几乎零区分力（实测 top3 全是无关 PDF，
+-- 小说排第四且相似度 0.023 vs 0.025 无差别），而 FTS5 搜类名「命丛」命中
+-- 308/1936 块 = 15.9% 精度，等于没筛。但搜专名「银河灵潮」只命中 1 块。
+-- 这张表的唯一作用：把低精度的类名匹配转成高精度的专名匹配。
+-- 存的是**名字**（客观、唯一、不随提问变化），不存问答结果——
+-- 缓存答案会随提问维度爆炸且互相矛盾。
+CREATE TABLE IF NOT EXISTS novel_entities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book TEXT NOT NULL,              -- 所属书
+  name TEXT NOT NULL,              -- 专名（夜海 / 银河灵潮）
+  kind TEXT NOT NULL,              -- 命丛 / 命图 / 功法 / 势力 / 人物
+  group_name TEXT DEFAULT '',      -- 原文提到的集合（七大神命丛/四种命图），用来算缺口
+  first_chunk INTEGER,             -- 首次出现的块序号（溯源用）
+  verified INTEGER DEFAULT 0,      -- 用户确认过（1）还是仅 LLM 抽取（0）
+  note TEXT DEFAULT '',            -- 用户的修订，优先于原文
+  created_at TEXT NOT NULL,
+  UNIQUE(book, name, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_entities_book_kind ON novel_entities(book, kind);
+
 -- ⑱ 定时提醒（第 6.24 课：机器人主动触达的最小通道）
 CREATE TABLE IF NOT EXISTS reminders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

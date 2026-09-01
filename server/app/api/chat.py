@@ -16,7 +16,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_writing, reminders, resume, self_state, subjective_time, unresolved, worklog
+from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_entities, novel_writing, reminders, resume, self_state, subjective_time, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -643,6 +643,13 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         alias_note = knowledge.get_alias_note(msg)
         if alias_note:
             knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
+        # 实体索引检索（枚举式提问专用）：「有哪些命丛」这类问题向量几乎零
+        # 区分力（实测 top3 全是无关 PDF），改走专名精确检索——搜类名「命丛」
+        # 命中 308/1936 块（15.9%），搜专名「银河灵潮」只命中 1 块。
+        # 注入自带完整度报告，让她能说清"确认几个、原文该有几个"。
+        entity_ctx = novel_entities.build_entity_context(msg)
+        if entity_ctx:
+            knowledge_text = entity_ctx + "\n\n" + knowledge_text
         # 小说设定卡注入：策划的权威事实，即知识库资料，可直接作为回答依据
         novel_facts = knowledge.get_novel_facts(msg)
         if novel_facts:

@@ -38,8 +38,8 @@ def upsert_concerns(topics: list[str], user_id: str | None = None) -> int:
     return len(topics)
 
 
-def get_concerns_injection(limit: int = 6, user_id: str | None = None) -> str:
-    """当前关切注入：最近提及的话题（含次数）。"""
+def get_concerns_injection(limit: int = 4, user_id: str | None = None) -> str:
+    """当前关切注入：最近提及的话题（含次数，v0.4.1 收紧为 4 条）。"""
     from app.core.memory import normalize_user_id
 
     uid = normalize_user_id(user_id)

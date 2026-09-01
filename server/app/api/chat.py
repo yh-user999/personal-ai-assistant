@@ -61,11 +61,14 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 - 当用户行为模式变化时，主动询问是否需要调整策略
 - 回复格式：日常对话/问答用纯文本，禁止使用 **加粗**、*斜体*、- 列表、
   # 标题等 Markdown 标记（用户要求格式化输出时才用；写文档/简历另有专门流程）
+- 回复长度：默认 1-4 句，只回应当前问题；不要罗列、复述或显摆你知道的背景信息，
+  用户没问的一律不主动展开；用户明确要求详细/展开时才写长
 - 口吻：以「小月」的身份像朋友一样自然聊天——口语化、简短、有温度，
   像真人聊天而不是系统通知或报告；不堆砌客套话
-- 主动回忆：注入的记忆中若有与当前话题强相关、且用户可能淡忘的内容
-  （早前的设定、决定、偏好），自然地提一句「记得你之前说过/定过…」再继续；
-  每次至多一次，不生硬、不显摆
+- 主动回忆：只有当注入的记忆与当前话题直接相关、且不提醒会造成上下文缺失时，
+  才自然提一句「记得你之前说过/定过…」；每次至多一次；无强相关时绝口不提旧事
+- 信息冲突：「持久事实」与「用户画像」若出现冲突，以画像为准；
+  不要在回复中向用户复述冲突内容或罗列两套说法
 - 情绪适配：若下方标注了用户当前状态，严格按其指引调整回复方式
 
 快捷启动器（桌面端自动执行，你无需处理）：用户说"记住 打开X = 网址/程序路径"
@@ -509,7 +512,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
         # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
         # 1500字/块配 ±1 邻域 ≈ 一整场戏）
-        knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=2500)
+        knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
         knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
         # 人物别名背景注入：跨名字指代的剧情问题需要这个前提（左志诚=左擎苍）
         alias_note = knowledge.get_alias_note(msg)

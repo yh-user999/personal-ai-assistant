@@ -354,7 +354,7 @@ async def search(
 
 
 def format_injection(memories: list[dict]) -> str:
-    """格式化注入片段：[记忆] {日期}: {内容}"""
+    """格式化注入片段：[记忆] {日期}: {内容}（每条截断 120 字，防长文撑爆 prompt）。"""
     if not memories:
         return ""
     parts = []
@@ -363,7 +363,7 @@ def format_injection(memories: list[dict]) -> str:
         content = m.get("content", "")
         if m.get("summary"):
             content = f"{m['summary']}（{content[:50]}）"
-        parts.append(INJECT_FORMAT.format(ts=ts, content=content))
+        parts.append(INJECT_FORMAT.format(ts=ts, content=content[:120]))
     return "\n".join(parts)
 
 
@@ -384,13 +384,13 @@ def bump_importance(memory_ids: list[int]) -> None:
 
 # ── 事实注入（v0.9：facts 三元组纳入每次聊天——"小月"失忆 bug 的系统性修复）──
 
-def get_facts_injection(limit: int = 64, user_id: str | None = None) -> str:
+def get_facts_injection(limit: int = 40, user_id: str | None = None) -> str:
     """持久事实（三元组），注入 prompt。身份/偏好/项目进度都在这里。
 
     ORDER BY id ASC：项目/课程进度等早期登记的稳定事实优先于后期闲聊事实
     （曾因 DESC 取最新被小说设定类事实挤占，导致"课程进度丢失"）。
-    三元组极短，64 条 ≈ 1200 字，prompt 开销可接受——窗口必须容得下
-    "项目进度 + 小说设定 + 身份偏好"三类全部事实。
+    三元组极短，40 条 ≈ 800 字（v0.4.1 从 64 收紧：课程进度已聚合成单条，
+    prompt 更短、与画像口径单一）。
     v0.4：只取当前用户自己的事实（访客从零开始，零串味）。
     """
     uid = normalize_user_id(user_id)

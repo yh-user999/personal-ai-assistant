@@ -29,6 +29,8 @@ REFLECT_PROMPT = """你是用户画像分析师。基于本周提取的事实三
 - dimension 只能是: technical_background / work_habit / learning_rhythm / project_info
 - 没有新信息支撑的维度不要输出
 - confidence 0-1，信息直接且多次出现给高分
+- 每条 value 不超过 80 字，只写有事实依据的结论，不得照抄事实原文
+- 若某维度现状与已有画像一致，不要重复输出该维度
 
 本周事实：
 {facts}
@@ -107,5 +109,5 @@ def get_profile_injection(user_id: str | None = None) -> str:
         conn.close()
     if not rows:
         return ""
-    lines = [f"[{r['dimension']}] {r['value']}" for r in rows]
+    lines = [f"[{r['dimension']}] {r['value'][:120]}" for r in rows]
     return "\n".join(lines)

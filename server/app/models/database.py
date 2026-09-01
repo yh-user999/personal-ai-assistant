@@ -290,6 +290,13 @@ _MIGRATIONS = [
     "ALTER TABLE concerns ADD COLUMN asked_at TEXT",
     # 知识库分域（见建表注释：跨域污染实测 6/6 全错）
     "ALTER TABLE knowledge_chunks ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
+    # 被动目标追踪：goals 表长期为空不是因为用户没目标，是因为他从不打
+    # "目标：XXX" 命令（同为命令式的 jargon/写作台账也全空）。改为从对话
+    # 被动识别意向存为 candidate，问过两次没回应就自动丢弃。
+    # source: command（用户显式创建）/ passive（从对话识别）
+    "ALTER TABLE goals ADD COLUMN source TEXT NOT NULL DEFAULT 'command'",
+    "ALTER TABLE goals ADD COLUMN asked_count INTEGER DEFAULT 0",
+    "ALTER TABLE goals ADD COLUMN last_asked_at TEXT",
     # 使用反馈：被注入过几次 / 最近一次是什么时候。
     # importance 只增不减且被短句刷高（实测最高的是"你好""再确认一下"——
     # 越短越容易被检索命中），无法用来判断"这条到底有没有用"。

@@ -16,7 +16,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_entities, novel_writing, plain_text, reminders, resume, self_state, subjective_time, unresolved, worklog
+from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, growth, identity_guard, intent_goals, knowledge_hint, message_search, mood, novel_entities, novel_writing, plain_text, reminders, resume, self_state, subjective_time, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -710,6 +710,27 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     # 自我状态：小月自己的处境（熟络度/久别/刚被纠正）——她也有连续性，
     # 不是每轮都重新出生。无内容时替换为空串，不占 prompt。
     system = system.replace("{self_state}", self_state.get_self_state_injection(user_id=uid))
+
+    # 成长感知：用户质疑自己的收获时给事实反证（不做鸡汤）。
+    # 动因是他反复问「都是交给 ai 做的，自己感觉没什么收获」这类问题，
+    # 而 3369 条行为事件 + 日报 + 话题演进的数据一直没被用来回答它。
+    extra_blocks: list[str] = []
+    if is_owner and growth.detect_self_doubt(msg):
+        block = growth.build_injection()
+        if block:
+            extra_blocks.append(block)
+    # 被动目标跟进：goals 表长期为空是因为他从不打命令，改为从对话识别意向
+    if is_owner:
+        intent_goals.record_intent(msg, user_id=uid)
+        followup = intent_goals.build_injection(user_id=uid)
+        if followup:
+            extra_blocks.append(followup)
+        # 知识库主动利用：库里有相关资料但他没问时提一句（有冷却，防打扰）
+        hint = knowledge_hint.build_hint(msg)
+        if hint:
+            extra_blocks.append(hint)
+    if extra_blocks:
+        system = system + "\n\n" + "\n\n".join(extra_blocks)
 
     # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感，按用户）
     history = memory.get_recent_history(settings.history_limit, user_id=uid)

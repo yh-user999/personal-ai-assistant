@@ -75,15 +75,53 @@ def refresh_progress_facts() -> int:
     return len(PROGRESS_FACTS)
 
 
+# 不灌进知识库的文档：内容以"举例"为主，会成为检索污染源。
+# LESSONS.md 里写满了「左志诚被谁挖走了命丛」这类用来说明踩坑的剧情引用，
+# 实测它反复出现在剧情问题的命中里——我们写的踩坑文档变成了检索噪声
+# （自我污染）。这类文档是给人读的，不是给检索用的。
+KNOWLEDGE_EXCLUDE = frozenset({"LESSONS", "TESTING_GUIDE", "AI_OPTIMIZATION_PROMPTS"})
+
+
 async def sync_docs_to_knowledge() -> int:
     """docs/*.md 重灌知识库（ingest replace 语义，无重复）。"""
     docs = sorted(DOCS_DIR.glob("*.md"))
     total = 0
     for md in docs:
+        if md.stem in KNOWLEDGE_EXCLUDE:
+            logger.info("文档同步跳过（检索污染源）: %s", md.name)
+            continue
         result = await knowledge.ingest_document(md.stem, md.read_text(encoding="utf-8"))
         total += result.get("chunks", 0)
         logger.info("文档同步: %s → %d 块", md.name, result.get("chunks", 0))
     return total
+
+
+def purge_excluded_docs() -> int:
+    """清掉已在库里的排除文档（连同向量与 FTS 索引）。返回删除块数。"""
+    from app.models.database import connect
+
+    conn = connect()
+    try:
+        removed = 0
+        for name in KNOWLEDGE_EXCLUDE:
+            rows = conn.execute(
+                "SELECT id FROM knowledge_chunks WHERE doc_name=?", (name,)
+            ).fetchall()
+            for r in rows:
+                for tbl, col in (("chunk_vectors", "chunk_id"),
+                                 ("knowledge_fts", "chunk_id")):
+                    try:
+                        conn.execute(f"DELETE FROM {tbl} WHERE {col}=?", (r["id"],))
+                    except Exception:  # noqa: BLE001 — 向量表可能不可用
+                        pass
+            cur = conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
+            removed += cur.rowcount
+        conn.commit()
+        if removed:
+            logger.info("清理检索污染源文档：%d 块", removed)
+        return removed
+    finally:
+        conn.close()
 
 
 async def sync_progress_to_bot() -> dict:

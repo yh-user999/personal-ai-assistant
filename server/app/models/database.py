@@ -136,14 +136,21 @@ CREATE TABLE IF NOT EXISTS style_examples (
 );
 
 -- ⑫ 知识库块（RAG：文档切块后的文本，与 chunk_vectors 一一对应）
+-- domain 分域：所有文档混在一张表里检索会严重跨域污染。实测问
+-- 「李羽的能力是什么」（《寂静杀戮》角色）命中 6 块**全部无关**——4 块来自
+-- 另一本小说、2 块来自 LESSONS.md；问「命丛有哪些」命中了反代教程 PDF。
+-- 根因是 embedding 各向异性：实测所有块的相似度都塌在 0.023~0.025 这个
+-- 0.002 宽的区间里，向量对"相关/无关"没有区分力，只能靠元数据过滤。
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   doc_name TEXT NOT NULL,           -- 来源文档名
   chunk_index INTEGER NOT NULL,     -- 在文档中的块序号
   content TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  domain TEXT NOT NULL DEFAULT ''   -- novel / project_doc / manual / resume
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON knowledge_chunks(doc_name);
+CREATE INDEX IF NOT EXISTS idx_chunks_domain ON knowledge_chunks(domain);
 
 -- ⑬ 生成的文档（对话式"写文档"保存的产物，同时同步进知识库）
 CREATE TABLE IF NOT EXISTS documents (
@@ -281,6 +288,8 @@ _MIGRATIONS = [
     # 注：lessons.kind 由 _migrate_lessons 处理（要和去重重建一起做）
     # 关切主动追问时间：同一话题只主动问一次（问两遍就从关心变催促）
     "ALTER TABLE concerns ADD COLUMN asked_at TEXT",
+    # 知识库分域（见建表注释：跨域污染实测 6/6 全错）
+    "ALTER TABLE knowledge_chunks ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
     # 使用反馈：被注入过几次 / 最近一次是什么时候。
     # importance 只增不减且被短句刷高（实测最高的是"你好""再确认一下"——
     # 越短越容易被检索命中），无法用来判断"这条到底有没有用"。

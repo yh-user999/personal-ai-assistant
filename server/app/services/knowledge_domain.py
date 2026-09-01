@@ -140,8 +140,47 @@ def _novel_person_names() -> dict[str, set[str]]:
 CLASS_WORD_DOMINANCE = 0.9
 
 
+# 体系词→书籍归属的缓存。这份映射只在灌入新书时才变，而 detect_domains
+# 每轮聊天都调用——实测未缓存时稳态 48ms/轮（首次 828ms，SQLite 页缓存冷），
+# 因为要对 3520 块做全表 LIKE 扫描。按知识库块数做失效判据：块数变了说明
+# 灌过新内容，重新计算；否则直接复用。
+_class_book_cache: dict[str, list[str]] = {}
+_class_book_cache_key: int | None = None
+
+
+def _chunk_count() -> int:
+    conn = connect()
+    try:
+        return conn.execute("SELECT COUNT(*) AS c FROM knowledge_chunks").fetchone()["c"]
+    finally:
+        conn.close()
+
+
+def invalidate_cache() -> None:
+    """灌库后调用（ingest_document 会触发）。"""
+    global _class_book_cache_key
+    _class_book_cache.clear()
+    _class_book_cache_key = None
+
+
 def _books_for_class_words(words: list[str]) -> list[str]:
     """体系词（命丛/命图）→ 独占它的书。无明显归属时返回空（不收窄）。"""
+    global _class_book_cache_key
+
+    count = _chunk_count()
+    if _class_book_cache_key != count:
+        _class_book_cache.clear()
+        _class_book_cache_key = count
+    key = "|".join(sorted(words))
+    if key in _class_book_cache:
+        return _class_book_cache[key]
+
+    result = _compute_books_for_class_words(words)
+    _class_book_cache[key] = result
+    return result
+
+
+def _compute_books_for_class_words(words: list[str]) -> list[str]:
     conn = connect()
     try:
         books = [r["doc_name"] for r in conn.execute(

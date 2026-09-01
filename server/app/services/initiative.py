@@ -16,8 +16,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-import httpx
-
 from app.config import settings
 from app.models.database import connect
 
@@ -205,25 +203,14 @@ def pick_stale_concern() -> dict | None:
 # ── 推送 ──────────────────────────────────────────────────
 
 async def _push(text: str) -> bool:
-    """发一条 QQ 私聊，返回是否确认送达。"""
-    headers = (
-        {"Authorization": f"Bearer {settings.qq_push_token}"}
-        if settings.qq_push_token
-        else {}
-    )
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.post(
-                f"{settings.qq_push_url.rstrip('/')}/send_private_msg",
-                json={"user_id": int(settings.qq_admin_id), "message": text},
-                headers=headers,
-            )
-        if r.status_code == 200 and r.json().get("status") == "ok":
-            return True
-        logger.warning("主动开口推送失败（下轮重试）: HTTP %s", r.status_code)
-    except Exception as e:
-        logger.warning("主动开口推送异常（下轮重试）: %s", e)
-    return False
+    """发一条 QQ 私聊，返回是否确认送达。
+
+    走 qq_push.send_private 单一出口——原先本模块自建 httpx.AsyncClient
+    且重复实现"成功"判据，连接不复用。
+    """
+    from app.services.qq_push import send_private
+
+    return await send_private(text)
 
 
 async def run_initiative() -> dict:

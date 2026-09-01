@@ -28,28 +28,21 @@ GRACE_SECONDS = 3600  # 错过触发后 1 小时内仍补跑
 
 
 async def _push_alert(text: str) -> None:
-    """任务失败告警 → 主人 QQ（唯一必达通道）。推送失败仅记日志。"""
+    """任务失败告警 → 主人 QQ（唯一必达通道）。推送失败仅记日志。
+
+    走 qq_push.send_private 单一出口——原先本函数自建 httpx.AsyncClient
+    并重复实现推送逻辑（三处之一，见 qq_push.send_private 的注释）。
+    """
     try:
         from app.config import settings as _s
 
         if not (_s.qq_push_url and _s.qq_admin_id):
             logger.warning("定时任务失败且 QQ 通道未配置: %s", text)
             return
-        import httpx
+        from app.services.qq_push import send_private
 
-        headers = (
-            {"Authorization": f"Bearer {_s.qq_push_token}"}
-            if _s.qq_push_token
-            else {}
-        )
-        async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.post(
-                f"{_s.qq_push_url.rstrip('/')}/send_private_msg",
-                json={"user_id": int(_s.qq_admin_id), "message": text},
-                headers=headers,
-            )
-            if r.status_code != 200:
-                logger.error("任务失败告警推送 HTTP %s: %s", r.status_code, text)
+        if not await send_private(text):
+            logger.error("任务失败告警推送未送达: %s", text)
     except Exception as e:
         logger.error("任务失败告警推送也失败: %s（原始告警: %s）", e, text)
 

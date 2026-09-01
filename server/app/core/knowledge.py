@@ -120,13 +120,18 @@ async def ingest_document(
     # 分批向量化（长文档单批超 API 上限）
     vectors = await embedding.embed_batched(chunks)
 
+    # 入库即定域：新块若留空 domain，分域检索会永远找不到它们
+    from app.services.knowledge_domain import classify_doc
+
+    domain = classify_doc(name)
+
     conn = connect()
     try:
         for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
             cur = conn.execute(
-                """INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (name, i, chunk, _now()),
+                """INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at, domain)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (name, i, chunk, _now(), domain),
             )
             conn.execute(
                 "INSERT INTO chunk_vectors (chunk_id, embedding) VALUES (?, ?)",
@@ -139,7 +144,11 @@ async def ingest_document(
         conn.commit()
     finally:
         conn.close()
-    return {"chunks": len(chunks), "doc": name}
+    # 灌库改变了块数与体系词分布 → 失效书籍归属缓存
+    from app.services.knowledge_domain import invalidate_cache
+
+    invalidate_cache()
+    return {"chunks": len(chunks), "doc": name, "domain": domain}
 
 
 async def _vector_search(query: str, top_k: int = 3, *,

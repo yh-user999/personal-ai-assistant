@@ -35,6 +35,36 @@ async def aclose() -> None:
     _client = None
 
 
+async def send_private(text: str) -> bool:
+    """给主人发一条 QQ 私聊，返回是否确认送达。所有 QQ 推送的单一出口。
+
+    收敢动因：原先有三处各自实现（本模块的提醒推送、initiative 的主动开口、
+    scheduler 的任务失败告警），且后两处每次调用都新建 httpx.AsyncClient
+    ——连接不复用，而且"成功"的判据散在三处（LESSONS 第 16 条：同一判据出现
+    在多个文件里等于三个都不可信）。
+    """
+    if not (settings.qq_push_url and settings.qq_admin_id):
+        return False
+    headers = (
+        {"Authorization": f"Bearer {settings.qq_push_token}"}
+        if settings.qq_push_token
+        else {}
+    )
+    try:
+        r = await _get_client().post(
+            f"{settings.qq_push_url.rstrip('/')}/send_private_msg",
+            json={"user_id": int(settings.qq_admin_id), "message": text},
+            headers=headers,
+        )
+    except Exception as e:
+        logger.warning("QQ 推送异常: %s", e)
+        return False
+    if r.status_code == 200 and r.json().get("status") == "ok":
+        return True
+    logger.warning("QQ 推送失败: HTTP %s %s", r.status_code, r.text[:120])
+    return False
+
+
 async def push_reminders() -> int:
     """推送所有到期提醒给主人 QQ，返回成功推送条数。未配置通道返回 0。
 

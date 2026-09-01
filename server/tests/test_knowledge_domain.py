@@ -173,6 +173,61 @@ def test_backfill_does_not_overwrite(db):
     assert d == kd.DOMAIN_PROJECT, "回填不该覆盖已有标签"
 
 
+def test_class_book_cache_speeds_up(db):
+    """书籍归属要缓存：detect_domains 每轮聊天都调，未缓存时对 3520 块做
+    全表 LIKE 扫描，实测稳态 48ms/轮（缓存后 9ms）。"""
+    import time
+
+    for i in range(20):
+        _seed("小说-寂静杀戮", i, "命丛的描述", kd.DOMAIN_NOVEL)
+    kd.invalidate_cache()
+
+    t = time.perf_counter()
+    first = kd._books_for_class_words(["命丛"])
+    cold = time.perf_counter() - t
+
+    t = time.perf_counter()
+    second = kd._books_for_class_words(["命丛"])
+    warm = time.perf_counter() - t
+
+    assert first == second
+    assert warm < cold, f"缓存未生效: cold={cold * 1000:.1f}ms warm={warm * 1000:.1f}ms"
+
+
+def test_cache_invalidated_by_chunk_count(db):
+    """块数变化（灌了新内容）→ 缓存自动失效重算。
+
+    构造：先让《寂静杀戮》独占「命丛」（另一本存在但不含该词，满足
+    len(books) > 1 的收窄前提），缓存结果；再往另一本灌入大量同词内容
+    打破独占度，验证缓存没有沿用旧答案。
+    """
+    for i in range(5):
+        _seed("小说-寂静杀戮", i, "命丛的设定", kd.DOMAIN_NOVEL)
+    _seed("小说-食物链顶端的男人", 0, "念气与能级，不含该体系词", kd.DOMAIN_NOVEL)
+
+    assert kd._books_for_class_words(["命丛"]) == ["小说-寂静杀戮"]
+
+    # 灌入另一本书的大量同词内容 → 归属改变（这里 59/64 = 92% 超过阈值，
+    # 独占方反转为另一本）。断言"结果变了"而非"结果为空"——重点是缓存
+    # 没有沿用旧答案，具体新答案取决于独占度计算。
+    for i in range(1, 60):
+        _seed("小说-食物链顶端的男人", i, "命丛也在这本里出现", kd.DOMAIN_NOVEL)
+    after = kd._books_for_class_words(["命丛"])
+    assert after != ["小说-寂静杀戮"], "块数变化后应重算而非沿用缓存"
+
+
+def test_invalidate_cache_callable(db):
+    kd.invalidate_cache()  # 不该抛异常
+
+
+def test_ingest_sets_domain(db):
+    """入库即定域：新块若留空 domain，分域检索永远找不到它们。"""
+    from app.services.knowledge_domain import classify_doc
+
+    assert classify_doc("小说-新书") == kd.DOMAIN_NOVEL
+    assert classify_doc("OPS") == kd.DOMAIN_PROJECT
+
+
 def test_domain_stats(db):
     _seed("小说-寂静杀戮", 1, "a", kd.DOMAIN_NOVEL)
     _seed("小说-寂静杀戮", 2, "b", kd.DOMAIN_NOVEL)

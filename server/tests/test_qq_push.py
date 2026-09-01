@@ -95,6 +95,61 @@ def test_push_sends_and_consumes(monkeypatch):
     assert asyncio.run(qq_push.push_reminders()) == 0
 
 
+def test_send_private_is_single_exit(monkeypatch):
+    """所有 QQ 推送走这一个出口。
+
+    收敢动因：原先三处各自实现（提醒推送 / 主动开口 / 任务失败告警），
+    后两处每次调用都新建 httpx.AsyncClient——连接不复用，且"成功"判据散在
+    三个文件里（LESSONS 第 16 条：同一判据出现在多处等于都不可信）。
+    """
+    import asyncio
+
+    monkeypatch.setattr(settings, "qq_push_url", "http://127.0.0.1:3100")
+    monkeypatch.setattr(settings, "qq_push_token", "t-token")
+    monkeypatch.setattr(settings, "qq_admin_id", "10001")
+    fake = _FakeAsyncClient()
+    _use_client(monkeypatch, fake)
+
+    assert asyncio.run(qq_push.send_private("测试消息")) is True
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["json"]["message"] == "测试消息"
+    assert fake.calls[0]["headers"]["Authorization"] == "Bearer t-token"
+
+
+def test_send_private_without_config(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(settings, "qq_push_url", "")
+    assert asyncio.run(qq_push.send_private("x")) is False
+
+
+def test_send_private_reuses_client(monkeypatch):
+    """复用长驻客户端，不逐次新建连接。"""
+    import asyncio
+
+    monkeypatch.setattr(settings, "qq_push_url", "http://127.0.0.1:3100")
+    monkeypatch.setattr(settings, "qq_admin_id", "10001")
+    fake = _FakeAsyncClient()
+    _use_client(monkeypatch, fake)
+    for _ in range(3):
+        asyncio.run(qq_push.send_private("x"))
+    assert len(fake.calls) == 3, "三次调用应复用同一 client"
+
+
+def test_initiative_uses_shared_exit(monkeypatch):
+    """主动开口不再自建 client——它应该调 qq_push.send_private。"""
+    import asyncio
+
+    from app.services import initiative
+
+    monkeypatch.setattr(settings, "qq_push_url", "http://127.0.0.1:3100")
+    monkeypatch.setattr(settings, "qq_admin_id", "10001")
+    fake = _FakeAsyncClient()
+    _use_client(monkeypatch, fake)
+    assert asyncio.run(initiative._push("主动消息")) is True
+    assert fake.calls and fake.calls[0]["json"]["message"] == "主动消息"
+
+
 def test_push_failure_counted_zero(monkeypatch):
     import asyncio
 

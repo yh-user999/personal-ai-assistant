@@ -16,7 +16,7 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_entities, novel_writing, reminders, resume, self_state, subjective_time, unresolved, worklog
+from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_entities, novel_writing, plain_text, reminders, resume, self_state, subjective_time, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
@@ -60,8 +60,15 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 行为规范：
 - 禁止忽视用户的历史选择和风格偏好
 - 当用户行为模式变化时，主动询问是否需要调整策略
-- 回复格式：日常对话/问答用纯文本，禁止使用 **加粗**、*斜体*、- 列表、
-  # 标题等 Markdown 标记（用户要求格式化输出时才用；写文档/简历另有专门流程）
+- 回复格式（重要）：用户在 QQ 里看你的回复，**QQ 不渲染 Markdown**——
+  写 **加粗** 他看到的就是两个星号，写 `- 列表` 他看到的就是减号。
+  所以日常对话/问答一律纯文本：禁止 **加粗**、*斜体*、`- ` 或 `* ` 列表、
+  `# ` 标题、`1. ` 编号、``` 代码块。
+  注意：下方注入的资料里可能出现 `- ` 开头的条目，那只是**给你看的排版**，
+  不是让你照抄的格式——转述时改成自然语句。
+  需要罗列多项时用顿号或分句连写（"命丛有夜海、白茫、尸脉…"），
+  实在需要分行就直接换行不加符号。
+  （用户明确要求格式化输出时才用 Markdown；写文档/简历另有专门流程）
 - 回复内容：按当前话题真正需要什么来决定说什么、说多少，不按字数封顶。
   下方注入的记忆/事实/资料是**备查材料，不是待播报的清单**——只取与当前
   问题直接相关的那一部分，其余一句都不要提。
@@ -730,6 +737,13 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     )
     try:
         reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
+        # 去 Markdown 兜底：QQ 不渲染，星号减号会原样显示给用户。
+        # prompt 禁令是概率性的（temperature 0.7 总有漏网），实测线上回复里
+        # ** 与 - 列表大量出现。这里做确定性转换（不是删除，信息不丢）。
+        # 只管聊天主路径——写文档/简历走各自流程，那些**需要** Markdown。
+        if plain_text.has_markdown(reply):
+            logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
+            reply = plain_text.strip_markdown(reply)
     except Exception:
         # 失败给友好回复而不是裸 500；用户消息已入库（第 3 步），assistant 侧不写
         logger.exception("LLM 调用失败")

@@ -686,7 +686,7 @@ def _build_kind_section(book: str, kind: str, query: str) -> str:
         name = ent["name"]
         # 用户修订优先于原文（verified 的 note 是权威版本）
         if ent.get("note"):
-            lines.append(f"- {name}（你修订过）：{ent['note']}")
+            lines.append(f"{name}（你修订过）：{ent['note']}")
             detailed += 1
             used += len(ent["note"])
             continue
@@ -698,13 +698,13 @@ def _build_kind_section(book: str, kind: str, query: str) -> str:
                                  "chunk": blk["chunk_index"]})
         snippets = _dedupe(snippets)[:MAX_SNIPPETS_PER_ENTITY]
         if not snippets:
-            lines.append(f"- {name}（实体表有名字，但正文未找到描述）")
+            lines.append(f"{name}（实体表有名字，但正文未找到描述）")
             continue
         detailed += 1
         for s in snippets:
             if used + len(s["text"]) > TOTAL_BUDGET_CHARS:
                 break
-            lines.append(f"- {name}（#{s['chunk']}）：{s['text']}")
+            lines.append(f"{name}（#{s['chunk']}）：{s['text']}")
             used += len(s["text"])
 
     if not lines:
@@ -718,7 +718,13 @@ def _build_kind_section(book: str, kind: str, query: str) -> str:
         report += f"；原文提到「{group_name}」应有 {expected} 个"
         if len(entities) < expected:
             report += f"，仍缺 {expected - len(entities)} 个未在正文中命名"
+    # 注入里不用 "- " 开头：LLM 会照抄注入的格式输出。实测注入里有 24 行
+    # "- "，她的回复就满是 Markdown 列表和 **加粗**——而 QQ 不渲染 Markdown，
+    # 用户看到的是一堆字面的星号和减号。**注入格式在示范她该怎么写**，
+    # 这比 prompt 里的禁令更有说服力。
     return (
         f"【{book} · {kind}清单（实体索引检索，可直接作为回答依据）】\n"
-        f"（{report}。回答时如实说明缺口，不要凑数）\n" + "\n".join(lines)
+        f"（{report}。回答时如实说明缺口，不要凑数。"
+        f"转述时用自然语句，不要用 Markdown 列表或加粗——用户端不渲染）\n"
+        + "\n".join(lines)
     )

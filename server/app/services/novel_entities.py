@@ -28,6 +28,7 @@
 - **不存问答结果**——答案缓存会随提问维度爆炸，且不同批次会互相矛盾。
   检索每次重做（纯 SQL 零 LLM，重做不心疼）。
 """
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -40,8 +41,10 @@ logger = logging.getLogger("assistant.novel_entities")
 ENTITY_KINDS: dict[str, tuple[str, ...]] = {
     "命丛": ("命丛",),
     "命图": ("命图",),
-    "功法": ("道术", "功法", "秘籍", "武功"),
-    "势力": ("宗", "门派", "兵团", "教"),
+    "功法": ("道术", "功法", "秘籍", "武功", "招式"),
+    # 势力的触发词不能用单字「宗」「教」——会命中"宗旨""教训""教会"这类
+    # 无关词，实测候选里混进了"孙悟空""恶意""封印"。用双字词组约束。
+    "势力": ("门派", "兵团", "宗门", "教派", "帮派", "势力", "组织"),
 }
 
 # ── 命名句模式：只有这些块需要交给 LLM 读 ────────────────────
@@ -354,6 +357,9 @@ def parse_group_size(group_name: str) -> int | None:
 
 # ── 阶段一（续）：LLM 抽专名 ───────────────────────────────
 
+# 抽取并发度：太高会被 API 限速，太低跑不完（58 块串行超过 15 分钟）
+EXTRACT_CONCURRENCY = 6
+
 EXTRACT_PROMPT = """从下面的小说片段里找出所有「{kind}」的**专有名称**。
 
 只输出 JSON：{{"names": ["名称1", "名称2"]}}
@@ -411,24 +417,33 @@ async def extract_entities(book: str, kind: str, *, dry_run: bool = False,
     if not blocks:
         return {"kind": kind, "names": [], "blocks": 0, "reason": "无命名句候选块"}
 
-    found: dict[str, int] = {}  # name → first_chunk
-    for b in blocks:
+    # 并发抽取：逐块串行时 58 块 × 数秒/块 会跑十几分钟（实测超 15 分钟未完）。
+    # 限流是必须的——一次性 gather 60 个请求会被 API 端限速或直接拒绝。
+    sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
+
+    async def _one(b: dict) -> tuple[int, list[str]]:
         prompt = EXTRACT_PROMPT.format(
             kind=kind,
             hints="、".join(b["hints"]) or "（无）",
             text=b["content"][:1800],
         )
-        try:
-            result = await llm.chat_json(
-                "你是小说设定提取助手，只输出 JSON。", prompt
-            )
-        except Exception as e:
-            logger.warning("实体抽取失败 chunk#%s: %s", b["chunk_index"], e)
-            continue
-        for name in (result.get("names") or []):
-            name = str(name).strip()
+        async with sem:
+            try:
+                result = await llm.chat_json(
+                    "你是小说设定提取助手，只输出 JSON。", prompt
+                )
+            except Exception as e:
+                logger.warning("实体抽取失败 chunk#%s: %s", b["chunk_index"], e)
+                return b["chunk_index"], []
+        return b["chunk_index"], [str(n).strip() for n in (result.get("names") or [])]
+
+    results = await asyncio.gather(*(_one(b) for b in blocks))
+
+    found: dict[str, int] = {}  # name → first_chunk（按块序保序，取最早出现）
+    for cidx, names in sorted(results, key=lambda kv: kv[0]):
+        for name in names:
             if _plausible_name(name) and name not in ENTITY_KINDS.get(kind, ()):
-                found.setdefault(name, b["chunk_index"])
+                found.setdefault(name, cidx)
 
     # 集合归属：原文说「七大神命丛」就把该类实体挂上去，用来算缺口
     groups = find_group_mentions(book)

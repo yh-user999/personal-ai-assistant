@@ -260,6 +260,24 @@ def test_context_respects_budget(db):
     assert len(ctx) < ne.TOTAL_BUDGET_CHARS * 2, f"注入超预算: {len(ctx)}"
 
 
+def test_faction_trigger_words_avoid_single_char(db):
+    """势力触发词不能用单字「宗」「教」——会命中"宗旨""教训"这类无关词。
+
+    实测用单字时候选里混进了"孙悟空""恶意""封印"。
+    """
+    for w in ENTITY_KINDS_FACTION:
+        assert len(w) >= 2, f"势力触发词过短会误命中: {w}"
+
+
+ENTITY_KINDS_FACTION = ne.ENTITY_KINDS["势力"]
+
+
+def test_extract_concurrency_bounded():
+    """并发度必须有上限：一次性 gather 60 个请求会被 API 限速或拒绝，
+    而串行 58 块会跑十几分钟（实测超 15 分钟未完）。"""
+    assert 1 < ne.EXTRACT_CONCURRENCY <= 12
+
+
 def test_dedupe_removes_repeated_facts(db):
     """同一段设定被逐字重复引用时只留一份。"""
     same = "这个命丛被称之为夜海，是失传命丛之一，位于左眼中。"

@@ -148,6 +148,59 @@ def test_state_injection_combines(db):
     assert "今日情绪" in text and "倾听" in text
 
 
+# ── 隔日跟进：真人会"记得昨天" ──────────────────────────────
+
+def _insert_yesterday(mood_name: str, hour: int = 12):
+    """按本地日期精确插到昨天（hours_ago 在跨零点时会算错日子）。"""
+    day = (datetime.now(TZ) - timedelta(days=1)).replace(
+        hour=hour, minute=0, second=0, microsecond=0
+    )
+    conn = connect()
+    conn.execute(
+        "INSERT INTO mood_log (mood, snippet, created_at) VALUES (?, '', ?)",
+        (mood_name, day.astimezone(ZoneInfo("UTC")).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_yesterday_followup_triggers(db):
+    _insert_yesterday("烦躁", hour=10)
+    _insert_yesterday("烦躁", hour=15)
+    text = mood.get_yesterday_followup()
+    assert "昨天" in text and "烦躁×2" in text
+    assert "问过就别再提" in text
+
+
+def test_yesterday_followup_needs_two_negatives(db):
+    _insert_yesterday("烦躁", hour=10)
+    assert mood.get_yesterday_followup() == ""
+
+
+def test_yesterday_followup_ignores_positive(db):
+    _insert_yesterday("开心", hour=10)
+    _insert_yesterday("开心", hour=15)
+    assert mood.get_yesterday_followup() == ""
+
+
+def test_yesterday_followup_skipped_after_first_message_today(db):
+    """今天已经聊过 → 跟进时机已过，不在对话中途回头问昨天。"""
+    _insert_yesterday("烦躁", hour=10)
+    _insert_yesterday("疲惫", hour=15)
+    _insert("着急")  # 今天的记录
+    assert mood.get_yesterday_followup() == ""
+
+
+def test_yesterday_followup_empty_db(db):
+    assert mood.get_yesterday_followup() == ""
+
+
+def test_state_injection_includes_yesterday_followup(db):
+    _insert_yesterday("烦躁", hour=10)
+    _insert_yesterday("低落", hour=16)
+    assert "昨天" in mood.get_state_injection()
+
+
 # ── 第 6.28 课 C1：情绪周报统计 ────────────────────────────
 
 def test_weekly_stats_counts(db):

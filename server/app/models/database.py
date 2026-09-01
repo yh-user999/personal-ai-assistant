@@ -87,11 +87,16 @@ CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at);
 CREATE INDEX IF NOT EXISTS idx_worklog_created ON work_log(created_at);
 
 -- ⑦ 教训表（自省模块：用户纠正的内容，高优先级长期记忆）
+-- UNIQUE(content)：同一句纠正只留一行（重复纠正刷新时间而非再插一份）——
+-- 没有这条约束时 52 行里只有 7 条不同内容，注入窗口被副本挤满，
+-- "你就叫小月吧"这类身份设定反而进不了 prompt。
 CREATE TABLE IF NOT EXISTS lessons (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content TEXT NOT NULL,            -- 用户纠正的原话
   context TEXT DEFAULT '',          -- 被纠正的 AI 回复（上下文）
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'style',  -- identity（身份设定，永久优先）/ style / fact
+  UNIQUE(content)
 );
 
 -- ⑧ 每日小结（每晚 22:00 生成当天工作摘要）
@@ -108,6 +113,7 @@ CREATE TABLE IF NOT EXISTS concerns (
   topic TEXT NOT NULL,
   mention_count INTEGER DEFAULT 1,
   last_mentioned_at TEXT NOT NULL,
+  asked_at TEXT,                      -- 主动问过"这事后来怎么样了"的时间（问过不再问第二次）
   PRIMARY KEY(user_id, topic)
 );
 
@@ -225,6 +231,18 @@ CREATE TABLE IF NOT EXISTS fitness_log (
   created_at TEXT NOT NULL
 );
 
+-- ㉓ 主动开口台账（她"先找你"的记录：每日上限、无回应降频都靠这张表）
+-- responded：推送后用户是否回过话（0/1）；连续无回应即自动降频。
+CREATE TABLE IF NOT EXISTS initiative_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,              -- daily（今日一句）/ concern（搁置话题续上）
+  content TEXT NOT NULL,
+  topic TEXT DEFAULT '',           -- concern 类的话题（同话题不问第二次）
+  sent_at TEXT NOT NULL,
+  responded INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_initiative_sent ON initiative_log(sent_at);
+
 -- ㉒ 健身知识卡（第 6.29 课：权威指南提炼，仿小说设定卡）
 CREATE TABLE IF NOT EXISTS fitness_facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,11 +257,76 @@ CREATE TABLE IF NOT EXISTS fitness_facts (
 _MIGRATIONS = [
     # 执行器指令认领时间：支撑原子认领 + claimed 超时释放
     "ALTER TABLE executor_commands ADD COLUMN claimed_at TEXT",
+    # 注：lessons.kind 由 _migrate_lessons 处理（要和去重重建一起做）
+    # 关切主动追问时间：同一话题只主动问一次（问两遍就从关心变催促）
+    "ALTER TABLE concerns ADD COLUMN asked_at TEXT",
 ]
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
     return any(r[1] == col for r in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
+def _migrate_lessons(conn: sqlite3.Connection) -> None:
+    """教训表去重迁移：加 kind 列 + 重建带 UNIQUE(content) 的表。
+
+    老库无任何去重，`save_lesson` 每次 INSERT 都再插一份——实测 52 行里
+    只有 7 条不同内容，注入窗口（LIMIT 5）被同一句话的副本占满。
+    去重规则：同 content 保留 created_at 最早的一条（保住"首次被纠正"的
+    时间语义），context 取该行的；kind 由规则分类回填。
+    全程幂等：已有 UNIQUE(content) 即跳过。
+    """
+    if not _table_exists(conn, "lessons"):
+        return
+    # ① kind 列（老库加列即可，新库由 schema 建出）
+    if not _column_exists(conn, "lessons", "kind"):
+        try:
+            conn.execute("ALTER TABLE lessons ADD COLUMN kind TEXT NOT NULL DEFAULT 'style'")
+        except sqlite3.OperationalError:
+            pass
+
+    # ② UNIQUE(content)：SQLite 不能后加约束，必须重建表
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='lessons'"
+    ).fetchone()
+    if row and "UNIQUE(content)" in (row[0] or "").replace(" ", ""):
+        return  # 已迁移
+
+    try:
+        from app.services.self_reflect import classify_lesson
+    except Exception:
+        def classify_lesson(_content: str) -> str:  # 兜底：分类失败不阻塞去重
+            return "style"
+
+    keep = conn.execute(
+        """SELECT id, content, context, created_at FROM lessons
+           WHERE id IN (
+             SELECT id FROM lessons l2
+             WHERE l2.content = lessons.content
+             ORDER BY l2.created_at ASC, l2.id ASC LIMIT 1
+           )
+           ORDER BY created_at ASC, id ASC"""
+    ).fetchall()
+
+    conn.execute(
+        """CREATE TABLE lessons_new (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             content TEXT NOT NULL,
+             context TEXT DEFAULT '',
+             created_at TEXT NOT NULL,
+             kind TEXT NOT NULL DEFAULT 'style',
+             UNIQUE(content)
+           )"""
+    )
+    for r in keep:
+        conn.execute(
+            "INSERT OR IGNORE INTO lessons_new (content, context, created_at, kind) "
+            "VALUES (?, ?, ?, ?)",
+            (r["content"], r["context"], r["created_at"], classify_lesson(r["content"])),
+        )
+    conn.execute("DROP TABLE lessons")
+    conn.execute("ALTER TABLE lessons_new RENAME TO lessons")
+    logger.info("lessons 去重迁移完成：保留 %d 条唯一教训", len(keep))
 
 
 def _drop_legacy_fts(conn: sqlite3.Connection) -> None:
@@ -524,12 +607,15 @@ def init_db() -> None:
             pass
     # 增量迁移：两条建表路径（vec 可用/降级）都要跑——老库升级加列与 user_id 迁移
     try:
+        # 顺序有讲究：_migrate_user_id 会整表重建 concerns（按固定列名拷贝），
+        # 必须先跑，之后再加 asked_at——反过来会把刚加的列连数据一起丢掉。
+        _migrate_user_id(conn)  # v0.4 多人支持：老库加 user_id 并回填
         for sql in _MIGRATIONS:
             try:
                 conn.execute(sql)
             except sqlite3.OperationalError:
                 pass  # 列已存在（新库由 schema 直接建出）
-        _migrate_user_id(conn)  # v0.4 多人支持：老库加 user_id 并回填
+        _migrate_lessons(conn)  # 教训去重（UNIQUE(content)）+ kind 分类列
         conn.commit()
     except sqlite3.OperationalError as e:
         # 极端情况（连基础表都没建成）下放弃迁移，功能退化为 v0.3 行为

@@ -70,6 +70,21 @@ class Settings(BaseSettings):
     qq_push_token: str = ""
     qq_admin_id: str = ""
 
+    # ── 主动开口（她"先找你"）────────────────────────────────
+    # 默认关闭：这是行为上最大的改变（从"你问她答"变成"她会找你"），
+    # 确认体验后再开。开启后仍有硬约束：每日 1 条上限、22:00-08:00 静默、
+    # 连续 3 次无回应自动降频到每周 1 条。
+    initiative_enabled: bool = False
+    # 主动开口的检查时刻（本地时间）：22:10 = 每日小结（22:00）刚生成完
+    initiative_hour: int = 22
+    initiative_minute: int = 10
+    # 静默时段 [start, 24) ∪ [0, end)：默认 23:00-08:00。
+    # 注意不是 22:00——小结 22:00 才生成，22 点整段静默会让"今日一句"永远发不出
+    # 去（只剩搁置话题）。想要 22 点后彻底安静就把 INITIATIVE_QUIET_START 设成 22
+    # 并把 INITIATIVE_HOUR 调到 21。
+    initiative_quiet_start: int = 23
+    initiative_quiet_end: int = 8
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)

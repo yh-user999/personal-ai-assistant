@@ -16,11 +16,12 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, documents, executor, fitness, goals, message_search, mood, novel_writing, reminders, resume, unresolved, worklog
+from app.services import behavior_context, confirm, documents, executor, fitness, goals, message_search, mood, novel_writing, reminders, resume, self_state, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
 from app.services.profile import get_profile_injection
+from app.services.sanitize import sanitize as _sanitize
 from app.services.self_reflect import detect_correction, get_lessons_injection, save_lesson
 
 router = APIRouter()
@@ -70,6 +71,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 - 信息冲突：「持久事实」与「用户画像」若出现冲突，以画像为准；
   不要在回复中向用户复述冲突内容或罗列两套说法
 - 情绪适配：若下方标注了用户当前状态，严格按其指引调整回复方式
+- 不确定就说不确定：没把握的事直说"这个我不太确定"，不硬编、不猜着当事实讲；
+  被问到超出记忆与资料范围的事就说不记得了，别圆场
 
 快捷启动器（桌面端自动执行，你无需处理）：用户说"记住 打开X = 网址/程序路径"
 可注册常用软件与网页，之后"打开X""在X搜索 话题""用chrome打开X"由桌面直接执行。
@@ -119,6 +122,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 
 今日情绪走势与连续状态（小月要延续情绪语境，按指引调整）：
 {mood_state}
+
+{self_state}
 """
 
 
@@ -372,23 +377,8 @@ async def _handle_search(msg: str, request: Request, ctx: dict | None = None) ->
     return ChatResponse(reply=message_search.format_results(search_kw, user_id=uid), memories_used=0)
 
 
-async def _handle_executor(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
-    """执行器命令（第 11/13/6.24 课）：打开/列目录/读文件/文件手/搜索文件 + 心跳提示。"""
-    exec_cmd = executor.parse_executor_command(msg)
-    if not exec_cmd:
-        return None
-    action, target = exec_cmd
-    # 远程 open 也走白名单，不允许借黑名单启动任意程序/URL。
-    paths = executor.unpack_paths(action, target)
-    if action == "open":
-        if not executor.check_open_target(target):
-            return ChatResponse(reply="🔒 打开目标不在白名单或不是已登记别名，已拒绝", memories_used=0)
-    elif not (action == "search_files" and not paths):
-        if not paths or not all(executor.check_roots(p) for p in paths):
-            return ChatResponse(
-                reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
-                memories_used=0,
-            )
+def _enqueue_and_reply(action: str, target: str, request: Request) -> ChatResponse:
+    """入队 + 组织回复（含电脑离线提示）。确认前后共用同一出口。"""
     cmd_id = executor.enqueue(action, target)
     # 第 8 课：电脑在线状态提示（QQ 指挥时最有用——关机也能先记账）
     hb = getattr(request.app.state, "collector_heartbeat", None)
@@ -405,8 +395,72 @@ async def _handle_executor(msg: str, request: Request, ctx: dict | None = None) 
     )
 
 
+async def _handle_confirm(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
+    """确认层：上一轮挂起的破坏性/低置信度指令，本轮收到"确认/取消"才处理。
+
+    必须排在执行器之前——否则"确认"二字会被其他命令族或 LLM 吃掉。
+    """
+    uid = (ctx or {}).get("uid") or ""
+    if confirm.peek(uid) is None:
+        return None
+    verdict = confirm.parse_reply(msg)
+    if verdict is None:
+        # 既不是确认也不是取消：放弃挂起的指令，让消息正常走下去
+        # （用户已经在说别的事了，不该把它当成对上一条的回答）
+        confirm.clear(uid)
+        return None
+    if verdict == "cancel":
+        confirm.clear(uid)
+        return ChatResponse(reply="好，已取消。", memories_used=0)
+    item = confirm.take(uid)
+    if item is None:
+        return ChatResponse(reply="刚才那条指令已经超时失效了，需要的话再说一次。", memories_used=0)
+    return _enqueue_and_reply(item["action"], item["target"], request)
+
+
+async def _handle_executor(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
+    """执行器命令（第 11/13/6.24 课）：打开/列目录/读文件/文件手/搜索文件 + 心跳提示。"""
+    exec_cmd = executor.parse_executor_command(msg)
+    if not exec_cmd:
+        return None
+    action, target = exec_cmd
+    # 远程 open 也走白名单，不允许借黑名单启动任意程序/URL。
+    paths = executor.unpack_paths(action, target)
+    if action == "open":
+        if not executor.check_open_target(target):
+            return ChatResponse(reply="🔒 打开目标不在白名单或不是已登记别名，已拒绝", memories_used=0)
+        # "打开思路想想别的办法"这类：形态像别名但既非已登记别名、也不像路径。
+        # 此前会入队后被执行端拒绝，用户收到一句安全提示而不是回答——
+        # 这里返回 None 让消息落回 LLM 主路径，当成正常聊天回应。
+        if not executor.plausible_open_target(target):
+            return None
+    elif not (action == "search_files" and not paths):
+        if not paths or not all(executor.check_roots(p) for p in paths):
+            return ChatResponse(
+                reply=f"🔒 该操作超出白名单目录（EXECUTOR_ALLOWED_ROOTS），已拒绝",
+                memories_used=0,
+            )
+
+    # 确认层：破坏性动作（move/rename）与低置信度 open 先问一句。
+    # open 的置信度：像路径 = 高（用户给了明确目标）；短别名 = 低
+    # （服务端拿不到别名表，"打开新世界的大门"与真别名形态无法区分）。
+    confident = action != "open" or executor.confident_open_target(target)
+    if confirm.needs_confirm(action, target, confident=confident):
+        uid = (ctx or {}).get("uid") or ""
+        desc = executor.describe_command(action, target)
+        confirm.remember(uid, action, target, desc)
+        return ChatResponse(
+            reply=f"❓ 需要我{desc}吗？\n回复「确认」执行，「取消」放弃（3 分钟内有效）",
+            memories_used=0,
+        )
+    return _enqueue_and_reply(action, target, request)
+
+
 # 注册顺序 = 历史分支顺序（隐式契约，勿随意调换）
+# confirm 必须在最前：挂起的确认要先消费掉"确认/取消"，
+# 否则这两个词会被后面的命令族或 LLM 抢走。
 _COMMAND_HANDLERS: list[tuple[str, object]] = [
+    ("confirm", _handle_confirm),
     ("worklog", _handle_worklog),
     ("time", _handle_time),
     ("reminders", _handle_reminders),
@@ -422,7 +476,9 @@ _COMMAND_HANDLERS: list[tuple[str, object]] = [
 # v0.4：访客不可用的命令族（主人专属功能）。跳过 = 不执行，
 # 消息落入 LLM 主路径，由访客边界 prompt 引导礼貌说明。
 GUEST_BLOCKED_HANDLERS = frozenset(
-    {"worklog", "reminders", "documents", "resume", "fitness", "novel", "executor"}
+    # confirm 一并屏蔽：访客既然进不了 executor，也不该有待确认指令可确认
+    # （少了这条，伪造 uid 的访客能把主人挂起的指令"确认"掉）
+    {"confirm", "worklog", "reminders", "documents", "resume", "fitness", "novel", "executor"}
 )
 
 GUEST_MAX_MSG_CHARS = 2000
@@ -461,6 +517,12 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         mood_name = mood.detect_mood_name(msg)
         if mood_name:
             mood.record_mood(mood_name, msg)
+        # 主动开口的回应闭环：她先找了你、你回了话 → 标记已回应
+        # （连续无回应才降频，这里是"有回应"的唯一入口）
+        if settings.initiative_enabled:
+            from app.services import initiative
+
+            initiative.mark_responded()
 
     # 命令路由：按注册顺序试各命令族，命中即回（访客跳过主人专属族）
     for name, handler in _COMMAND_HANDLERS:
@@ -562,6 +624,9 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     # 情绪记忆层 + 反馈闭环（第 6.27 课）：今日曲线 + 负面连击降级（主人专属）
     system = system.replace("{mood}", mood.detect_mood(msg) if is_owner else "")
     system = system.replace("{mood_state}", mood.get_state_injection() if is_owner else "")
+    # 自我状态：小月自己的处境（熟络度/久别/刚被纠正）——她也有连续性，
+    # 不是每轮都重新出生。无内容时替换为空串，不占 prompt。
+    system = system.replace("{self_state}", self_state.get_self_state_injection(user_id=uid))
 
     # 2) 多轮上下文：最近对话原文（窗口）+ 更早对话摘要（续顺序感，按用户）
     history = memory.get_recent_history(settings.history_limit, user_id=uid)
@@ -575,7 +640,11 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         system = system.replace("{older}", "（无更早对话）")
 
     # 3) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
-    await memory.write_message("user", msg, user_id=uid)
+    #    复用第 1 步检索时算出的 query 向量——同一条消息此前会被 embed 两次
+    #    （一次做检索、一次入库），白花一次网络往返与 token。
+    await memory.write_message(
+        "user", msg, user_id=uid, precomputed_vec=memory.take_query_vec(_sanitize(msg))
+    )
 
     # 4) 调 LLM（system + 历史 + 当前消息——"再确认一下"类消息能接上上下文）
     llm_messages = (

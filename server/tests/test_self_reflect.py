@@ -9,10 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_self_reflect.db")
 
-from app.models.database import init_db, reset_connections  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
 from app.services.self_reflect import (  # noqa: E402
+    classify_lesson,
     count_lessons_since,
     detect_correction,
     get_lessons_injection,
@@ -21,11 +22,16 @@ from app.services.self_reflect import (  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db_file = Path("/tmp/test_self_reflect.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
-    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
+def fresh_db(tmp_path, monkeypatch):
+    """每个用例一个独立临时库。
+
+    必须 monkeypatch settings.db_path，不能靠 os.environ.setdefault("DB_PATH")：
+    conftest 在收集阶段就 import 了 app.config，settings 是 lru_cache 单例，
+    此后改环境变量已经无效——那种写法会让测试静默写到真实库
+    ./data/assistant.db（本文件的迁移用例含 DROP TABLE，曾真删掉线上教训表）。
+    """
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()  # 长驻连接缓存握着旧库句柄，切库后必须丢弃
     init_db()
     yield
     reset_connections()
@@ -54,3 +60,88 @@ def test_count_lessons_since():
     assert count_lessons_since("2000-01-01T00:00:00+00:00") >= 1
     # 从未来时间起统计应为 0
     assert count_lessons_since("2100-01-01T00:00:00+00:00") == 0
+
+
+# ── 去重与优先级（实测 bug 修复：52 行里只有 7 条不同内容）────
+
+def test_save_lesson_dedupes_same_content():
+    """同一句纠正反复存只留一行——否则注入窗口被副本占满。"""
+    first = save_lesson("回答要简洁，不要长篇大论", "ctx1")
+    for _ in range(15):
+        save_lesson("回答要简洁，不要长篇大论", "ctx2")
+    conn = connect()
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM lessons WHERE content='回答要简洁，不要长篇大论'"
+    ).fetchone()["c"]
+    ctx = conn.execute(
+        "SELECT context FROM lessons WHERE content='回答要简洁，不要长篇大论'"
+    ).fetchone()["context"]
+    conn.close()
+    assert n == 1
+    assert ctx == "ctx2", "重复纠正应刷新 context 与时间"
+    assert save_lesson("回答要简洁，不要长篇大论") == first, "id 应保持稳定"
+
+
+def test_injection_has_no_duplicates():
+    for _ in range(10):
+        save_lesson("重排序应该放在检索之后")
+        save_lesson("回答要简洁，不要长篇大论")
+    lines = get_lessons_injection().splitlines()
+    assert len(lines) == len(set(lines)), f"注入出现重复行: {lines}"
+
+
+def test_classify_lesson_kinds():
+    assert classify_lesson("你就叫小月吧，记住了吗") == "identity"
+    assert classify_lesson("给你起名叫小月") == "identity"
+    assert classify_lesson("回答要简洁，不要长篇大论") == "style"
+    assert classify_lesson("以后别用 emoji") == "style"
+    assert classify_lesson("不对，重排序应该放在检索之后") == "fact"
+
+
+def test_identity_lesson_always_injected():
+    """身份设定不占普通配额：塞满 10 条技术纠正后它仍必须在注入里。"""
+    save_lesson("你就叫小月吧，记住了吗")
+    for i in range(10):
+        save_lesson(f"不对，技术细节第 {i} 条")
+    text = get_lessons_injection(limit=5)
+    assert "你就叫小月吧" in text, "身份设定被普通教训挤出了注入窗口"
+    assert text.splitlines()[0].startswith("- 你就叫小月吧"), "identity 应排在最前"
+
+
+def test_migration_dedupes_legacy_rows():
+    """老库（无 UNIQUE 约束）里的副本行，迁移后按内容去重且保留最早时间。"""
+    conn = connect()
+    conn.execute("DROP TABLE lessons")
+    conn.execute(
+        "CREATE TABLE lessons (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "content TEXT NOT NULL, context TEXT DEFAULT '', created_at TEXT NOT NULL)"
+    )
+    for ts in ("2026-09-03T00:00:00+00:00", "2026-09-01T00:00:00+00:00",
+               "2026-09-02T00:00:00+00:00"):
+        conn.execute(
+            "INSERT INTO lessons (content, context, created_at) VALUES ('测试教训', '', ?)",
+            (ts,),
+        )
+    conn.execute(
+        "INSERT INTO lessons (content, context, created_at) "
+        "VALUES ('你就叫小月吧，记住了吗', '', '2026-08-26T07:22:37+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    init_db()  # 触发 _migrate_lessons
+
+    conn = connect()
+    rows = conn.execute("SELECT content, created_at, kind FROM lessons").fetchall()
+    conn.close()
+    by_content = {r["content"]: r for r in rows}
+    assert len(rows) == 2, f"未去重: {[dict(r) for r in rows]}"
+    assert by_content["测试教训"]["created_at"] == "2026-09-01T00:00:00+00:00", \
+        "应保留最早一条（首次被纠正的时间语义）"
+    assert by_content["你就叫小月吧，记住了吗"]["kind"] == "identity"
+
+    # 迁移幂等：再跑一次不炸、不变
+    init_db()
+    conn = connect()
+    assert conn.execute("SELECT COUNT(*) AS c FROM lessons").fetchone()["c"] == 2
+    conn.close()

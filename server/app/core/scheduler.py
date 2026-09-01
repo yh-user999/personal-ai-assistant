@@ -133,6 +133,16 @@ class SchedulerManager:
         # 每日进度同步：4:10 把仓库 docs/*.md 重灌知识库 + 刷新课程进度事实
         self._add("progress_sync", sync_progress_to_bot, "cron", hour=4, minute=10)
 
+        # 主动开口（默认关闭）：小结生成后挑一句主动推 QQ。
+        # 未启用时任务本身仍注册，run_initiative 里 should_speak 直接返回
+        # skipped——开关只在 .env 改一行，不用动代码/重排任务。
+        from app.services.initiative import run_initiative
+
+        self._add(
+            "initiative", run_initiative, "cron",
+            hour=settings.initiative_hour, minute=settings.initiative_minute,
+        )
+
         # QQ 提醒推送（第 8 课）：每分钟检查到期提醒并推主人 QQ（唯一通道）。
         # 高频通道不套告警 wrapper（失败每分钟告警反而轰炸），自身已留痕。
         self.scheduler.add_job(

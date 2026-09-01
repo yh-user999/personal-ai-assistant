@@ -67,7 +67,10 @@ def get_concerns_injection(limit: int = 4, user_id: str | None = None) -> str:
 
 
 def get_stale_concerns(days: int = 3, user_id: str | None = None) -> list[dict]:
-    """超过 days 天没再提及、且曾经至少提过 2 次的关切（需要提醒的）。"""
+    """超过 days 天没再提及、且曾经至少提过 2 次的关切（需要提醒的）。
+
+    已主动追问过的（asked_at 非空）排除：追问两遍就从关心变成催促。
+    """
     from app.core.memory import normalize_user_id
 
     uid = normalize_user_id(user_id)
@@ -77,9 +80,26 @@ def get_stale_concerns(days: int = 3, user_id: str | None = None) -> list[dict]:
         rows = conn.execute(
             """SELECT topic, mention_count, last_mentioned_at FROM concerns
                WHERE user_id = ? AND mention_count >= 2 AND last_mentioned_at < ?
+                 AND (asked_at IS NULL OR asked_at = '')
                ORDER BY last_mentioned_at ASC""",
             (uid, cutoff),
         ).fetchall()
     finally:
         conn.close()
     return [dict(r) for r in rows]
+
+
+def mark_asked(topic: str, user_id: str | None = None) -> None:
+    """记录"已主动追问过这个话题"（幂等；同话题不再问第二次）。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE concerns SET asked_at = ? WHERE user_id = ? AND topic = ?",
+            (datetime.now(timezone.utc).isoformat(), uid, topic),
+        )
+        conn.commit()
+    finally:
+        conn.close()

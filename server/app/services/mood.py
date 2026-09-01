@@ -154,9 +154,56 @@ def get_streak_injection() -> str:
     )
 
 
+# ── 隔日跟进：真人会"记得昨天" ──────────────────────────────
+
+YESTERDAY_NEGATIVE_THRESHOLD = 2  # 昨天负面情绪达到几条才值得跟进
+
+
+def get_yesterday_followup() -> str:
+    """昨天情绪不佳且今天还没聊过 → 提示轻轻关心一句（问过就不再提）。
+
+    情绪连击只管当轮（STREAK_FRESH_HOURS=2 后清零），但真人不是这样：
+    昨天你很烦，今天他会先问一句"昨天那事顺了吗"。
+    "今天首次对话"的判定用 mood_log 本身——今天已有情绪记录说明已经聊过，
+    这句关心的时机就过了（不在对话中途突然回头问昨天）。
+    零 LLM、零新表。
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT mood, created_at FROM mood_log ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return ""
+    today = datetime.now(TZ).date()
+    yesterday = today - timedelta(days=1)
+    counts: Counter = Counter()
+    for r in rows:
+        d = _row_local(r).date()
+        if d == today:
+            return ""  # 今天已经聊过了，跟进时机已过
+        if d == yesterday and r["mood"] in NEGATIVE_MOODS:
+            counts[r["mood"]] += 1
+    if sum(counts.values()) < YESTERDAY_NEGATIVE_THRESHOLD:
+        return ""
+    parts = "、".join(f"{name}×{n}" for name, n in counts.most_common())
+    return (
+        f"用户昨天情绪不佳（{parts}）：今天第一次说话，可以轻轻关心一句"
+        "「昨天那事后来顺了吗」，问过就别再提，也别追问细节"
+    )
+
+
 def get_state_injection() -> str:
-    """今日曲线 + 连击降级，合并成一条注入（无则空串）。"""
-    parts = [p for p in (get_today_injection(), get_streak_injection()) if p]
+    """今日曲线 + 连击降级 + 隔日跟进，合并成一条注入（无则空串）。"""
+    parts = [
+        p for p in (
+            get_today_injection(),
+            get_streak_injection(),
+            get_yesterday_followup(),
+        ) if p
+    ]
     return "\n".join(parts)
 
 

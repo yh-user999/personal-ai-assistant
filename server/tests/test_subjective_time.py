@@ -115,7 +115,11 @@ def test_format_injection_empty(db):
 
 
 def test_format_injection_uses_summary_when_present(db):
-    mems = [{"id": 1, "ts": "2026-09-01T10:00:00+00:00",
+    # 用"今天"的真实日期构造时间戳（旧实现硬编码 2026-09-01，跨天即炸）
+    from zoneinfo import ZoneInfo
+
+    today_str = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    mems = [{"id": 1, "ts": f"{today_str}T12:00:00+08:00",
              "content": "原文很长" * 20, "summary": "摘要"}]
     out = st.format_injection(mems)
     assert "摘要" in out and "今天" in out

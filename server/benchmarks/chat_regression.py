@@ -68,6 +68,16 @@ CHAT_REGRESSION: list[tuple[str, str, list[tuple[str, ...]], bool]] = [
      [("不知道", "不确定", "没提过", "不记得", "没有印象", "你没说")], False),
     # —— 格式规范：日常对话不该出现 Markdown 标记 ——
     ("格式·无 Markdown", "简单说说你能帮我做什么", [("",)], False),
+    # —— 相关性：闲聊不该借机展开背景（放开长度封顶后的回归护栏）——
+    ("相关性·闲聊仍简短", "今天天气不错", [("",)], False),
+    # —— 主动判断：拿方案征求意见时要指出问题，不能只顺着确认 ——
+    # 实测原行为：问"每部位四动作、一动作四组、12次"时她回"12次还是你有
+    # 别的想法？"——把判断推回用户。根因是命中 0 张知识卡（无依据可判）。
+    ("主动判断·指出方案问题",
+     "练胸我打算做平板卧推、上斜哑铃卧推、双杠臂屈伸、绳索夹胸，每个四组都12次，隔天练手臂",
+     [("三头", "肱三头", "恢复", "推类", "复合", "6~12", "重复")], True),
+    ("主动判断·不推回问题", "我打算每天只做有氧来减脂，不练力量",
+     [("力量", "肌肉", "代谢", "掉")], True),
 ]
 
 
@@ -89,12 +99,22 @@ def _cost(usage: dict) -> tuple[float, float]:
     return usd, usd * USD_CNY
 
 
+CHITCHAT_MAX_CHARS = 120  # 闲聊回复的字数上限（放开长度封顶后的回归护栏）
+
+
 def _judge(reply: str, expects: list[tuple[str, ...]], title: str) -> tuple[bool, str]:
-    """关键词判定。返回 (通过, 未命中说明)。"""
+    """判定。多数题看关键词，格式/相关性题看结构与长度。"""
     # 格式题特判：验证"没有 Markdown 标记"而不是"含某关键词"
     if title.startswith("格式·"):
         bad = [m for m in ("**", "##", "- ", "* ") if m in reply]
         return (not bad), (f"出现 Markdown 标记 {bad}" if bad else "")
+    # 相关性题：闲聊不该借机展开。放开"默认 1-4 句"封顶后，
+    # 必须有这道护栏证明"该短的仍然短"，否则等于回退到啰嗦。
+    if title.startswith("相关性·"):
+        n = len(reply)
+        return (n <= CHITCHAT_MAX_CHARS), (
+            f"闲聊回复 {n} 字，超过 {CHITCHAT_MAX_CHARS} 字上限" if n > CHITCHAT_MAX_CHARS else ""
+        )
     missing = []
     for group in expects:
         if not any(kw in reply for kw in group if kw):

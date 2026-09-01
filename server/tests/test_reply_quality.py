@@ -108,9 +108,29 @@ def test_concerns_injection_limit():
 # ── 3. 系统提示防啰嗦规则 ──────────────────────────────────
 
 def test_system_prompt_anti_verbose_rules():
+    """防啰嗦护栏：判据从"字数封顶"改为"相关性 + 不复述"。
+
+    原来锁的是"默认 1-4 句"。实测这条管过头了——用户报的训练方案有肌群
+    恢复冲突，属于"不说才是失职"的信息，却因为"用户没问的一律不主动展开"
+    被压制，她只回了一句"12次还是你有别的想法？"把判断推回去。
+    现在按信息价值分级：该压制的是复述背景与罗列知识，不是必要的风险提示。
+    """
     from app.api.chat import SYSTEM_PROMPT
 
-    assert "默认 1-4 句" in SYSTEM_PROMPT
-    assert "不要罗列、复述或显摆" in SYSTEM_PROMPT
+    # 相关性判断取代字数封顶
+    assert "备查材料" in SYSTEM_PROMPT, "缺「注入资料是备查材料而非待播报清单」的定性"
+    assert "只取与当前" in SYSTEM_PROMPT, "缺「只取相关部分」的约束"
+    assert "1-3 句" in SYSTEM_PROMPT, "闲聊仍应有简短要求"
+    # 仍要压制的三类啰嗦
+    assert "不铺垫" in SYSTEM_PROMPT and "不客套" in SYSTEM_PROMPT
     assert "绝口不提旧事" in SYSTEM_PROMPT
     assert "以画像为准" in SYSTEM_PROMPT
+
+
+def test_system_prompt_proactive_judgement():
+    """主动判断规则：不许把判断推回用户。"""
+    from app.api.chat import SYSTEM_PROMPT
+
+    assert "不说才是失职" in SYSTEM_PROMPT
+    assert "把判断推回给用户" in SYSTEM_PROMPT, "缺「禁止用『你觉得呢』推回」的约束"
+    assert "替代方案" in SYSTEM_PROMPT

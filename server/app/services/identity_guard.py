@@ -56,8 +56,19 @@ def is_roleplay_or_insult(text: str) -> bool:
 
 
 def looks_like_rename(text: str) -> bool:
-    """是否在给她命名/改名。"""
-    return bool(RENAME_PATTERN.search(text or ""))
+    """是否在给她命名/改名。
+
+    必须排除疑问句：RENAME_PATTERN 含「你叫」「你的名字」，而"你叫什么名字"
+    "还记得你的名字吗"是**提问**。实测线上问一句名字就弹出"要改我的名字吗？"
+    ——用户只是想确认她记不记得，却被要求确认改名。
+    复用 self_reflect.is_question（同一套判据，避免两处漂移）。
+    """
+    from app.services.self_reflect import is_question
+
+    t = text or ""
+    if not RENAME_PATTERN.search(t):
+        return False
+    return not is_question(t)
 
 
 def has_existing_name() -> bool:

@@ -136,6 +136,23 @@ def test_looks_like_rename():
     assert not g.looks_like_rename("今天几号")
 
 
+@pytest.mark.parametrize("query", [
+    "你叫什么名字",
+    "你的名字是什么",
+    "还记得你的名字吗",
+    "你还记得你叫什么吗",
+])
+def test_asking_name_is_not_renaming(db, query):
+    """问名字 ≠ 改名。
+
+    RENAME_PATTERN 含「你叫」「你的名字」，实测线上问一句"你叫什么名字"
+    就弹出"要改我的名字吗？"——用户只想确认她记不记得，却被要求确认改名。
+    """
+    _seed_name()
+    assert not g.looks_like_rename(query), f"提问被判为改名: {query}"
+    assert g.check(query)[0] == "allow", f"提问不该触发确认: {query}"
+
+
 def test_is_roleplay_or_insult():
     assert g.is_roleplay_or_insult("猫娘")
     assert g.is_roleplay_or_insult("笨蛋")

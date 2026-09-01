@@ -98,6 +98,53 @@ def test_classify_lesson_kinds():
     assert classify_lesson("不对，重排序应该放在检索之后") == "fact"
 
 
+@pytest.mark.parametrize("text", [
+    "还记得你的名字吗",
+    "你叫什么名字",
+    "你的名字是什么？",
+    "你还记得吗",
+    "你知道你叫什么吗",
+])
+def test_questions_are_not_identity(text):
+    """提问身份 ≠ 定义身份。
+
+    实测线上把"还记得你的名字吗"存成了 identity 并永久最高优先注入——
+    一句提问占住了人格锚点的位置。
+    """
+    assert classify_lesson(text) != "identity", f"问句被误判为身份设定: {text}"
+
+
+@pytest.mark.parametrize("text", [
+    "你就叫小月吧，记住了吗",   # 带确认尾缀但确实是命名
+    "给你起名叫小雪",
+    "以后你就是我的助手",
+    "你的名字是小月",
+    "就叫你小月",
+])
+def test_naming_statements_are_identity(text):
+    """命名句常带"记住了吗"这类确认尾缀，不能因此被当成提问。"""
+    assert classify_lesson(text) == "identity", f"命名未被识别: {text}"
+
+
+def test_detect_correction_covers_ni_jiu_jiao():
+    """"你就叫X"原先漏在信号词外，整句检测不到。"""
+    assert detect_correction("你就叫小狗吧")
+    assert detect_correction("你就叫小月吧")
+
+
+def test_injection_records_hit_count():
+    """注入即记一次命中——用来分辨"真有用"和"从没被用过的噪声"。"""
+    save_lesson("你就叫小月吧")
+    save_lesson("回答简洁点")
+    get_lessons_injection()
+    get_lessons_injection()
+    conn = connect()
+    rows = conn.execute("SELECT content, hit_count FROM lessons").fetchall()
+    conn.close()
+    assert rows and all(r["hit_count"] == 2 for r in rows), \
+        f"hit_count 未累计: {[(r['content'], r['hit_count']) for r in rows]}"
+
+
 def test_identity_lesson_always_injected():
     """身份设定不占普通配额：塞满 10 条技术纠正后它仍必须在注入里。"""
     save_lesson("你就叫小月吧，记住了吗")

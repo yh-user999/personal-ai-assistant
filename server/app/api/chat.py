@@ -16,13 +16,13 @@ from app.config import settings
 # 后台任务引用集：fire-and-forget 任务保留引用，防 GC 中途回收（6.21 事实提取）
 _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
-from app.services import behavior_context, confirm, documents, executor, fitness, goals, message_search, mood, novel_writing, reminders, resume, self_state, unresolved, worklog
+from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, identity_guard, message_search, mood, novel_writing, reminders, resume, self_state, subjective_time, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
 from app.services.profile import get_profile_injection
 from app.services.sanitize import sanitize as _sanitize
-from app.services.self_reflect import detect_correction, get_lessons_injection, save_lesson
+from app.services.self_reflect import classify_lesson, detect_correction, get_lessons_injection, save_lesson
 
 router = APIRouter()
 
@@ -402,6 +402,40 @@ def _enqueue_and_reply(action: str, target: str, request: Request) -> ChatRespon
     )
 
 
+async def _handle_identity(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
+    """身份守卫：改名要确认，角色扮演/侮辱性命名不进长期人格。
+
+    必须排在最前面（连 confirm 之前）——identity 类教训永久最高优先注入，
+    一句"以后你就是我的猫娘"静默入库就长期扭曲人格，用户还不知道。
+    只对主人生效：访客本就写不进 lessons。
+    """
+    if not (ctx or {}).get("is_owner"):
+        return None
+    uid = (ctx or {}).get("uid") or ""
+
+    # 先消费待确认的改名
+    if identity_guard.peek(uid) is not None:
+        verdict = confirm.parse_reply(msg)
+        if verdict == "cancel":
+            identity_guard.clear(uid)
+            return ChatResponse(reply="好，那就不改，我还是小月。", memories_used=0)
+        if verdict == "confirm":
+            content = identity_guard.take(uid)
+            if content is None:
+                return ChatResponse(reply="刚那条改名已经过期了，需要的话再说一次。", memories_used=0)
+            save_lesson(content, "")
+            return ChatResponse(reply="好，记下了，以后就按这个来。", memories_used=0)
+        identity_guard.clear(uid)  # 说别的了：放弃待确认，消息正常往下走
+
+    verdict, reply = identity_guard.check(msg)
+    if verdict == "reject":
+        return ChatResponse(reply=reply, memories_used=0)
+    if verdict == "confirm":
+        identity_guard.remember(uid, msg)
+        return ChatResponse(reply=reply, memories_used=0)
+    return None
+
+
 async def _handle_confirm(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
     """确认层：上一轮挂起的破坏性/低置信度指令，本轮收到"确认/取消"才处理。
 
@@ -467,6 +501,8 @@ async def _handle_executor(msg: str, request: Request, ctx: dict | None = None) 
 # confirm 必须在最前：挂起的确认要先消费掉"确认/取消"，
 # 否则这两个词会被后面的命令族或 LLM 抢走。
 _COMMAND_HANDLERS: list[tuple[str, object]] = [
+    # identity 在最前：身份变更要在任何其他解析之前拦下
+    ("identity", _handle_identity),
     ("confirm", _handle_confirm),
     ("worklog", _handle_worklog),
     ("time", _handle_time),
@@ -485,7 +521,9 @@ _COMMAND_HANDLERS: list[tuple[str, object]] = [
 GUEST_BLOCKED_HANDLERS = frozenset(
     # confirm 一并屏蔽：访客既然进不了 executor，也不该有待确认指令可确认
     # （少了这条，伪造 uid 的访客能把主人挂起的指令"确认"掉）
-    {"confirm", "worklog", "reminders", "documents", "resume", "fitness", "novel", "executor"}
+    # identity 也屏蔽：访客写不进 lessons，不该有改名确认流程
+    {"identity", "confirm", "worklog", "reminders", "documents", "resume",
+     "fitness", "novel", "executor"}
 )
 
 GUEST_MAX_MSG_CHARS = 2000
@@ -559,8 +597,19 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     finally:
         conn.close()
 
-    if is_owner and detect_correction(msg) and last_ai:
-        save_lesson(msg, last_ai)  # lessons 单用户表，主人专属
+    # 教训入库（主人专属）。身份守卫已在命令链最前拦掉改名与角色扮演，
+    # 这里再挡一道：纠正句里夹带角色扮演要求时（"记住，以后你是我的猫娘"）
+    # 上面的 rename 判据可能不命中，但它绝不该进长期人格。
+    #
+    # last_ai 只对普通纠正是必要的（要存"被纠正的那句回复"当上下文）；
+    # 身份设定不依赖上下文——它不是在纠正某句话，是在定义她是谁。
+    # 原实现一律要求 last_ai，导致**第一轮对话里的命名直接丢失**
+    # （首次对话没有任何 AI 回复），"你就叫小月吧"存不进去。
+    if is_owner and detect_correction(msg) and not identity_guard.is_roleplay_or_insult(msg):
+        if classify_lesson(msg) == "identity":
+            save_lesson(msg, last_ai or "")
+        elif last_ai:
+            save_lesson(msg, last_ai)
     if detect_positive_feedback(msg) and last_ai:  # 风格：认可 → 范例（按用户）
         save_example(last_ai, user_id=uid)
     definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
@@ -573,7 +622,14 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         if deep:
             known = {m["id"] for m in mems}
             mems = deep + [m for m in mems if m["id"] not in known]
-    injections = memory.format_injection(mems)
+    # 一跳共现扩散：捞出"语义不相近但同期出现"的记忆（问跳槽时把当时记的
+    # 薪资对比/通勤时间也带上）。数据量不足时自动跳过——共现图在稀疏数据上
+    # 建不出可靠的边，宁可不扩散也不编造关联。
+    mems = cooccurrence.expand(mems, user_id=uid)
+    # 主观时间：把 "[记忆] 2026-08-28: …" 换成 "[记忆] 接码平台记录那阵子: …"
+    # 人不按日期记事，按事件记事。锚点来自已有的 daily_summaries / work_log，
+    # 零 LLM；没有可用锚点时自动退回原始日期。
+    injections = subjective_time.format_injection(mems)
     knowledge_text = ""
     if is_owner:
         # 检索已 FTS 化（不再有 Python 全表扫描）；嵌入调用是 async 网络 IO；

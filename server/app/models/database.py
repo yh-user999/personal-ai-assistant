@@ -260,6 +260,14 @@ _MIGRATIONS = [
     # 注：lessons.kind 由 _migrate_lessons 处理（要和去重重建一起做）
     # 关切主动追问时间：同一话题只主动问一次（问两遍就从关心变催促）
     "ALTER TABLE concerns ADD COLUMN asked_at TEXT",
+    # 使用反馈：被注入过几次 / 最近一次是什么时候。
+    # importance 只增不减且被短句刷高（实测最高的是"你好""再确认一下"——
+    # 越短越容易被检索命中），无法用来判断"这条到底有没有用"。
+    # hit_count 记的是真实被采纳进 prompt 的次数，是淘汰噪声的可靠依据。
+    "ALTER TABLE memories ADD COLUMN hit_count INTEGER DEFAULT 0",
+    "ALTER TABLE memories ADD COLUMN last_hit_at TEXT",
+    "ALTER TABLE lessons ADD COLUMN hit_count INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN last_hit_at TEXT",
 ]
 
 

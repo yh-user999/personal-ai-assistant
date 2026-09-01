@@ -118,3 +118,40 @@ def test_deep_keyword_search_matches_grams():
     conn.close()
     hits = memory.deep_keyword_search("少爷的背景势力", top_k=3)
     assert hits and "地方豪强" in hits[0]["content"]
+
+
+# ── 使用反馈：hit_count 与 importance 分工不同 ──────────────
+
+def test_bump_importance_records_hit_count():
+    """被引用 → importance +0.02 且 hit_count +1。
+
+    importance 会衰减、影响检索排序；hit_count 不衰减，用来回答
+    「这条记忆到底被用过没有」。实测 importance 最高的几条是「你好」
+    「再确认一下」这类短句（越短越容易被向量命中），单看它分不出
+    「真有用」与「恰好总被捞出来」。
+    """
+    from app.models.database import connect
+
+    conn = connect()
+    cur = conn.execute(
+        "INSERT INTO memories (user_id, sender, content, ts) "
+        "VALUES ('owner','user','测试记忆','2026-09-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    mid = cur.lastrowid
+
+    memory.bump_importance([mid])
+    memory.bump_importance([mid])
+
+    conn = connect()
+    row = conn.execute(
+        "SELECT hit_count, importance, last_hit_at FROM memories WHERE id=?", (mid,)
+    ).fetchone()
+    conn.close()
+    assert row["hit_count"] == 2
+    assert row["importance"] > 1.0
+    assert row["last_hit_at"], "应记录最近命中时间"
+
+
+def test_bump_importance_empty_list_is_noop():
+    memory.bump_importance([])  # 不该抛异常也不该建连接

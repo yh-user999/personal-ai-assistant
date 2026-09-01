@@ -420,12 +420,23 @@ def format_injection(memories: list[dict]) -> str:
 # ── importance 更新（被引用时 +0.02，上限 3.0）─────────────
 
 def bump_importance(memory_ids: list[int]) -> None:
+    """被引用 → importance +0.02，并记一次命中。
+
+    两个计数各有分工：importance 影响检索排序（且会随时间衰减），
+    hit_count 是不衰减的累计使用次数——用来回答"这条记忆到底有没有被用过"。
+    实测 importance 最高的几条是"你好""再确认一下"这类短句（越短越容易被
+    向量检索命中），单看它分不出"真有用"和"恰好总被捞出来"。
+    """
+    if not memory_ids:
+        return
     conn = connect()
     try:
+        now = _now()
         for mid in memory_ids:
             conn.execute(
-                "UPDATE memories SET importance = MIN(3.0, importance + 0.02) WHERE id = ?",
-                (mid,),
+                "UPDATE memories SET importance = MIN(3.0, importance + 0.02), "
+                "hit_count = COALESCE(hit_count, 0) + 1, last_hit_at = ? WHERE id = ?",
+                (now, mid),
             )
         conn.commit()
     finally:

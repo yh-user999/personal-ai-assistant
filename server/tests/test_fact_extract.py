@@ -7,10 +7,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_fact_extract.db")
 
+import pytest  # noqa: E402
+
+from app.config import settings  # noqa: E402
 from app.services.fact_extract import parse_facts_json, upsert_facts  # noqa: E402
-from app.models.database import connect, init_db  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原实现靠 DB_PATH 环境变量隔离（无效），
+    test_upsert_dedup 里的 DELETE FROM facts 一直跑在生产库上。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
+    init_db()
+    yield
+    reset_connections()
 
 
 def test_parse_clean_json():
@@ -34,11 +47,7 @@ def test_parse_empty_and_bad():
 
 
 def test_upsert_dedup():
-    init_db()
-    conn = connect()
-    conn.execute("DELETE FROM facts")
-    conn.commit()
-    conn.close()
+    # 库隔离与建表由 autouse 的 fresh_db 负责（临时库本就是空的）
     upsert_facts([{"subject": "李羽", "predicate": "能力", "object": "杀人变强"}])
     # 同 subject+predicate 再写入 → 覆盖不新增
     upsert_facts([{"subject": "李羽", "predicate": "能力", "object": "杀人则变强，全面提升"}])

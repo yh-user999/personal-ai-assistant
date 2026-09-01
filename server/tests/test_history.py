@@ -9,20 +9,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_history.db")
 
+from app.config import settings  # noqa: E402
 from app.core import memory  # noqa: E402
-from app.models.database import connect, init_db  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库（不再 DELETE 共享库）。
+
+    原实现靠 os.environ.setdefault("DB_PATH") 隔离 + DELETE FROM memories 清场，
+    但环境变量那步无效（settings 是 lru_cache 单例，conftest 已实例化），
+    于是 DELETE 直接跑在生产库上——曾清掉 640 条真实对话记忆。
+    """
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
-    conn = connect()
-    conn.execute("DELETE FROM memories")
-    conn.commit()
-    conn.close()
     yield
+    reset_connections()
 
 
 def _seed(sender, content):

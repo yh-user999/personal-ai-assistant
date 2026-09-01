@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_sanitize.db")
 
 from app.services.sanitize import sanitize  # noqa: E402
 

@@ -9,21 +9,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_lessons_1112.db")
 
-from app.models.database import connect, init_db  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
 from app.services import executor, goals, unresolved  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原实现对 goals/unresolved_issues/executor_commands/memories
+    四张表做 DELETE，而这些 DELETE 一直跑在生产库上（DB_PATH 环境变量隔离无效）。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
-    conn = connect()
-    for t in ("goals", "unresolved_issues", "executor_commands", "memories"):
-        conn.execute(f"DELETE FROM {t}")
-    conn.commit()
-    conn.close()
     yield
+    reset_connections()
 
 
 # ── Goal 系统 ─────────────────────────────────────────────

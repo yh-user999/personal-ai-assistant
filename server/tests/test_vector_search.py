@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_vec_search.db")
 os.environ.setdefault("EMBEDDING_DIMENSION", "1024")
 
+from app.config import settings  # noqa: E402
 from app.core import memory  # noqa: E402
 from app.models.database import init_db, reset_connections  # noqa: E402
 
@@ -38,11 +38,18 @@ def fake_embeddings(monkeypatch):
     monkeypatch.setattr("app.core.embedding.embed", fake_embed)
 
 
-def setup_function():
-    db_file = Path("/tmp/test_vec_search.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原来是 setup_function 删 /tmp 文件 + init_db，但 DB_PATH
+    环境变量隔离无效——那三条 "今天调 RAG 向量化性能" 之类的测试记忆一直
+    写进生产库（在真实库残骸里就能找到它们）。
+    setup_function 拿不到 monkeypatch，故改成 autouse fixture。
+    """
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
+    yield
+    reset_connections()
 
 
 def test_vector_knn_ranking():

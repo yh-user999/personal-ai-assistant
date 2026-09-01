@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_auth.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -21,11 +20,12 @@ TOKEN = "test-secret-token"
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db_file = Path("/tmp/test_auth.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
-    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。必须 monkeypatch settings.db_path——环境变量 DB_PATH 在这里
+    已经太晚（settings 是 lru_cache 单例，conftest 收集阶段就实例化了），
+    靠它做隔离会让测试静默写进生产库。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()  # 长驻连接缓存握着旧库句柄，切库后必须丢弃
     init_db()
     yield
     reset_connections()

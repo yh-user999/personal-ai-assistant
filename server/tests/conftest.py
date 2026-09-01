@@ -18,6 +18,12 @@ for _p in (SERVER_ROOT, REPO_ROOT):
 
 os.environ.setdefault("API_TOKEN", "")
 os.environ.setdefault("DEPLOYMENT_ENV", "test")
+# 本地 .env 的真实 QQ_ADMIN_ID 会让 owner_user_id() 返回真实 QQ 号而不是 'owner'
+# 哨兵，多人隔离/淘汰/画像等 12 个用例随之失败。测试固定用 'owner' 语义，
+# 需要真实 admin id 的用例自行 monkeypatch settings.qq_admin_id。
+# 用 setdefault 而非强制覆盖：CI 里显式导出该变量时仍可生效。
+os.environ.setdefault("QQ_ADMIN_ID", "")
+os.environ.setdefault("QQ_PUSH_URL", "")
 
 
 
@@ -27,7 +33,7 @@ os.environ.setdefault("DEPLOYMENT_ENV", "test")
 
 import pytest  # noqa: E402
 
-from app.config import settings  # noqa: E402
+from app.config import Settings, settings  # noqa: E402
 from app.models.database import init_db, reset_connections  # noqa: E402
 
 
@@ -39,6 +45,83 @@ def db(tmp_path, monkeypatch):
     init_db()
     yield
     reset_connections()
+
+
+# ── 生产库护栏（血的教训）────────────────────────────────────
+# 曾有 14 个测试文件靠 os.environ.setdefault("DB_PATH", "/tmp/...") 做隔离，
+# 但本文件在收集阶段就 import 了 app.config，而 get_settings() 带 @lru_cache——
+# 环境变量设置为时已晚，settings.db_path 始终是 ./data/assistant.db。
+# 那些 fixture 里的 DELETE FROM memories / knowledge_chunks 于是直接跑在真实库上，
+# 一次全量测试清掉了 640 条对话记忆与 3600 个知识库块。
+# 隔离靠自觉不可靠，这里改成机器强制：每个用例执行前后都校验库路径。
+
+# 生产库绝对路径：直接问 Settings 自己（db_file 里有相对路径的解析规则），
+# 不在这里复制一份解析逻辑——复制就会漂移。
+PRODUCTION_DB = Settings(db_path="./data/assistant.db").db_file.resolve()
+
+
+def _is_production_db(db_path: str) -> bool:
+    """只认那一个真实库文件。
+
+    不能用 endswith("data/assistant.db") 判断——test_backup 故意把库放在
+    tmp_path/data/assistant.db（要验证备份目录是库的兄弟目录），会被误报。
+    """
+    try:
+        return Settings(db_path=db_path).db_file.resolve() == PRODUCTION_DB
+    except (OSError, ValueError):
+        return False
+
+
+def pytest_configure(config):
+    """会话最开始就把 db_path 从生产库挪开（fail-safe 而非 fail-loud）。
+
+    护栏分两层，这是第一层——兜底：即使某个测试文件完全忘了隔离，它拿到的
+    也是会话级临时库，而不是 ./data/assistant.db。放在 pytest_configure 里
+    是因为它早于任何 fixture 与用例执行。
+    """
+    import tempfile
+    from pathlib import Path
+
+    if _is_production_db(settings.db_path):
+        fallback = Path(tempfile.mkdtemp(prefix="pytest-db-")) / "session.db"
+        settings.db_path = str(fallback)
+        reset_connections()
+        config._prod_db_guarded = True
+
+
+def pytest_sessionstart(session):
+    """第二层——在 connect() 上装拦截器：测试期任何指向生产库的连接一律拒绝。
+
+    为什么不用 fixture 的前后断言：那是 time-of-check，拦不住"用例执行途中
+    把 db_path 改回生产库"这种情况（monkeypatch 是函数级的，会在 autouse
+    fixture 的 teardown 之前就把值还原，后置断言永远看到干净值）。
+    改成 time-of-use——真正打开连接的那一刻校验，无从绕过。
+    """
+    from app.models import database
+
+    real_connect = database.connect
+
+    def guarded_connect():
+        if _is_production_db(settings.db_path):
+            raise RuntimeError(
+                f"测试试图连接生产库 {PRODUCTION_DB}。\n"
+                "用 conftest 的 db fixture 或 monkeypatch.setattr(settings, 'db_path', ...)；\n"
+                "os.environ.setdefault('DB_PATH', ...) 无效——settings 是 lru_cache 单例，"
+                "conftest 收集阶段已经实例化过了。"
+            )
+        return real_connect()
+
+    database.connect = guarded_connect
+    session._real_connect = real_connect
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """还原 connect（同一进程里后续若有别的用途，不留副作用）。"""
+    real = getattr(session, "_real_connect", None)
+    if real is not None:
+        from app.models import database
+
+        database.connect = real
 
 
 @pytest.fixture(autouse=True)

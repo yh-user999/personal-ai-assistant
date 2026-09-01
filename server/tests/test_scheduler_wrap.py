@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_sched_data/assistant.db")
 os.environ.setdefault("DEPLOYMENT_ENV", "test")
 
 from app.core.scheduler import _wrap_job  # noqa: E402

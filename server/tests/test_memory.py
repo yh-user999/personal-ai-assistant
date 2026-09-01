@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_assistant_memory.db")
+
 
 from app.core import memory  # noqa: E402
 from app.models.database import init_db, reset_connections  # noqa: E402
@@ -28,11 +28,20 @@ def no_network_embedding(monkeypatch):
     monkeypatch.setattr("app.core.embedding.embed", fake_embed)
 
 
-def setup_function():
-    db_file = Path("/tmp/test_assistant_memory.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原来是 setup_function 删 /tmp 里的文件 + init_db，但
+    DB_PATH 环境变量隔离无效（settings 是 lru_cache 单例），init_db 实际
+    落在生产库上——每跑一次本文件就往真实记忆里灌测试数据。
+    setup_function 拿不到 monkeypatch，所以改成 autouse fixture。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
+    yield
+    reset_connections()
 
 
 def test_duplicate_message_not_reinserted():
@@ -65,16 +74,11 @@ def test_injection_format():
 def test_bm25_memories_rare_term_wins():
     """6.22：记忆 BM25 稀有词加权——'杀人变强'应压过高频闲聊。
     （v0.3.2 起走 FTS5 倒排；直插 SQL 需手动同步 FTS 行，见 _fts_insert。）"""
-    import os
-    os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
     from app.core import memory
-    from app.models.database import connect, init_db, reset_connections
+    from app.models.database import connect
 
-    reset_connections()
-    init_db()
+    # 库隔离由 autouse 的 fresh_db 负责（临时库本就是空的，无需 DELETE 清场）
     conn = connect()
-    conn.execute("DELETE FROM memories")
-    conn.execute("DELETE FROM memories_fts")
     cur = conn.execute(
         "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
         "VALUES ('user', '李羽的能力设定是杀人变强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"
@@ -95,16 +99,11 @@ def test_bm25_memories_rare_term_wins():
 
 
 def test_deep_keyword_search_matches_grams():
-    import os
-    os.environ.setdefault("DB_PATH", "/tmp/test_memory_hybrid.db")
     from app.core import memory
-    from app.models.database import connect, init_db, reset_connections
+    from app.models.database import connect
 
-    reset_connections()
-    init_db()
+    # 库隔离由 autouse 的 fresh_db 负责
     conn = connect()
-    conn.execute("DELETE FROM memories")
-    conn.execute("DELETE FROM memories_fts")
     cur1 = conn.execute(
         "INSERT INTO memories (sender, content, summary, topics, ts, importance) "
         "VALUES ('user', '少爷的背景势力是地方豪强', '', '[]', '2026-08-28T00:00:00+00:00', 1.0)"

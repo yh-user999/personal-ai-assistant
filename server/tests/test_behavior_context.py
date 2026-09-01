@@ -11,9 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_behavior_ctx.db")
 
-from app.models.database import connect, init_db  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
 from app.services.behavior_context import (  # noqa: E402
     get_behavior_injection,
     get_current_window,
@@ -37,14 +37,18 @@ def _seed(kind, name, detail="", start=None, end=None):
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库，不再 DELETE 共享库。
+
+    原实现注释说"settings 单例导致多测试文件共享一库"——共享的其实是生产库
+    ./data/assistant.db（DB_PATH 环境变量在 conftest 导入 app.config 之后设置已无效），
+    那句 DELETE FROM behavior_events 一直跑在真实数据上。
+    """
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
-    # 清空共享库的行为事件（settings 单例导致多测试文件共享一库）
-    conn = connect()
-    conn.execute("DELETE FROM behavior_events")
-    conn.commit()
-    conn.close()
     yield
+    reset_connections()
 
 
 def test_empty_db_returns_empty():

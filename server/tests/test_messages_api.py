@@ -9,21 +9,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_messages.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.database import init_db, connect, reset_connections  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db_file = Path("/tmp/test_messages.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
-    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
-    init_db()
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原实现删的是 /tmp 里那个从未被真正使用的文件——
+    DB_PATH 环境变量隔离无效，init_db 实际落在生产库上。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()  # 长驻连接缓存握着旧库句柄，切库后必须丢弃
+    init_db()            # tmp_path 每个用例都是新目录，无需再手工删文件
     yield
     reset_connections()
 

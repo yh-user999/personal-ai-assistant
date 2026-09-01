@@ -9,20 +9,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_greeting.db")
 
-from app.models.database import connect, init_db  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.models.database import connect, init_db, reset_connections  # noqa: E402
 from app.services import greeting  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库（原 DELETE FROM behavior_events 实际跑在生产库上）。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
     init_db()
-    conn = connect()
-    conn.execute("DELETE FROM behavior_events")
-    conn.commit()
-    conn.close()
     yield
+    reset_connections()
 
 
 def test_greeting_contains_date():

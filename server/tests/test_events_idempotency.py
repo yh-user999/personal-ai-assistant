@@ -9,10 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_events_dedup.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.database import init_db, reset_connections  # noqa: E402
 
@@ -35,11 +35,10 @@ BATCH = {
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db_file = Path("/tmp/test_events_dedup.db")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_file) + suffix).unlink(missing_ok=True)
-    reset_connections()  # 长驻连接缓存握着被删旧库的句柄，必须丢弃
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库（DB_PATH 环境变量隔离无效，原来 init_db 落在生产库上）。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()  # 长驻连接缓存握着旧库句柄，切库后必须丢弃
     init_db()
     yield
     reset_connections()

@@ -9,10 +9,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
-os.environ.setdefault("DB_PATH", "/tmp/test_knowledge.db")
 os.environ.setdefault("EMBEDDING_DIMENSION", "1024")
 
+from app.config import settings  # noqa: E402
 from app.core.chunker import chunk_text  # noqa: E402
+from app.models.database import init_db, reset_connections  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path, monkeypatch):
+    """独立临时库。原实现靠 DB_PATH 环境变量隔离（无效——settings 是 lru_cache
+    单例），三个用例里的 DELETE FROM knowledge_chunks / novel_facts 一直跑在
+    生产库上，曾清掉 3600 个真实知识库块。"""
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    reset_connections()
+    init_db()
+    yield
+    reset_connections()
 
 
 def test_chunk_by_paragraphs():
@@ -46,11 +59,10 @@ def test_chunk_preserves_order():
 
 def test_expand_chunks_merges_neighborhood():
     from app.core import knowledge
-    from app.models.database import connect, init_db
+    from app.models.database import connect
 
-    init_db()
+    # 库隔离与建表由 autouse 的 fresh_db 负责（临时库本就是空的）
     conn = connect()
-    conn.execute("DELETE FROM knowledge_chunks")
     for i in range(6):
         conn.execute(
             "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
@@ -88,13 +100,10 @@ def test_expand_chunks_empty():
 def test_bm25_idf_saturation():
     """词频饱和：稀有词证据块应压过高频词霸榜块。"""
     from app.core import knowledge
-    from app.models.database import connect, init_db, reset_connections
+    from app.models.database import connect
 
-    reset_connections()
-    init_db()
+    # 库隔离由 autouse 的 fresh_db 负责
     conn = connect()
-    conn.execute("DELETE FROM knowledge_chunks")
-    conn.execute("DELETE FROM knowledge_fts")
     cur0 = conn.execute(
         "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
         "VALUES ('测试', 0, ?, '2026-01-01T00:00:00+00:00')",
@@ -116,11 +125,10 @@ def test_bm25_idf_saturation():
 
 def test_novel_facts_match():
     from app.core import knowledge
-    from app.models.database import connect, init_db
+    from app.models.database import connect
 
-    init_db()
+    # 库隔离由 autouse 的 fresh_db 负责
     conn = connect()
-    conn.execute("DELETE FROM novel_facts")
     conn.execute(
         "INSERT INTO novel_facts (book, keywords, content, created_at) "
         "VALUES ('小说-x', '左志诚,左擎苍', '设定A', '2026-01-01T00:00:00+00:00')"

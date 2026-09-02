@@ -640,6 +640,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     # 人不按日期记事，按事件记事。锚点来自已有的 daily_summaries / work_log，
     # 零 LLM；没有可用锚点时自动退回原始日期。
     injections = subjective_time.format_injection(mems)
+    healed_text = ""  # 检索自愈：聚合资料（独立 system 消息注入，见 LLM 调用段）
     knowledge_text = ""
     if is_owner:
         # 检索已 FTS 化（不再有 Python 全表扫描）；嵌入调用是 async 网络 IO；
@@ -650,7 +651,6 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
         # 检索自愈（一期）：判不出域/核心词未命中的枚举式提问 → 变体重搜
         # + 聚合提炼 + 登记类名（仅主人；常规问题零开销）
-        healed_text = ""
         if settings.healer_enabled:
             from app.services import index_healer
             from app.services.knowledge_domain import detect_domains as _detect_domains
@@ -672,8 +672,6 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             except Exception as e:
                 logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", e)
         knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
-        if healed_text:
-            knowledge_text = healed_text + "\n\n" + knowledge_text
         # 人物别名背景注入：跨名字指代的剧情问题需要这个前提（左志诚=左擎苍）
         alias_note = knowledge.get_alias_note(msg)
         if alias_note:
@@ -779,11 +777,12 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     )
 
     # 4) 调 LLM（system + 历史 + 当前消息——"再确认一下"类消息能接上上下文）
-    llm_messages = (
-        [{"role": "system", "content": system}]
-        + history
-        + [{"role": "user", "content": msg}]
-    )
+    llm_messages = [{"role": "system", "content": system}] + history
+    if healed_text:
+        # 自愈聚合资料放在历史之后、用户消息之前——模型对紧贴用户消息的
+        # 内容关注度最高，可压过历史回答的锚定（曾实测放 system 主提示里被无视）
+        llm_messages.append({"role": "system", "content": healed_text})
+    llm_messages.append({"role": "user", "content": msg})
     try:
         reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
         # 去 Markdown 兜底：QQ 不渲染，星号减号会原样显示给用户。

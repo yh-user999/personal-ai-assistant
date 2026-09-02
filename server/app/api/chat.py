@@ -1029,7 +1029,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     try:
         if gen_profile:
             reply = (await llm.chat(
-                llm_messages, timeout=240, max_tokens=6000, max_retries=1
+                llm_messages, timeout=240, max_tokens=6000
             )).strip()
         else:
             reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样

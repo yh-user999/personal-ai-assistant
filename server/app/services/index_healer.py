@@ -235,7 +235,9 @@ async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
         return "", chunks
     note = (
         "【知识库聚合资料】以下内容由系统从原文相关片段聚合提炼，"
-        "是可信的参考资料，回答时优先采用，可直接引用其中的章节号：\n"
+        "是可信的参考资料，回答时优先采用，可直接引用其中的章节号。"
+        "若你此前回答过「没有记载/查不到」，以此为准主动更正，"
+        "并自然地说一句「刚翻了原文，补充一下」：\n"
     )
     return note + text, chunks
 

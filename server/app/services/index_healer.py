@@ -127,44 +127,53 @@ def aggregate_chunks(variants: list[str], limit: int = AGGREGATE_TOP) -> list[di
             break
     return sorted(seen.values(), key=lambda h: (h.get("doc_name") or "", h.get("chunk_index") or 0))
 
-SYNTH_PROMPT = """你是小说设定提炼器。用户问了一个枚举式问题，下面是知识库中按相关词检索出的原文片段。
-请针对问题提炼答案：
-1. 只写原文有明确依据的内容；原文没提到的明确说"原文未见"；绝不编造
-2. 列出完整阶梯/清单（如能拼出），并注明依据出现的章节号或片段短语
-3. 若片段不足，说明"现有片段只能确认……"
+SYNTH_SYSTEM = (
+    "你是小说设定提炼器。只输出针对用户问题的提炼结果："
+    "原文有依据的内容写清楚并注明章节；原文没有的明确说「原文未见」；"
+    "绝不编造，绝不复述或重复原文片段。"
+)
 
-用户问题：{query}
+SYNTH_PROMPT = """用户问题：{query}
 
 原文片段：
 {chunks}
 """
 
+# 回显防护：模型把原文块标头吐出来 = 提炼退化（曾实测整段重复回显）
+_ECHO_RE = re.compile(r"\[(?:小说|第)[^\]\n]{0,20}#?\d*\]")
+
+
 async def synthesize(query: str, words: list[str], chunks: list[dict]) -> str:
-    """聚合块 → LLM 提炼（一次调用，temperature 0）。失败返回空串（不影响主回复）。"""
+    """聚合块 → LLM 提炼（一次调用，temperature 0）。失败/回显返回空串。"""
     lines = []
     for c in chunks:
-        body = (c.get("content") or "").replace("\n", " ")[:350]
+        body = (c.get("content") or "").replace("\n", " ")[:250]
         lines.append(f"[{c.get('doc_name')}#{c.get('chunk_index')}] {body}")
     prompt = SYNTH_PROMPT.replace("{query}", query).replace(
         "{chunks}", "\n\n".join(lines)
     )
     try:
+        # system 只给角色指令，正文放 user——纯 system 长文会让部分模型退化回显
         text = await llm.chat(
-            [{"role": "system", "content": prompt}],
+            [
+                {"role": "system", "content": SYNTH_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
             temperature=0,
             max_tokens=SYNTH_MAX_TOKENS,
         )
-        return (text or "").strip()
+        text = (text or "").strip()
+        if _ECHO_RE.search(text):
+            logger.warning("[healer] 提炼疑似回显原文，弃用")
+            return ""
+        return text
     except Exception as e:
         logger.warning("[healer] 聚合提炼失败: %s", e)
         return ""
 
-def _already_covered_words() -> frozenset[str]:
-    """静态词表已覆盖的词（实体索引/书名）——这些词有专门路径，自愈不抢活。
 
-    命丛/命图/道术等类名走 novel_entities.build_entity_context（专名精确检索）；
-    书名走域路由。让自愈只处理"真没覆盖"的词，避免重复烧 LLM。
-    """
+def _already_covered_words() -> frozenset[str]:
+    """静态词表已覆盖的词（实体索引/书名）——这些词有专门路径，自愈不抢活。"""
     from app.services.novel_entities import ENTITY_KINDS
     from app.services.knowledge_domain import _novel_names
 
@@ -175,14 +184,10 @@ def _already_covered_words() -> frozenset[str]:
         words.add(book.replace("小说-", "").replace("小说－", ""))
     return frozenset(words)
 
+
 def diagnose(query: str, domains: list[str], docs: list[str],
              hits: list[dict]) -> dict | None:
-    """检测器：枚举句式 +（判不出域 或 核心词未命中）→ 返回触发信息。
-
-    domains 为 [] 且 docs 为 [] = 判不出域；核心词未命中 = 检索捞错词。
-    两个条件满足其一且问句是枚举式才触发——普通疑问（"炼神是谁"）不触发。
-    静态词表已覆盖的词（命丛/书名等）不触发——它们有专门路径。
-    """
+    """检测器：枚举句式 +（判不出域 或 核心词未命中）→ 返回触发信息。"""
     if not detect_enum_intent(query):
         return None
     covered_words = _already_covered_words()
@@ -192,13 +197,14 @@ def diagnose(query: str, domains: list[str], docs: list[str],
     unrouted = not domains and not docs
     missing = core_word_missing(words, hits)
     if not unrouted and not missing:
-        return None  # 已有覆盖且词面命中：常规路径足够
+        return None
     return {
         "action": "heal",
         "words": words,
         "unrouted": unrouted,
         "core_missing": missing,
     }
+
 
 async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
     """兜底执行：变体重搜 → 聚合 → 提炼。返回 (注入文本, 聚合块)。"""
@@ -218,6 +224,7 @@ async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
         "已自动登记，下次将直接检索）：\n"
     )
     return note + text, chunks
+
 
 def classify_aggregate_domain(chunks: list[dict]) -> str:
     """聚合块来源判定：≥60% 来自小说域文档 → 'novel'，否则 ''（只登记不路由）。"""

@@ -196,7 +196,12 @@ async def evict_stale() -> dict:
         from app.services.request_trace import cleanup_stale as _cleanup_traces
 
         n_traces = _cleanup_traces()
+        # 黑话模块三期：候选淘汰/低使用降级（与淘汰任务同频）
+        from app.services.slang import evict_stale_slang as _evict_slang
+
+        slang_ev = _evict_slang()
         return {"deleted_noise": n1, "deleted_chat": n2,
-                "deleted_orphan_vectors": n3, "deleted_traces": n_traces}
+                "deleted_orphan_vectors": n3, "deleted_traces": n_traces,
+                **slang_ev}
     finally:
         conn.close()

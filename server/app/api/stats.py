@@ -60,3 +60,13 @@ async def stats_hourly(days: int = 7) -> dict:
     for r in rows:
         hours[r["h"]] = r["c"]
     return {"hours": hours}
+
+
+@router.get("/stats/cost")
+async def stats_cost(days: int = 7) -> dict:
+    """成本画像（P4）：LLM token 累计 + 检索决策轨迹聚合。"""
+    import asyncio
+
+    from app.services.cost_report import cost_report
+
+    return await asyncio.to_thread(cost_report, days)

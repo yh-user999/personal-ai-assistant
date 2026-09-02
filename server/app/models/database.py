@@ -310,6 +310,56 @@ CREATE TABLE IF NOT EXISTS request_traces (
   search_ms INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_traces_ts ON request_traces(ts);
+
+-- ㉖ 自动实体抽取台账（检索自愈二期）：预算闸与幂等闸的数据源。
+CREATE TABLE IF NOT EXISTS auto_extract_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind_word TEXT NOT NULL,
+  book TEXT DEFAULT '',
+  extracted_at TEXT NOT NULL,
+  names_count INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_autoextract_at ON auto_extract_log(extracted_at);
+
+-- ㉗ 实体候选池（低置信抽取结果，人工确认后转正）。
+CREATE TABLE IF NOT EXISTS entity_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  first_chunk INTEGER,
+  status TEXT DEFAULT 'pending',   -- pending / confirmed / discarded
+  created_at TEXT NOT NULL,
+  UNIQUE(book, kind, name)
+);
+
+-- ㉘ 索引纠错台账（检索自愈三期：用户纠错的审计留痕）。
+
+-- ㉙ 黑话表（黑话模块一至三期）：词/短句在圈内的语境语义。
+-- scope：shared=主人维护、访客只读；private=各人私有。
+-- status：candidate=语境推断的候选（用一次信一分，≥2 次转正）/ confirmed。
+CREATE TABLE IF NOT EXISTS slang_terms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  term TEXT NOT NULL,
+  meaning TEXT NOT NULL,
+  context_hint TEXT DEFAULT '',
+  source_episode TEXT DEFAULT '',
+  scope TEXT NOT NULL DEFAULT 'private',
+  status TEXT NOT NULL DEFAULT 'confirmed',
+  use_count INTEGER DEFAULT 0,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, term, context_hint)
+);
+CREATE INDEX IF NOT EXISTS idx_slang_term ON slang_terms(term);
+CREATE TABLE IF NOT EXISTS index_corrections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target TEXT NOT NULL,
+  reason TEXT DEFAULT '',
+  corrected_at TEXT NOT NULL
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

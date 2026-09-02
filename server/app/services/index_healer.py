@@ -255,3 +255,253 @@ def classify_aggregate_domain(chunks: list[dict]) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+"""检索自愈二期/三期补充：后台自动实体抽取 + 用户纠错反馈回路。
+
+二期：heal 兜底成功 → 后台自动抽取该体系词的专名实体（预算/幂等/置信三闸），
+高置信直接入库，低置信进候选池等主人确认。
+三期：用户说"不对，XX 不是境界"→ 把 XX 从动态词表/实体索引/候选池移除。
+"""
+# ── 二期：自动抽取 ─────────────────────────────────────────
+
+AUTO_DAILY_LIMIT = 3   # 预算闸：每天最多自动抽取 3 次
+AUTO_MAX_BLOCKS = 10   # 成本闸：自动抽取最多读 10 个候选块（手动模式 40）
+AUTO_MIN_EVIDENCE = 2  # 置信闸：名字在 ≥2 块出现才直接入库，1 块进候选池
+
+_CORRECTION_RE = re.compile(
+    r"(?:不对|不是|说错了|搞错了|记错了)[，,：:\s]*"
+    r"([\u4e00-\u9fffA-Za-z]{2,12}?)(?:不是|不算|不属于)[，,：:\s]*"
+    r"([\u4e00-\u9fffA-Za-z]{2,12})"
+)
+
+
+def majority_novel_book(chunks: list[dict]) -> str:
+    """聚合块中出现最多的那本小说（无小说块返回空串）。"""
+    from collections import Counter
+
+    books = Counter(
+        c.get("doc_name") or ""
+        for c in chunks
+        if (c.get("doc_name") or "").startswith("小说")
+    )
+    return books.most_common(1)[0][0] if books else ""
+
+
+def auto_budget_ok(kind_word: str) -> bool:
+    """预算闸（每天 ≤AUTO_DAILY_LIMIT）+ 幂等闸（同一词当天只抽一次）。"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    conn = connect()
+    try:
+        n_today = conn.execute(
+            "SELECT COUNT(*) AS c FROM auto_extract_log WHERE substr(extracted_at,1,10)=?",
+            (today,),
+        ).fetchone()["c"]
+        dup = conn.execute(
+            "SELECT 1 FROM auto_extract_log WHERE kind_word=? AND substr(extracted_at,1,10)=?",
+            (kind_word, today),
+        ).fetchone()
+    finally:
+        conn.close()
+    if dup or n_today >= AUTO_DAILY_LIMIT:
+        return False
+    return True
+
+
+def _log_auto_extract(kind_word: str, book: str, names_count: int) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO auto_extract_log (kind_word, book, extracted_at, names_count) "
+            "VALUES (?, ?, ?, ?)",
+            (kind_word, book, datetime.now(timezone.utc).isoformat(), names_count),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _chunk_evidence(book: str, name: str) -> int:
+    """名字在书中出现的块数（零 LLM 的置信依据）。"""
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) AS c FROM knowledge_chunks WHERE doc_name=? AND content LIKE ?",
+            (book, f"%{name}%"),
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+
+
+async def auto_extract_task(words: list[str], book: str) -> dict | None:
+    """后台自动抽取入口（chat heal 成功后触发，fire-and-forget）。
+
+    流程：预算/幂等闸 → extract_entities(dry_run) → 按块证据分置信
+    → 高置信直接入库 / 低置信进候选池 → 台账留痕。全程失败不影响主回复。
+    """
+    if not words or not book:
+        return None
+    kind_word = words[0]
+    if not auto_budget_ok(kind_word):
+        return {"kind": kind_word, "skipped": "budget_or_duplicate"}
+
+    from app.services import novel_entities
+
+    try:
+        payload = await novel_entities.extract_entities(
+            book, kind_word, dry_run=True, max_blocks=AUTO_MAX_BLOCKS
+        )
+    except Exception as e:
+        return {"kind": kind_word, "skipped": f"extract_error: {e}"}
+
+    names = payload.get("names") or []
+    confirmed: list[dict] = []
+    for item in names:
+        name = item.get("name")
+        if not name:
+            continue
+        evidence = _chunk_evidence(book, name)
+        if evidence >= AUTO_MIN_EVIDENCE:
+            confirmed.append({"name": name, "first_chunk": item.get("first_chunk")})
+        else:
+            candidate_add(book, kind_word, name, item.get("first_chunk"))
+
+    if confirmed:
+        novel_entities.confirm_extracted(
+            {
+                "book": book,
+                "kind": kind_word,
+                "names": confirmed,
+                "group_name": payload.get("group_name") or "",
+                "group_size": payload.get("group_size") or 0,
+            }
+        )
+    _log_auto_extract(kind_word, book, len(confirmed))
+    return {
+        "kind": kind_word,
+        "book": book,
+        "confirmed": len(confirmed),
+        "candidates": len(names) - len(confirmed),
+    }
+
+
+# ── 候选池（低置信抽取）────────────────────────────────────
+
+def candidate_add(book: str, kind: str, name: str, first_chunk) -> int:
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """INSERT INTO entity_candidates (book, kind, name, first_chunk, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(book, kind, name) DO NOTHING""",
+            (book, kind, name, first_chunk, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def candidate_list(limit: int = 10) -> list[dict]:
+    conn = connect()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM entity_candidates WHERE status='pending' ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+def candidate_confirm(name: str) -> int:
+    """候选转正：写进实体索引（verified=1）并标记候选状态。
+
+    注意分段取连：upsert_entity 内部会复用并关闭线程缓存连接，
+    若外层还握着同一连接继续用会 ProgrammingError（实测踩过）。
+    """
+    from app.services.novel_entities import upsert_entity
+
+    conn = connect()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM entity_candidates WHERE name=? AND status='pending'", (name,)
+        ).fetchall()]
+    finally:
+        conn.close()
+    if not rows:
+        return 0
+    for r in rows:
+        upsert_entity(r["book"], r["name"], r["kind"],
+                      first_chunk=r["first_chunk"], verified=1)
+    conn = connect()
+    try:
+        for r in rows:
+            conn.execute(
+                "UPDATE entity_candidates SET status='confirmed' WHERE id=?", (r["id"],)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
+
+
+def candidate_discard(name: str) -> int:
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE entity_candidates SET status='discarded' WHERE name=? AND status='pending'",
+            (name,),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+# ── 三期：用户纠错反馈回路 ─────────────────────────────────
+
+def apply_correction(msg: str) -> str | None:
+    """「不对，XX 不是 YY」→ 把 XX 从索引移除。命中返回回复文案，未命中 None。
+
+    覆盖三处索引：动态词表（注销）、实体索引（删除）、候选池（废弃）。
+    全部留痕 index_corrections，可审计可回滚。
+    """
+    m = _CORRECTION_RE.search(msg or "")
+    if not m:
+        return None
+    target, negated = m.group(1), m.group(2)
+    from app.services import knowledge_domain
+
+    actions: list[str] = []
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM dynamic_classes WHERE class_word=?", (target,)
+        ).fetchone()
+        if row:
+            conn.execute("DELETE FROM dynamic_classes WHERE class_word=?", (target,))
+            actions.append(f"把「{target}」移出体系词表")
+        n = conn.execute(
+            "DELETE FROM novel_entities WHERE name=?", (target,)
+        ).rowcount
+        if n:
+            actions.append(f"删除实体索引里的「{target}」{n} 条")
+        n2 = conn.execute(
+            "UPDATE entity_candidates SET status='discarded' "
+            "WHERE name=? AND status='pending'",
+            (target,),
+        ).rowcount
+        if n2:
+            actions.append(f"废弃候选「{target}」{n2} 条")
+        if not actions:
+            return None
+        conn.execute(
+            "INSERT INTO index_corrections (target, reason, corrected_at) VALUES (?, ?, ?)",
+            (target, f"用户说它不是{negated}", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    knowledge_domain.invalidate_dynamic_cache()
+    return (
+        "🤝 已修正：" + "；".join(actions)
+        + f"。以后不会再把它当「{negated}」了。"
+    )

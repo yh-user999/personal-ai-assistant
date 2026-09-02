@@ -175,6 +175,11 @@ def register_class(class_word: str, domain: str = "", source_query: str = "") ->
     return True
 
 
+def invalidate_dynamic_cache() -> None:
+    """动态词表缓存失效（登记/纠错注销后调用）。"""
+    _dynamic_cache.clear()
+
+
 def mark_class_hit(class_word: str) -> None:
     """动态类名被再次命中时 +1（活跃度统计/退登用）。"""
     from datetime import datetime, timezone

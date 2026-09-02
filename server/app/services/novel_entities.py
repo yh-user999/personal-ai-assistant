@@ -106,9 +106,30 @@ def detect_enum_intent(query: str) -> bool:
 
 
 def detect_kinds(query: str) -> list[str]:
-    """问的是哪几类实体。"""
+    """问的是哪几类实体。
+
+    静态四类（命丛/命图/功法/势力）之外，检索自愈登记的动态类名与库内
+    已抽取的实体类型同样参与——"炼神有哪些境界"在自动抽取"炼神"类实体后
+    能被识别并走实体索引。
+    """
     q = query or ""
-    return [kind for kind, words in ENTITY_KINDS.items() if any(w in q for w in words)]
+    kinds = [kind for kind, words in ENTITY_KINDS.items() if any(w in q for w in words)]
+    from app.services.knowledge_domain import _dynamic_novel_classes
+
+    for w in _dynamic_novel_classes():
+        if w in q and w not in kinds:
+            kinds.append(w)
+    conn = connect()
+    try:
+        db_kinds = [r["kind"] for r in conn.execute(
+            "SELECT DISTINCT kind FROM novel_entities"
+        ).fetchall()]
+    finally:
+        conn.close()
+    for k in db_kinds:
+        if k in q and k not in kinds:
+            kinds.append(k)
+    return kinds
 
 
 # ── 实体表 CRUD ───────────────────────────────────────────

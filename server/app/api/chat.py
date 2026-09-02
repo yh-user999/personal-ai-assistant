@@ -132,7 +132,7 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
 {knowledge}
 
-{intent_rules}
+{slang}{intent_rules}
 用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
 {behavior}
 
@@ -495,6 +495,89 @@ async def _handle_confirm(msg: str, request: Request, ctx: dict | None = None) -
     return _enqueue_and_reply(item["action"], item["target"], request)
 
 
+async def _handle_slang(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
+    """黑话模块命令（主人与访客均可，作用域按身份隔离）：
+    记黑话：X = Y（主人→共享/访客→私有）、不对，X 是 Y 的意思（纠正自己的）、
+    黑话列表、黑话共享：X / 黑话私藏：X / 黑话删除：X（仅主人）。"""
+    from app.services import slang
+
+    uid = (ctx or {}).get("uid")
+    is_owner = (ctx or {}).get("is_owner", False)
+
+    c = slang.parse_correct(msg)
+    if c:
+        term, meaning = c
+        if slang._own_term(term, user_id=uid):
+            slang.save_term(term, meaning, user_id=uid, status="confirmed")
+            return ChatResponse(reply=f"🤝 已更新黑话「{term}」的意思", memories_used=0)
+        return None  # 没有自己的同名条目 → 落 LLM 主路径
+    t = slang.parse_teach(msg)
+    if t:
+        term, meaning = t
+        scope = "shared" if is_owner else "private"
+        slang.save_term(term, meaning, user_id=uid, scope=scope)
+        note = "（已共享给访客）" if scope == "shared" else "（仅你自己可见）"
+        return ChatResponse(reply=f"📔 记下黑话：「{term}」＝{meaning}{note}", memories_used=0)
+    if msg.strip() in ("黑话列表", "我的黑话"):
+        rows = slang.list_terms(user_id=uid)
+        if not rows:
+            return ChatResponse(reply="还没有黑话条目。说「记黑话：词 = 意思」来教小月。", memories_used=0)
+        lines = "\n".join(
+            f"  「{r['term']}」＝{r['meaning'][:40]}"
+            + ("（共享）" if r["scope"] == "shared" else "（私有）")
+            + ("" if r["status"] == "confirmed" else "（候选）")
+            for r in rows[:10]
+        )
+        return ChatResponse(reply=f"📔 黑话列表：\n{lines}", memories_used=0)
+    if is_owner:
+        m = re.match(r"^(?:黑话共享|黑话私藏|黑话删除)[：:]\s*(.+)$", msg.strip())
+        if m:
+            term = m.group(1).strip()[:12]
+            if msg.strip().startswith("黑话共享"):
+                n = slang.set_scope(term, "shared", user_id=uid)
+                return ChatResponse(reply=f"🌐 「{term}」已设为共享" if n else f"没找到你的黑话「{term}」", memories_used=0)
+            if msg.strip().startswith("黑话私藏"):
+                n = slang.set_scope(term, "private", user_id=uid)
+                return ChatResponse(reply=f"🔒 「{term}」已私藏" if n else f"没找到你的黑话「{term}」", memories_used=0)
+            n = slang.delete_term(term, user_id=uid)
+            return ChatResponse(reply=f"🗑 已删除「{term}」" if n else f"没找到你的黑话「{term}」", memories_used=0)
+    return None
+
+
+async def _handle_entity_candidates(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
+    """检索自愈二期：候选池管理（主人专属）。查看/确认/废弃低置信抽取结果。"""
+    from app.services import index_healer
+
+    if msg.strip() in ("查看候选抽取", "候选抽取", "候选实体"):
+        rows = index_healer.candidate_list()
+        if not rows:
+            return ChatResponse(reply="🧪 候选池是空的（自动抽取尚未产生低置信候选）。", memories_used=0)
+        lines = "\n".join(
+            f"  {r['name']}（{r['kind']}·{(r['book'] or '').replace('小说-', '')}）"
+            for r in rows[:10]
+        )
+        return ChatResponse(
+            reply=f"🧪 待确认的抽取候选：\n{lines}\n"
+                  f"转正用「确认抽取：名字」，不要的用「废弃抽取：名字」",
+            memories_used=0,
+        )
+    m = re.match(r"^(?:确认抽取|废弃抽取)[：:]\s*(.+)$", msg.strip())
+    if m:
+        name = m.group(1).strip()[:20]
+        if msg.strip().startswith("确认"):
+            n = index_healer.candidate_confirm(name)
+            return ChatResponse(
+                reply=f"✅ 已把「{name}」转正进实体索引" if n else f"候选池里没有「{name}」",
+                memories_used=0,
+            )
+        n = index_healer.candidate_discard(name)
+        return ChatResponse(
+            reply=f"🗑 已废弃「{name}」" if n else f"候选池里没有「{name}」",
+            memories_used=0,
+        )
+    return None
+
+
 async def _handle_executor(msg: str, request: Request, ctx: dict | None = None) -> ChatResponse | None:
     """执行器命令（第 11/13/6.24 课）：打开/列目录/读文件/文件手/搜索文件 + 心跳提示。"""
     exec_cmd = executor.parse_executor_command(msg)
@@ -549,6 +632,8 @@ _COMMAND_HANDLERS: list[tuple[str, object]] = [
     ("fitness", _handle_fitness),
     ("novel", _handle_novel),
     ("search", _handle_search),
+    ("slang", _handle_slang),
+    ("entity_candidates", _handle_entity_candidates),
     ("executor", _handle_executor),
 ]
 
@@ -559,7 +644,7 @@ GUEST_BLOCKED_HANDLERS = frozenset(
     # （少了这条，伪造 uid 的访客能把主人挂起的指令"确认"掉）
     # identity 也屏蔽：访客写不进 lessons，不该有改名确认流程
     {"identity", "confirm", "worklog", "reminders", "documents", "resume",
-     "fitness", "novel", "executor"}
+     "fitness", "novel", "entity_candidates", "executor"}
 )
 
 GUEST_MAX_MSG_CHARS = 2000
@@ -585,6 +670,24 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             reply=f"消息太长啦（{len(msg)} 字，上限 {max_chars}），精简一下再发",
             memories_used=0,
         )
+
+    # 检索自愈三期：索引纠错回路（仅主人，零 LLM 规则）。
+    # 「不对，XX 不是境界」→ 从动态词表/实体索引/候选池移除 XX。
+    if is_owner and settings.healer_enabled:
+        from app.services import index_healer as _healer
+
+        _fixed = _healer.apply_correction(msg)
+        if _fixed is not None:
+            return ChatResponse(reply=_fixed, memories_used=0)
+
+    # 检索自愈三期：索引纠错回路（仅主人，零 LLM 规则）。
+    # 「不对，XX 不是境界」→ 从动态词表/实体索引/候选池移除 XX。
+    if is_owner and settings.healer_enabled:
+        from app.services import index_healer as _healer
+
+        _fixed = _healer.apply_correction(msg)
+        if _fixed is not None:
+            return ChatResponse(reply=_fixed, memories_used=0)
 
     # 访客限流（滑动窗口 + 日上限）：超限拒绝，不烧 LLM、不写库
     if not is_owner and _guest_rate_limited(uid):
@@ -612,6 +715,19 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         resp = await handler(msg, request, ctx)
         if resp is not None:
             return resp
+
+    # 黑话二期：链接+短句语境推断（仅主人，后台任务，失败静默）
+    if is_owner and settings.healer_enabled:
+        from app.services import slang as _slang
+
+        _hist = memory.get_recent_history(4, user_id=uid)
+        _last_user = next(
+            (h["content"] for h in reversed(_hist) if h["role"] == "user"), ""
+        )
+        if _last_user and _slang.detect_link_followup(_last_user, msg):
+            _t = asyncio.create_task(_slang.infer_candidate(_last_user, msg, user_id=uid))
+            _bg_tasks.add(_t)
+            _t.add_done_callback(_bg_tasks.discard)
 
     # unresolved 追踪（第 12 课）：解决/未解决信号（按用户隔离）
     if unresolved.detect_resolved(msg):
@@ -710,6 +826,22 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
                         domain = index_healer.classify_aggregate_domain(healed_chunks)
                         for w in diag["words"]:
                             _register_class(w, domain=domain, source_query=msg[:200])
+                        # 二期：后台自动实体抽取（预算/幂等/置信闸在任务内）
+                        _auto_book = index_healer.majority_novel_book(healed_chunks)
+                        if _auto_book:
+                            _auto_t = asyncio.create_task(
+                                index_healer.auto_extract_task(diag["words"], _auto_book)
+                            )
+                            _bg_tasks.add(_auto_t)
+                            _auto_t.add_done_callback(_bg_tasks.discard)
+                        # 二期：后台自动实体抽取（预算/幂等/置信闸在任务内）
+                        _auto_book = index_healer.majority_novel_book(healed_chunks)
+                        if _auto_book:
+                            _auto_t = asyncio.create_task(
+                                index_healer.auto_extract_task(diag["words"], _auto_book)
+                            )
+                            _bg_tasks.add(_auto_t)
+                            _auto_t.add_done_callback(_bg_tasks.discard)
             except Exception as e:
                 logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", e)
         knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
@@ -786,6 +918,9 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     system = system.replace("{unresolved}", open_issues or "（无）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
     system = system.replace("{intent_rules}", _intent_rules_text(intent_label))
+    from app.services import slang as _slang_mod
+
+    system = system.replace("{slang}", _slang_mod.get_slang_injection(msg, user_id=uid) or "")
     # 情绪感知（第 6.23 课）：规则检测用户情绪 → 风格指引注入
     # 情绪记忆层 + 反馈闭环（第 6.27 课）：今日曲线 + 负面连击降级（主人专属）
     system = system.replace("{mood}", mood.detect_mood(msg) if is_owner else "")

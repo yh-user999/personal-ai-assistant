@@ -29,6 +29,15 @@ VECTOR_SPREAD_MIN = 0.005
 VECTOR_FILTER_FANOUT = 8
 MAX_VECTOR_K = 200
 
+# 向量无区分力降级标志（检索可观测性 P0）：hybrid_search 每轮开始重置，
+# 触发降级置 True；chat 决策轨迹读取。进程级单线程事件循环下安全。
+_vector_degraded_last: bool = False
+
+
+def last_vector_degraded() -> bool:
+    """上一轮混合检索是否因向量无区分力而整轮放弃向量。"""
+    return _vector_degraded_last
+
 
 # 人物别名（小说知识库策划数据：同一角色的多个名字/称呼，检索时多变体融合）
 NOVEL_ALIASES = {
@@ -251,6 +260,8 @@ async def hybrid_search(query: str, top_k: int = 3, *,
     评测结果：MRR 0.906 → 0.938，精确词问题（"几小时运行一次"）显著受益。
     domains/docs 为分域过滤（见 services/knowledge_domain）。
     """
+    global _vector_degraded_last
+    _vector_degraded_last = False
     vec_hits = await _vector_search(query, top_k=10, domains=domains, docs=docs)
     bm25_hits = _bm25_rank(query, 10, domains=domains, docs=docs)
 
@@ -262,6 +273,7 @@ async def hybrid_search(query: str, top_k: int = 3, *,
         if max(sims) - min(sims) < VECTOR_SPREAD_MIN:
             logger.debug("向量相似度无区分力（极差 %.4f），本轮仅用 BM25",
                          max(sims) - min(sims))
+            _vector_degraded_last = True
             vec_hits = []
 
     rrf: dict[int, float] = {}

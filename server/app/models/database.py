@@ -292,6 +292,24 @@ CREATE TABLE IF NOT EXISTS dynamic_classes (
   created_at TEXT NOT NULL,
   last_hit_at TEXT
 );
+
+-- ㉕ 请求决策轨迹（检索可观测性 P0）：每轮对话的检索决策链可回放。
+-- routing=域路由结果 JSON；retrieval_path=实体索引/hybrid/heal/skip；
+-- healer=自愈触发词 JSON；injection_bytes=各注入段字节数 JSON。
+-- 写入是 fire-and-forget 后台任务，失败不影响回复；30 天由 evict_stale 清理。
+CREATE TABLE IF NOT EXISTS request_traces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  query TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  routing TEXT DEFAULT '{}',
+  retrieval_path TEXT DEFAULT '',
+  vector_degraded INTEGER DEFAULT 0,
+  healer TEXT DEFAULT '',
+  injection_bytes TEXT DEFAULT '{}',
+  search_ms INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_traces_ts ON request_traces(ts);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

@@ -1,0 +1,285 @@
+{
+  "description": "检索路由评测基准：问题 → 期望的域路由/枚举识别/自愈触发。种子数据与 test_route_benchmark.py 的 fixture 一致（两本小说+实体+设定卡+项目/手册/简历文档+facts）。",
+  "cases": [
+    {
+      "query": "寂静杀戮里有哪些命丛",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "夜海怎么修炼",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "夜海是哪个命丛",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "左志诚和左擎苍是什么关系",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "命丛有哪些",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "命图分为几种",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "有哪些功法",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "蜃宗属于什么势力",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "这小说的剧情主线是什么",
+      "domains": [
+        "novel"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "主角是谁",
+      "domains": [
+        "novel"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "李羽的能力是什么",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "反代怎么配置",
+      "domains": [
+        "manual"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "接码教程是什么",
+      "domains": [
+        "manual"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "RAG 检索怎么调权重",
+      "domains": [
+        "project_doc"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "服务器的执行器白名单在哪配置",
+      "domains": [
+        "project_doc"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "简历怎么写",
+      "domains": [
+        "resume"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "今天天气怎么样",
+      "domains": [],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "帮我写一段代码",
+      "domains": [],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "王动是谁",
+      "domains": [
+        "__skip__"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "炼神里面有哪些境界",
+      "domains": [],
+      "docs": [],
+      "enum": true,
+      "heal": true
+    },
+    {
+      "query": "炼神是谁",
+      "domains": [],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "筑基分为几层",
+      "domains": [],
+      "docs": [],
+      "enum": true,
+      "heal": true
+    },
+    {
+      "query": "筑基是什么",
+      "domains": [],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "有哪些境界",
+      "domains": [],
+      "docs": [],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "有几个势力",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": true,
+      "heal": false
+    },
+    {
+      "query": "食物链顶端的男人里主角叫什么",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-食物链顶端的男人"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "测试一下",
+      "domains": [],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "帮我找一下聊天记录里的 RAG",
+      "domains": [
+        "project_doc"
+      ],
+      "docs": [],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "血凰是什么",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-食物链顶端的男人"
+      ],
+      "enum": false,
+      "heal": false
+    },
+    {
+      "query": "夜海和银河灵潮有什么区别",
+      "domains": [
+        "novel"
+      ],
+      "docs": [
+        "小说-寂静杀戮"
+      ],
+      "enum": false,
+      "heal": false
+    }
+  ]
+}

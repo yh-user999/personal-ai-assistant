@@ -18,6 +18,7 @@ _bg_tasks: set[asyncio.Task] = set()
 from app.models.database import connect
 from app.services import behavior_context, confirm, cooccurrence, documents, executor, fitness, goals, growth, identity_guard, intent_goals, knowledge_hint, message_search, mood, novel_entities, novel_writing, plain_text, reminders, resume, self_state, subjective_time, unresolved, worklog
 from app.services.concern_tracker import get_concerns_injection
+from app.services import request_trace
 from app.services.few_shot import detect_positive_feedback, get_examples_injection, save_example
 from app.services.jargon import detect_definition, get_jargon_injection, save_term
 from app.services.profile import get_profile_injection
@@ -131,6 +132,7 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 知识库相关资料（回答时优先采用；可标注"根据资料 X"）：
 {knowledge}
 
+{intent_rules}
 用户当前状态（来自行为采集，回答可参考；若显示"暂无"不要编造）：
 {behavior}
 
@@ -187,6 +189,30 @@ def _guest_rate_limited(uid: str) -> bool:
         return True
     dq.append(now)
     return False
+
+
+_INTENT_RULES: dict[str, str] = {
+    "healed": (
+        "本问的答案来自「知识库聚合资料」（见后附独立系统消息）：以该资料为准，"
+        "标注「据原文梳理」并注明章节；资料未覆盖的部分明确说不确定，不得推测。"
+    ),
+    "entity": (
+        "本问是专名/实体类问题：只回答检索到的内容，禁止推测未出现的设定；"
+        "关键设定注明章节出处。"
+    ),
+    "enum": (
+        "本问是清单枚举类问题：回答必须区分「确认的条目」与「原文提到的总数」，"
+        "清单不完整时明确说「可能不全」；禁止把推测当事实列出。"
+    ),
+    "novel": (
+        "本问与小说内容相关：可以总结叙事，但关键设定与专名必须注明章节出处。"
+    ),
+}
+
+
+def _intent_rules_text(label: str) -> str:
+    """意图级回答约束（零 LLM 分类：标签是决策链副产品）。无标签返回空串。"""
+    return _INTENT_RULES.get(label or "", "")
 
 
 def _guest_note(uid: str) -> str:
@@ -642,10 +668,26 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     injections = subjective_time.format_injection(mems)
     healed_text = ""  # 检索自愈：聚合资料（独立 system 消息注入，见 LLM 调用段）
     knowledge_text = ""
+    entity_ctx = ""
+    intent_label = ""  # 意图标签（决策副产品，零 LLM）：healed/entity/enum/novel
+    trace = {  # 检索可观测性 P0：决策轨迹字段（仅主人轮写入）
+        "routing": {}, "path": "hybrid", "degraded": 0,
+        "healer_words": [], "search_ms": 0,
+    }
     if is_owner:
+        # 域路由先算一次：自愈诊断与决策轨迹共用（detect_domains 有缓存，开销低）
+        from app.services.knowledge_domain import detect_domains as _detect_domains
+
+        _t0 = time.monotonic()
+        _domains, _docs = _detect_domains(msg)
+        trace["routing"] = {"domains": _domains, "docs": _docs}
+        if "__skip__" in _domains:
+            trace["path"] = "skip"
         # 检索已 FTS 化（不再有 Python 全表扫描）；嵌入调用是 async 网络 IO；
         # 剩余同步 SQL 走线程本地连接缓存——直接 await，不嵌套事件循环
         knowledge_hits = await knowledge.search_knowledge(msg, top_k=4)
+        trace["search_ms"] = int((time.monotonic() - _t0) * 1000)
+        trace["degraded"] = 1 if knowledge.last_vector_degraded() else 0
         # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
         # 1500字/块配 ±1 邻域 ≈ 一整场戏）
         knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
@@ -653,14 +695,13 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         # + 聚合提炼 + 登记类名（仅主人；常规问题零开销）
         if settings.healer_enabled:
             from app.services import index_healer
-            from app.services.knowledge_domain import detect_domains as _detect_domains
 
             try:
-                _domains, _docs = _detect_domains(msg)
                 diag = index_healer.diagnose(msg, _domains, _docs, knowledge_hits)
                 if diag is not None:
                     healed_text, healed_chunks = await index_healer.heal(diag, msg)
                     if healed_text:
+                        trace["_heal_words"] = list(diag["words"])
                         logger.info("[healer] 兜底提炼生效: %s → %d 块",
                                     diag["words"], len(healed_chunks))
                         from app.services.knowledge_domain import (
@@ -683,6 +724,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         entity_ctx = novel_entities.build_entity_context(msg)
         if entity_ctx:
             knowledge_text = entity_ctx + "\n\n" + knowledge_text
+            trace["path"] = "entity"
         # 小说设定卡注入：策划的权威事实，即知识库资料，可直接作为回答依据
         novel_facts = knowledge.get_novel_facts(msg)
         if novel_facts:
@@ -707,6 +749,20 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
                 + "\n\n"
                 + knowledge_text
             )
+    # 意图标签（检索可观测性 P0）：从决策副产品白拿，零 LLM 分类调用
+    from app.services import index_healer
+
+    if is_owner:
+        if healed_text:
+            intent_label = "healed"
+            trace["path"] = "heal"
+            trace["healer_words"] = list(trace.get("_heal_words", []))
+        elif entity_ctx:
+            intent_label = "entity"
+        elif trace["routing"].get("domains") and index_healer.detect_enum_intent(msg):
+            intent_label = "enum"
+        elif trace["routing"].get("docs") or trace["routing"].get("domains") == ["novel"]:
+            intent_label = "novel"
     profile = get_profile_injection(user_id=uid)
     lessons = get_lessons_injection() if is_owner else ""  # lessons 主人专属
     concerns = get_concerns_injection(user_id=uid)
@@ -729,6 +785,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     system = system.replace("{goals}", goals_text or "（暂无活跃目标）")
     system = system.replace("{unresolved}", open_issues or "（无）")
     system = system.replace("{knowledge}", knowledge_text or "（知识库暂无相关内容）")
+    system = system.replace("{intent_rules}", _intent_rules_text(intent_label))
     # 情绪感知（第 6.23 课）：规则检测用户情绪 → 风格指引注入
     # 情绪记忆层 + 反馈闭环（第 6.27 课）：今日曲线 + 负面连击降级（主人专属）
     system = system.replace("{mood}", mood.detect_mood(msg) if is_owner else "")
@@ -768,6 +825,27 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         )
     else:
         system = system.replace("{older}", "（无更早对话）")
+
+    # 检索可观测性 P0：决策轨迹落库（fire-and-forget，失败不影响回复）
+    if is_owner and settings.request_trace_enabled:
+        import json as _json
+
+        _bytes = {
+            "knowledge": len(knowledge_text),
+            "entity": len(entity_ctx),
+            "healed": len(healed_text),
+            "system_total": len(system),
+        }
+        _tr = asyncio.create_task(
+            asyncio.to_thread(
+                request_trace.record,
+                uid, msg,
+                trace["routing"], trace["path"], bool(trace["degraded"]),
+                trace["healer_words"], _bytes, trace["search_ms"],
+            )
+        )
+        _bg_tasks.add(_tr)
+        _tr.add_done_callback(_bg_tasks.discard)
 
     # 3) 记录用户消息（先入库，LLM 摘要整合由定时任务完成）
     #    复用第 1 步检索时算出的 query 向量——同一条消息此前会被 embed 两次

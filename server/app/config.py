@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # 出问题可设 false 一键关闭（改动全是加性旁路，关掉即完全回到旧行为）。
     healer_enabled: bool = True
 
+    # ── 请求决策轨迹（检索可观测性 P0）：每轮对话记一行决策链，可回放可统计。
+    # 默认开（一次 INSERT/轮，零 LLM）；设 false 关闭。
+    request_trace_enabled: bool = True
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)

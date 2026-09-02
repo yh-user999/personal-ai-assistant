@@ -67,7 +67,7 @@ def classify_doc(doc_name: str) -> str:
 # 项目术语：命中即判为问项目（这些词不会出现在小说里）
 _PROJECT_TERMS = re.compile(
     r"RAG|rag|向量|embedding|检索|注入|prompt|知识库|执行器|采集器|"
-    r"定时任务|备份|脱敏|白名单|周报|画像|测试|部署|服务器|接口|"
+    r"定时任务|备份|脱敏|白名单|周报|画像|部署|服务器|接口|"
     r"数据库|SQLite|sqlite|token|LLM|llm|命令族|回归集"
 )
 _RESUME_TERMS = re.compile(r"简历|求职|岗位|面试|工作经历")

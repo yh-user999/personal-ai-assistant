@@ -192,6 +192,11 @@ async def evict_stale() -> dict:
         # 或进程在两次 DELETE 之间中断）。线上实测存在 1 条这类残留。
         n3 = _sweep_orphan_vectors(conn)
         conn.commit()
-        return {"deleted_noise": n1, "deleted_chat": n2, "deleted_orphan_vectors": n3}
+        # 检索可观测性 P0：决策轨迹 30 天清理（与淘汰任务同频，6h 一次）
+        from app.services.request_trace import cleanup_stale as _cleanup_traces
+
+        n_traces = _cleanup_traces()
+        return {"deleted_noise": n1, "deleted_chat": n2,
+                "deleted_orphan_vectors": n3, "deleted_traces": n_traces}
     finally:
         conn.close()

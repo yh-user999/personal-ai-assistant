@@ -100,13 +100,95 @@ def _novel_class_words() -> set[str]:
 
     「命丛有哪些」这种问法里没有任何专名，靠专名匹配判不出域，而这恰恰是
     污染最严重的问法（实测命中反代教程 PDF、AI 模板、名词焦虑 PDF）。
+    检索自愈一期：动态登记的词（dynamic_classes 表 domain='novel'）并入，
+    让"炼神"这类首问未覆盖、兜底后已确认的词第二次就能直接判域。
     """
     from app.services.novel_entities import ENTITY_KINDS
 
     words = set(ENTITY_KINDS.keys())
     for group in ENTITY_KINDS.values():
         words.update(w for w in group if len(w) >= 2)
+    words.update(_dynamic_novel_classes())
     return words
+
+
+# ── 动态类名词（检索自愈一期）──────────────────────────────
+# 缓存按表行数失效：登记新词 → 行数变 → 重建。与 _class_book_cache 同款思路。
+_dynamic_cache: dict[int, frozenset[str]] = {}
+
+
+def _dynamic_class_count() -> int:
+    conn = connect()
+    try:
+        return conn.execute("SELECT COUNT(*) AS c FROM dynamic_classes").fetchone()["c"]
+    finally:
+        conn.close()
+
+
+def _dynamic_novel_classes() -> frozenset[str]:
+    count = _dynamic_class_count()
+    cached = _dynamic_cache.get(count)
+    if cached is not None:
+        return cached
+    conn = connect()
+    try:
+        words = frozenset(
+            r["class_word"]
+            for r in conn.execute(
+                "SELECT class_word FROM dynamic_classes WHERE domain='novel'"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+    _dynamic_cache.clear()
+    _dynamic_cache[count] = words
+    return words
+
+
+def register_class(class_word: str, domain: str = "", source_query: str = "") -> bool:
+    """登记体系类名（幂等）。返回 True=新登记，False=已存在。
+
+    domain='novel' 才参与域路由；不能确认领域归属时传 ''（只做登记防重复触发）。
+    """
+    from datetime import datetime, timezone
+
+    word = (class_word or "").strip()
+    if not word:
+        return False
+    conn = connect()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM dynamic_classes WHERE class_word=?", (word,)
+        ).fetchone()
+        if exists:
+            return False
+        conn.execute(
+            """INSERT INTO dynamic_classes (class_word, domain, source_query, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (word, domain, (source_query or "")[:200],
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _dynamic_cache.clear()
+    return True
+
+
+def mark_class_hit(class_word: str) -> None:
+    """动态类名被再次命中时 +1（活跃度统计/退登用）。"""
+    from datetime import datetime, timezone
+
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE dynamic_classes SET hit_count = hit_count + 1, last_hit_at = ? "
+            "WHERE class_word = ?",
+            (datetime.now(timezone.utc).isoformat(), class_word),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _novel_person_names() -> dict[str, set[str]]:

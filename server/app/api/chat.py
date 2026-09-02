@@ -645,7 +645,32 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         # 邻域扩展：首条命中拼接前后邻块成连续剧情段（小说问答的情节完整性；
         # 1500字/块配 ±1 邻域 ≈ 一整场戏）
         knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
+        # 检索自愈（一期）：判不出域/核心词未命中的枚举式提问 → 变体重搜
+        # + 聚合提炼 + 登记类名（仅主人；常规问题零开销）
+        healed_text = ""
+        if settings.healer_enabled:
+            from app.services import index_healer
+            from app.services.knowledge_domain import detect_domains as _detect_domains
+
+            try:
+                _domains, _docs = _detect_domains(msg)
+                diag = index_healer.diagnose(msg, _domains, _docs, knowledge_hits)
+                if diag is not None:
+                    healed_text, healed_chunks = await index_healer.heal(diag, msg)
+                    if healed_text:
+                        logger.info("[healer] 兜底提炼生效: %s → %d 块",
+                                    diag["words"], len(healed_chunks))
+                        from app.services.knowledge_domain import (
+                            register_class as _register_class,
+                        )
+                        domain = index_healer.classify_aggregate_domain(healed_chunks)
+                        for w in diag["words"]:
+                            _register_class(w, domain=domain, source_query=msg[:200])
+            except Exception as e:
+                logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", e)
         knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
+        if healed_text:
+            knowledge_text = healed_text + "\n\n" + knowledge_text
         # 人物别名背景注入：跨名字指代的剧情问题需要这个前提（左志诚=左擎苍）
         alias_note = knowledge.get_alias_note(msg)
         if alias_note:

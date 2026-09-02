@@ -279,6 +279,19 @@ CREATE TABLE IF NOT EXISTS fitness_facts (
   content TEXT NOT NULL,           -- 权威条目正文（含出处年份）
   created_at TEXT NOT NULL
 );
+
+-- ㉔ 动态类名词表（检索自愈一期）：用户问过的、硬编码词表未覆盖的体系类名。
+-- domain='novel' 的词会并入域路由的小说类名表；'' 表示仅登记不参与路由
+-- （聚合块不足以判定领域归属时）。幂等靠 UNIQUE(class_word)。
+CREATE TABLE IF NOT EXISTS dynamic_classes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  class_word TEXT NOT NULL UNIQUE,
+  domain TEXT NOT NULL DEFAULT '',  -- 'novel' / ''
+  source_query TEXT DEFAULT '',
+  hit_count INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL,
+  last_hit_at TEXT
+);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）

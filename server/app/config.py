@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     initiative_quiet_start: int = 23
     initiative_quiet_end: int = 8
 
+    # ── 检索自愈（新体系类名自动兜底/登记，见 docs/检索自愈与答案自检方案.md）
+    # 默认开：只在"判不出域/核心词未命中"的枚举式提问上触发，常规问题零开销。
+    # 出问题可设 false 一键关闭（改动全是加性旁路，关掉即完全回到旧行为）。
+    healer_enabled: bool = True
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)

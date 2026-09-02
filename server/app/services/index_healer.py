@@ -87,6 +87,7 @@ _CONFUSABLE = {
 AGGREGATE_TOP = 20        # 聚合块上限
 MIN_AGGREGATE_CHUNKS = 3  # 至少找到几块才值得提炼（1-2 块孤证直接放弃）
 NOVEL_DOMINANCE = 0.6     # 聚合块来自小说域的比例 ≥ 此值才登记为 novel 域
+SPARSE_WORD_CHUNKS = 3    # 命中块里词面出现不足此数 = 拼不出清单，仍走聚合
 SYNTH_MAX_TOKENS = 900
 
 def detect_enum_intent(query: str) -> bool:
@@ -196,13 +197,20 @@ def diagnose(query: str, domains: list[str], docs: list[str],
         return None
     unrouted = not domains and not docs
     missing = core_word_missing(words, hits)
-    if not unrouted and not missing:
+    # 枚举式提问的第三触发：词面虽命中但块数太少（<3）——散在叙事里的清单
+    # 靠 1-2 块拼不出来，仍需聚合提炼（"炼神"登记后词面命中 2 块正是此例）
+    hit_count = sum(
+        1 for c in hits if any(w in (c.get("content") or "") for w in words)
+    )
+    sparse = hit_count < SPARSE_WORD_CHUNKS
+    if not unrouted and not missing and not sparse:
         return None
     return {
         "action": "heal",
         "words": words,
         "unrouted": unrouted,
         "core_missing": missing,
+        "sparse": sparse,
     }
 
 

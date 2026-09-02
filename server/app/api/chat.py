@@ -764,6 +764,22 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             save_lesson(msg, last_ai)
     if detect_positive_feedback(msg) and last_ai:  # 风格：认可 → 范例（按用户）
         save_example(last_ai, user_id=uid)
+    # 设定结论补漏（修复"说了但没记下"）：显式记录指令或短肯定确认承接
+    # 上一条 AI 设定提议 → 从上一条 AI 回复提取事实（后台任务）。
+    # 实测案例：用户"忍下来…老人也没挺过一周"无信号词、"先将这些记录下来"
+    # 里"记录"不在旧触发表——两条设定结论在总结时被当成"悬着未定"。
+    from app.services import fact_extract
+
+    if is_owner and last_ai and (
+        fact_extract.is_record_command(msg)
+        or (fact_extract.is_short_confirm(msg)
+            and fact_extract.last_ai_looks_like_setting(last_ai))
+    ):
+        _t = asyncio.create_task(
+            fact_extract.extract_from_last_ai(last_ai, user_id=uid)
+        )
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     definition_term = detect_definition(msg)    # 术语：定义型问题（回复后存储）
 
     # 1) 检索：记忆（按用户隔离）；知识库仅主人（访客跳过，零知识库暴露）

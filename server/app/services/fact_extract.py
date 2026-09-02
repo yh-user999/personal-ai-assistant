@@ -19,7 +19,7 @@ logger = logging.getLogger("assistant.fact_extract")
 # 触发提取的信号词：用户在这些语境下说的话大概率是持久设定
 FACT_SIGNALS = (
     "说过", "记住", "设定", "确定", "就是", "关系", "背景",
-    "能力", "性格", "为什么", "改为", "记下", "底色",
+    "能力", "性格", "为什么", "改为", "记下", "记录", "底色",
 )
 
 EXTRACT_PROMPT = """你是事实提取器。从用户最新消息中提取用户**明确确认或陈述**的持久设定类事实。
@@ -104,6 +104,68 @@ def _now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+# 显式记录指令："将这些记录下来/记一下/先记录"——直接对上一条 AI 回复提取
+_RECORD_CMD = re.compile(r"^(?:请|先|把|将|帮(?:我)?)*(?:这些|这个|刚才|上面)?"
+                        r"(?:设定|结论|内容)?(?:记录|记)(?:下来|一下|好)?[。！!~～\s]*$")
+
+
+def is_record_command(msg: str) -> bool:
+    """「先将这些记录下来」这类显式记录指令（宽泛匹配，宁滥勿缺——提取器
+    本身会过滤无设定内容的消息）。"""
+    t = (msg or "").strip()
+    return len(t) <= 20 and bool(_RECORD_CMD.search(t))
+
+
+# 短肯定回复：对上一条 AI 设定提议的确认（"对/好/就这样/行/可以"）
+_SHORT_CONFIRM = re.compile(r"^(?:对|好|行|可以|就这样|挺好|就这么定|没问题|OK|ok)[。！!~～\s]*$")
+
+
+def is_short_confirm(msg: str) -> bool:
+    t = (msg or "").strip()
+    return bool(t) and len(t) <= 10 and bool(_SHORT_CONFIRM.match(t))
+
+
+# 设定提议的判定：AI 回复里带这些词才值得在用户确认后提取
+_AI_SETTING_HINTS = ("设定", "定下来", "定死", "安排", "就这么定", "结论", "机制")
+
+
+def last_ai_looks_like_setting(last_ai: str) -> bool:
+    return any(h in (last_ai or "") for h in _AI_SETTING_HINTS)
+
+
+EXTRACT_FROM_AI_PROMPT = """你是事实提取器。用户刚确认了 AI 助手提出的小说设定提议。
+从下面的 AI 回复中提取**被用户确认的设定结论**（人物关系/事件走向/能力机制/性格底色等）。
+规则：
+1. 只提取回复中明确陈述的设定结论；推测、客套、过渡语不提取
+2. subject 用具体实体（李羽/老人/豪强…），predicate 简短（如 反击第一步/后续走向/能力机制）
+3. 输出 JSON 数组，无内容时输出 []
+
+AI 回复：
+{text}
+"""
+
+
+async def extract_from_last_ai(last_ai: str, user_id: str | None = None) -> int:
+    """从被用户确认的 AI 设定提议里提取事实（记录指令/短肯定确认时调用）。"""
+    try:
+        text = await llm.chat(
+            [
+                {"role": "system", "content": "你是事实提取器，只输出 JSON 数组。"},
+                {"role": "user", "content": EXTRACT_FROM_AI_PROMPT.replace("{text}", last_ai[:2000])},
+            ],
+            temperature=0,
+            max_tokens=400,
+        )
+    except Exception as e:
+        logger.warning("AI 回复设定提取 LLM 失败: %s", e)
+        return 0
+    triples = parse_facts_json(text or "")
+    if triples:
+        logger.info("从 AI 回复提取设定 %d 条: %s", len(triples),
+                    [(t["subject"], t["predicate"]) for t in triples])
+    return upsert_facts(triples, user_id=user_id)
 
 
 async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:

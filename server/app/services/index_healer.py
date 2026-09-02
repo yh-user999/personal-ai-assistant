@@ -49,6 +49,7 @@ _STOP_WORDS = {"什么", "哪些", "境界", "体系", "等级", "层次", "里�
 # 尾部语气/枚举词剥离："命丛有"→"命丛"、"修道境界分别"→"修道境界"、
 # "命图分为"→"命图"（贪心捕获会把枚举词吞进候选里）
 _FILLER_TAIL = re.compile(r"(?:分别|分为|有哪|哪些|有|的)+$")
+_FILLER_HEAD = re.compile(r"^(?:里|里面|中|之中|内|内部|小说)+")
 
 def extract_candidates(query: str) -> list[str]:
     """从枚举问句里抽候选类名词。
@@ -70,6 +71,7 @@ def extract_candidates(query: str) -> list[str]:
     out = []
     for w in sorted(raw, key=len, reverse=True):
         w = _FILLER_TAIL.sub("", w).strip()
+        w = _FILLER_HEAD.sub("", w).strip()
         if 2 <= len(w) <= 8 and w not in _STOP_WORDS:
             out.append(w)
     return out
@@ -286,24 +288,52 @@ def majority_novel_book(chunks: list[dict]) -> str:
     return books.most_common(1)[0][0] if books else ""
 
 
-def auto_budget_ok(kind_word: str) -> bool:
-    """预算闸（每天 ≤AUTO_DAILY_LIMIT）+ 幂等闸（同一词当天只抽一次）。"""
+def _reserve_extract_slot(kind_word: str) -> bool:
+    """原子占位：同词同日唯一（幂等闸）+ 每日 ≤AUTO_DAILY_LIMIT（预算闸）。
+
+    先 INSERT 占位再数当日行数——两个并发任务同时检查时，INSERT OR IGNORE
+    的 day_key 唯一性保证只有一个拿到名额（实测过并发双触发都通过的竞态）。
+    返回 True=获得名额，False=被闸拦截。
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_key = f"{today}:{kind_word}"
     conn = connect()
     try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO auto_extract_log "
+            "(kind_word, book, extracted_at, names_count, day_key) "
+            "VALUES (?, '', ?, 0, ?)",
+            (kind_word, datetime.now(timezone.utc).isoformat(), day_key),
+        )
+        if cur.rowcount == 0:
+            return False  # 同词同日已占位（幂等）
         n_today = conn.execute(
-            "SELECT COUNT(*) AS c FROM auto_extract_log WHERE substr(extracted_at,1,10)=?",
-            (today,),
+            "SELECT COUNT(*) AS c FROM auto_extract_log WHERE day_key LIKE ?",
+            (today + ":%",),
         ).fetchone()["c"]
-        dup = conn.execute(
-            "SELECT 1 FROM auto_extract_log WHERE kind_word=? AND substr(extracted_at,1,10)=?",
-            (kind_word, today),
-        ).fetchone()
+        if n_today > AUTO_DAILY_LIMIT:
+            conn.execute("DELETE FROM auto_extract_log WHERE day_key=?", (day_key,))
+            conn.commit()
+            return False  # 超每日限额，释放占位
+        conn.commit()
+        return True
     finally:
         conn.close()
-    if dup or n_today >= AUTO_DAILY_LIMIT:
-        return False
-    return True
+
+
+def _settle_extract_slot(kind_word: str, book: str, names_count: int) -> None:
+    """抽取结束后回填占位行（book 与入库数）。"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_key = f"{today}:{kind_word}"
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE auto_extract_log SET book=?, names_count=? WHERE day_key=?",
+            (book, names_count, day_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _log_auto_extract(kind_word: str, book: str, names_count: int) -> None:
@@ -340,7 +370,7 @@ async def auto_extract_task(words: list[str], book: str) -> dict | None:
     if not words or not book:
         return None
     kind_word = words[0]
-    if not auto_budget_ok(kind_word):
+    if not _reserve_extract_slot(kind_word):
         return {"kind": kind_word, "skipped": "budget_or_duplicate"}
 
     from app.services import novel_entities
@@ -350,6 +380,7 @@ async def auto_extract_task(words: list[str], book: str) -> dict | None:
             book, kind_word, dry_run=True, max_blocks=AUTO_MAX_BLOCKS
         )
     except Exception as e:
+        _settle_extract_slot(kind_word, book, 0)
         return {"kind": kind_word, "skipped": f"extract_error: {e}"}
 
     names = payload.get("names") or []
@@ -374,7 +405,7 @@ async def auto_extract_task(words: list[str], book: str) -> dict | None:
                 "group_size": payload.get("group_size") or 0,
             }
         )
-    _log_auto_extract(kind_word, book, len(confirmed))
+    _settle_extract_slot(kind_word, book, len(confirmed))
     return {
         "kind": kind_word,
         "book": book,

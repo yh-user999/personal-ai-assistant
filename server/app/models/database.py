@@ -317,9 +317,11 @@ CREATE TABLE IF NOT EXISTS auto_extract_log (
   kind_word TEXT NOT NULL,
   book TEXT DEFAULT '',
   extracted_at TEXT NOT NULL,
-  names_count INTEGER DEFAULT 0
+  names_count INTEGER DEFAULT 0,
+  day_key TEXT DEFAULT ''   -- 'YYYY-MM-DD:词'：幂等闸的原子占位键
 );
 CREATE INDEX IF NOT EXISTS idx_autoextract_at ON auto_extract_log(extracted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_autoextract_day_key ON auto_extract_log(day_key);
 
 -- ㉗ 实体候选池（低置信抽取结果，人工确认后转正）。
 CREATE TABLE IF NOT EXISTS entity_candidates (
@@ -366,6 +368,8 @@ CREATE TABLE IF NOT EXISTS index_corrections (
 _MIGRATIONS = [
     # 执行器指令认领时间：支撑原子认领 + claimed 超时释放
     "ALTER TABLE executor_commands ADD COLUMN claimed_at TEXT",
+    # 检索自愈二期：自动抽取的原子占位键（老库补列，唯一索引由 schema 建）
+    "ALTER TABLE auto_extract_log ADD COLUMN day_key TEXT DEFAULT ''",
     # 注：lessons.kind 由 _migrate_lessons 处理（要和去重重建一起做）
     # 关切主动追问时间：同一话题只主动问一次（问两遍就从关心变催促）
     "ALTER TABLE concerns ADD COLUMN asked_at TEXT",

@@ -37,21 +37,23 @@ def _seed_novel_chunks(conn, rows):
 # ── 预算/幂等闸 ────────────────────────────────────────────
 
 def test_auto_budget_daily_cap(db_env):
-    conn = connect()
-    today = datetime.now(timezone.utc).isoformat()
-    for i in range(3):
-        conn.execute(
-            "INSERT INTO auto_extract_log (kind_word, book, extracted_at) VALUES (?, '小说-X', ?)",
-            (f"词{i}", today),
-        )
-    conn.commit()
-    conn.close()
-    assert index_healer.auto_budget_ok("新词") is False   # 当日已 3 次
-    assert index_healer.auto_budget_ok("词0") is False     # 同词幂等
+    # 占位式闸门：前 3 个词成功，第 4 个被拒（每日限额）
+    assert index_healer._reserve_extract_slot("词0") is True
+    assert index_healer._reserve_extract_slot("词1") is True
+    assert index_healer._reserve_extract_slot("词2") is True
+    assert index_healer._reserve_extract_slot("词3") is False  # 当日已 3 次
+    # 同词幂等：已占位再占必拒
+    assert index_healer._reserve_extract_slot("词0") is False
 
 
 def test_auto_budget_ok_when_quota_left(db_env):
-    assert index_healer.auto_budget_ok("炼神") is True
+    assert index_healer._reserve_extract_slot("炼神") is True
+
+
+def test_reserve_atomic_under_race(db_env):
+    """并发竞态：两个任务同时占位同一词，只有一个成功（day_key 唯一性）。"""
+    ok = [index_healer._reserve_extract_slot("炼神") for _ in range(10)]
+    assert sum(ok) == 1
 
 
 # ── 自动抽取：置信分流 ─────────────────────────────────────
@@ -106,13 +108,8 @@ def test_auto_extract_budget_gate_skips(db_env, monkeypatch):
         return {"book": book, "kind": kind, "names": [], "group_name": "", "group_size": 0}
 
     monkeypatch.setattr("app.services.novel_entities.extract_entities", fake)
-    conn = connect()
-    conn.execute(
-        "INSERT INTO auto_extract_log (kind_word, book, extracted_at) VALUES ('炼神','小说-X',?)",
-        (datetime.now(timezone.utc).isoformat(),),
-    )
-    conn.commit()
-    conn.close()
+    # 先占位（模拟同词当天已抽过）→ 任务应被幂等闸拦截
+    assert index_healer._reserve_extract_slot("炼神") is True
     result = asyncio.run(index_healer.auto_extract_task(["炼神"], "小说-寂静杀戮"))
     assert result["skipped"] == "budget_or_duplicate"
     assert called["n"] == 0

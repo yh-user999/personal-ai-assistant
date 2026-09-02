@@ -193,7 +193,7 @@ def test_chat_heals_unrouted_enum_question(db_env, monkeypatch):
     # 提炼调用发生过（自愈生效）
     assert replies["synthesized"] is True
     # LLM 主回复的 system prompt 里注入了提炼结果
-    main_system = [m for m in replies["llm"] if m[0]["content"] and "检索自愈" in m[0]["content"]]
+    main_system = [m for m in replies["llm"] if m[0]["content"] and "知识库聚合资料" in m[0]["content"]]
     assert main_system, "提炼结果未注入主回复的 system prompt"
     # 类名已登记（第二次直接判域）
     domains, _ = knowledge_domain.detect_domains("炼神有哪些境界")

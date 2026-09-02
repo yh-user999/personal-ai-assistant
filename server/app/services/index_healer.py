@@ -85,6 +85,9 @@ _CONFUSABLE = {
 
 # 聚合检索参数
 AGGREGATE_TOP = 20        # 聚合块上限
+# 境界类候选的聚合种子词：阶梯词常与类名相隔较远（"先练气，后练神，再练虚"），
+# 只按候选词字面搜会漏掉阶梯段落——补搜这些通用境界词（无命中无害）。
+_REALM_SEEDS = ("练气", "练神", "练虚", "显圣", "造化", "心神")
 MIN_AGGREGATE_CHUNKS = 3  # 至少找到几块才值得提炼（1-2 块孤证直接放弃）
 NOVEL_DOMINANCE = 0.6     # 聚合块来自小说域的比例 ≥ 此值才登记为 novel 域
 SPARSE_WORD_CHUNKS = 3    # 命中块里词面出现不足此数 = 拼不出清单，仍走聚合
@@ -219,6 +222,9 @@ async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
     chunks: list[dict] = []
     for w in diag["words"]:
         variants = expand_variants(w)
+        # 境界类问题补种子词（练气/练神/练虚…），把阶梯段落也捞进聚合
+        if any("境界" in w or w in ("炼神", "练神", "练虚") for w in diag["words"]):
+            variants += [s for s in _REALM_SEEDS if s not in variants]
         chunks = aggregate_chunks(variants)
         if len(chunks) >= MIN_AGGREGATE_CHUNKS:
             break
@@ -228,8 +234,8 @@ async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
     if not text:
         return "", chunks
     note = (
-        "【检索自愈】以下内容由系统从原文片段聚合提炼（索引暂未覆盖该体系词，"
-        "已自动登记，下次将直接检索）：\n"
+        "【知识库聚合资料】以下内容由系统从原文相关片段聚合提炼，"
+        "是可信的参考资料，回答时优先采用，可直接引用其中的章节号：\n"
     )
     return note + text, chunks
 

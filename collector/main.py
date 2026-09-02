@@ -78,10 +78,11 @@ async def main() -> None:
         pusher.register_channel("git", settings.git_interval)
 
     if not collectors:
-        logger.warning("没有启用的采集通道，检查 .env 配置")
-        return
-
-    logger.info("采集器启动：%d 个通道 → %s", len(collectors), settings.server_url)
+        # 行为采集全关的"轻量模式"：心跳 + 执行器照常运行（远程指挥刚需），
+        # 只是不再上传窗口/浏览器/git 事件。
+        logger.info("行为采集通道已全部关闭——仅心跳+执行器模式")
+    else:
+        logger.info("采集器启动：%d 个通道 → %s", len(collectors), settings.server_url)
     executor = Executor(settings.server_url, token=settings.api_token)
     tasks = [
         asyncio.create_task(pusher.run()),

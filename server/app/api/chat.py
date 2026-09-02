@@ -901,7 +901,11 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     jargon = get_jargon_injection(msg, user_id=uid)
     style_examples = get_examples_injection(user_id=uid)
     facts = memory.get_facts_injection(user_id=uid)
-    behavior = behavior_context.get_behavior_injection() if is_owner else ""
+    behavior = (
+        behavior_context.get_behavior_injection()
+        if is_owner and settings.behavior_inject_enabled
+        else ""
+    )
     goals_text = goals.get_goals_injection(user_id=uid)
     open_issues = unresolved.get_open_issues_injection(user_id=uid)
 

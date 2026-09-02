@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # 默认开（一次 INSERT/轮，零 LLM）；设 false 关闭。
     request_trace_enabled: bool = True
 
+    # ── 行为上下文注入（聊天里的"用户当前状态"）。
+    # 2026-09 评估后默认关：行为采集已默认关闭，这段注入只剩"暂无行为数据"
+    # 占 prompt；想重开需同时开采集器通道与这个开关。
+    behavior_inject_enabled: bool = False
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)

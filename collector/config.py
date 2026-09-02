@@ -24,10 +24,11 @@ class CollectorSettings(BaseSettings):
     # API 鉴权令牌（与服务器 .env 的 API_TOKEN 一致）
     api_token: str = ""
 
-    # 采集开关
-    collect_window: bool = True
-    collect_browser: bool = True
-    collect_git: bool = True
+    # 采集开关（2026-09 评估后默认关：行为事件价值密度低，只留心跳+执行器；
+    # 想重新打开在 .env 里设 COLLECT_WINDOW/COLLECT_BROWSER/COLLECT_GIT=true）
+    collect_window: bool = False
+    collect_browser: bool = False
+    collect_git: bool = False
 
     # 间隔（秒）
     window_interval: float = 8.0

@@ -55,6 +55,7 @@ async def generate_and_save(title: str, requirement: str) -> dict:
         ],
         temperature=0.4,
         max_tokens=3000,
+        timeout=240, max_retries=1,  # 长文档生成档（全局 60s 会掐断长文）
     )
     content = sanitize(content.strip())
     if not content:

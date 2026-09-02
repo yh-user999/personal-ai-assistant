@@ -78,11 +78,22 @@ async def chat(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     response_format: dict | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> str:
-    """通用对话调用。messages: [{"role": ..., "content": ...}]"""
+    """通用对话调用。messages: [{"role": ..., "content": ...}]
+
+    timeout/max_retries 为每请求覆盖：长文生成（3000+ 字章节）用
+    timeout=240 + max_retries=1——全局 60s 会把长生成掐死在半路
+    （实测"生成第一章"APITimeoutError），重试次数也随超时放大而收窄。
+    """
     kwargs = dict(model=settings.llm_model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if response_format:
         kwargs["response_format"] = response_format
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
     resp = await get_client().chat.completions.create(**kwargs)
     try:
         _record_usage(resp)

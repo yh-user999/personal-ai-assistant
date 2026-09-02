@@ -134,3 +134,16 @@ def test_system_prompt_proactive_judgement():
     assert "不说才是失职" in SYSTEM_PROMPT
     assert "把判断推回给用户" in SYSTEM_PROMPT, "缺「禁止用『你觉得呢』推回」的约束"
     assert "替代方案" in SYSTEM_PROMPT
+
+
+def test_generation_intent_detection():
+    """长文生成档的意图判定：章节/续写/字数要求命中，普通问题不命中。"""
+    from app.api.chat import _GENERATION_INTENT
+
+    assert _GENERATION_INTENT.search("你生成第一章要大于3000，生成一个文件")
+    assert _GENERATION_INTENT.search("继续")
+    assert _GENERATION_INTENT.search("接着写")
+    assert _GENERATION_INTENT.search("写第二章")
+    assert _GENERATION_INTENT.search("字数要多一点，5000字左右")
+    assert not _GENERATION_INTENT.search("今天有什么安排")
+    assert not _GENERATION_INTENT.search("继续昨天的话题聊聊命丛")

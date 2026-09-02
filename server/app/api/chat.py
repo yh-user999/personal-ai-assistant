@@ -650,6 +650,14 @@ GUEST_BLOCKED_HANDLERS = frozenset(
 GUEST_MAX_MSG_CHARS = 2000
 OWNER_MAX_MSG_CHARS = 8000
 
+# 长文生成意图：章节/续写/字数要求/裸"继续"——这些请求用生成档
+# （timeout 240s + max_tokens 6000），否则全局 60s 会把 3000+ 字章节掐断。
+_GENERATION_INTENT = re.compile(
+    r"继续写|接着写|往下写|续写|写正文|写第[一二三四五六七八九十百0-9]+章|"
+    r"生成.{0,8}章|字数|大于.{0,6}字|[0-9]{3,}字|"
+    r"^(?:继续|接着|往下|继续写)[。！!~～\s]*$"
+)
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request) -> ChatResponse:
@@ -1016,8 +1024,15 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         # 内容关注度最高，可压过历史回答的锚定（曾实测放 system 主提示里被无视）
         llm_messages.append({"role": "system", "content": healed_text})
     llm_messages.append({"role": "user", "content": msg})
+    # 长文生成档：章节/续写类请求放宽超时与 token 上限（仅主人）
+    gen_profile = is_owner and bool(_GENERATION_INTENT.search(msg))
     try:
-        reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
+        if gen_profile:
+            reply = (await llm.chat(
+                llm_messages, timeout=240, max_tokens=6000, max_retries=1
+            )).strip()
+        else:
+            reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
         # 去 Markdown 兜底：QQ 不渲染，星号减号会原样显示给用户。
         # prompt 禁令是概率性的（temperature 0.7 总有漏网），实测线上回复里
         # ** 与 - 列表大量出现。这里做确定性转换（不是删除，信息不丢）。

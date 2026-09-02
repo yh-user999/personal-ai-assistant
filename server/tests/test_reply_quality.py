@@ -147,3 +147,77 @@ def test_generation_intent_detection():
     assert _GENERATION_INTENT.search("字数要多一点，5000字左右")
     assert not _GENERATION_INTENT.search("今天有什么安排")
     assert not _GENERATION_INTENT.search("继续昨天的话题聊聊命丛")
+
+
+def test_continuation_injects_full_last_ai(db_env, monkeypatch):
+    """生成档的"继续"：上一条完整回复注入用户消息作上文（历史只截 500 字）。"""
+    import app.api.chat as _chat_api
+    import app.core.embedding as _embedding
+
+    chapter = "第一章 灰烬里醒来。" + "李羽在疼痛中苏醒。" * 60  # >500 字
+    conn = connect()
+    conn.execute(
+        "INSERT INTO memories (user_id, sender, content, ts) "
+        "VALUES ('owner', 'assistant', ?, '2026-09-02T00:00:00+00:00')",
+        (chapter,),
+    )
+    conn.commit()
+    conn.close()
+
+    captured = {}
+
+    async def fake_chat(messages, **kwargs):
+        captured["messages"] = messages
+        return "后续内容。"
+
+    async def fake_embed(texts):
+        return [[0.0] * settings.embedding_dimension for _ in texts]
+
+    import app.api.chat as _chat_mod
+    monkeypatch.setattr(_chat_mod.llm, "chat", fake_chat)
+    monkeypatch.setattr(_embedding, "embed", fake_embed)
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/api/chat", json={"message": "继续"})
+        assert r.status_code == 200
+    msgs = captured["messages"]
+    last = msgs[-1]
+    assert last["role"] == "user"
+    assert "接续要求" in last["content"]
+    assert chapter[:50] in last["content"]  # 完整上文注入
+    assert "继续" in last["content"]
+
+
+def test_generation_autoretry_once(db_env, monkeypatch):
+    """生成档失败自动重试一次；普通请求不重试。"""
+    import app.api.chat as _chat_api
+    import app.core.embedding as _embedding
+
+    calls = {"n": 0}
+
+    async def fake_chat(messages, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("模拟首次超时")
+        return "重试成功的章节内容。" * 20
+
+    monkeypatch.setattr(_chat_api.llm, "chat", fake_chat)
+
+    async def fake_embed(texts):
+        return [[0.0] * settings.embedding_dimension for _ in texts]
+
+    monkeypatch.setattr(_embedding, "embed", fake_embed)
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/api/chat", json={"message": "写第一章"})
+        assert r.status_code == 200
+        assert "重试成功" in r.json()["reply"]
+    assert calls["n"] == 2  # 失败 1 次 + 重试 1 次

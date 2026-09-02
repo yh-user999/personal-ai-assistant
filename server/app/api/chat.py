@@ -1026,10 +1026,24 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     llm_messages.append({"role": "user", "content": msg})
     # 长文生成档：章节/续写类请求放宽超时与 token 上限（仅主人）
     gen_profile = is_owner and bool(_GENERATION_INTENT.search(msg))
+    # 断点续写：生成档的"继续/接着写"类消息，注入上一条完整回复作上文
+    # （历史窗口每条只截 500 字，续写衔接必须看全文；上一条够长才算"文章"）
+    if gen_profile and last_ai and len(last_ai or "") > 500:
+        msg_gen = (
+            f"{msg}\n\n"
+            f"【接续要求】以上一条回复的末尾为起点继续往下写，不要重写开头。"
+            f"完整上文：\n{last_ai[:8000]}"
+        )
+    else:
+        msg_gen = msg
+    # 用拼接消息替换最后一条 user 消息（避免连续两个 user 轮）
+    gen_messages = list(llm_messages)
+    if gen_profile:
+        gen_messages[-1] = {"role": "user", "content": msg_gen}
     try:
         if gen_profile:
             reply = (await llm.chat(
-                llm_messages, timeout=240, max_tokens=6000
+                gen_messages, timeout=240, max_tokens=6000
             )).strip()
         else:
             reply = (await llm.chat(llm_messages)).strip()  # 去首尾空白：LLM 偶发前导换行/空格会让面板渲染走样
@@ -1041,12 +1055,30 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
             reply = plain_text.strip_markdown(reply)
     except Exception:
-        # 失败给友好回复而不是裸 500；用户消息已入库（第 3 步），assistant 侧不写
-        logger.exception("LLM 调用失败")
-        return ChatResponse(
-            reply="抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？",
-            memories_used=0,
-        )
+        # 生成档：自动重试一次（长生成中断概率不低，且已完成部分无法续传）
+        if gen_profile:
+            try:
+                logger.info("[gen] 首次生成失败，自动重试一次")
+                reply = (await llm.chat(
+                    gen_messages, timeout=240, max_tokens=6000
+                )).strip()
+                if plain_text.has_markdown(reply):
+                    reply = plain_text.strip_markdown(reply)
+                logger.info("[gen] 重试成功，回复 %d 字", len(reply))
+            except Exception:
+                logger.exception("[gen] 重试仍然失败")
+                return ChatResponse(
+                    reply="抱歉，长文生成连续两次失败（可能是服务商超时），"
+                          "等两分钟再说「继续」？",
+                    memories_used=0,
+                )
+        else:
+            # 失败给友好回复而不是裸 500；用户消息已入库（第 3 步），assistant 侧不写
+            logger.exception("LLM 调用失败")
+            return ChatResponse(
+                reply="抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？",
+                memories_used=0,
+            )
 
     # 5) 记录回复 + 提升被引用记忆的重要性 + 术语建档
     await memory.write_message("assistant", reply, user_id=uid)

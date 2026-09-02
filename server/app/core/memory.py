@@ -445,21 +445,37 @@ def bump_importance(memory_ids: list[int]) -> None:
 
 # ── 事实注入（v0.9：facts 三元组纳入每次聊天——"小月"失忆 bug 的系统性修复）──
 
-def get_facts_injection(limit: int = 40, user_id: str | None = None) -> str:
-    """持久事实（三元组），注入 prompt。身份/偏好/项目进度都在这里。
+# 两层注入窗口（2026-09-02 修复"新事实永远进不了 prompt"）：
+# 旧实现 ORDER BY id ASC LIMIT 40 只取最老的 40 条——后期补录/更新的设定
+# 事实（id 靠后）完全不可见，实测"老人后续走向"补录后小月仍说"没找到"。
+# 两层：ANCHOR 条最老稳定事实（课程/项目锚点，曾因 DESC 被挤丢）+ RECENT 条
+# 最近更新事实（新设定结论、新确认），UNION 去重后按 id 排序呈现。
+FACTS_ANCHOR_COUNT = 30
+FACTS_RECENT_COUNT = 15
 
-    ORDER BY id ASC：项目/课程进度等早期登记的稳定事实优先于后期闲聊事实
-    （曾因 DESC 取最新被小说设定类事实挤占，导致"课程进度丢失"）。
-    三元组极短，40 条 ≈ 800 字（v0.4.1 从 64 收紧：课程进度已聚合成单条，
-    prompt 更短、与画像口径单一）。
+
+def get_facts_injection(limit: int = 40, user_id: str | None = None) -> str:
+    """持久事实（三元组），注入 prompt。身份/偏好/项目进度/小说设定都在这里。
+
+    两层窗口：最老的稳定锚点（课程/项目进度，progress_sync 每日刷新
+    updated_at 保持新鲜）+ 最近更新的设定事实。三元组极短，
+    ~45 条 ≈ 900 字。
     v0.4：只取当前用户自己的事实（访客从零开始，零串味）。
     """
     uid = normalize_user_id(user_id)
+    anchor = min(FACTS_ANCHOR_COUNT, limit)
+    recent = min(FACTS_RECENT_COUNT, limit)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT subject, predicate, object FROM facts WHERE user_id = ? ORDER BY id ASC LIMIT ?",
-            (uid, limit),
+            """
+            SELECT * FROM (
+              SELECT * FROM facts WHERE user_id = ? ORDER BY id ASC LIMIT ?
+            ) UNION SELECT * FROM (
+              SELECT * FROM facts WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?
+            ) ORDER BY id ASC
+            """,
+            (uid, anchor, uid, recent),
         ).fetchall()
     finally:
         conn.close()

@@ -130,3 +130,42 @@ def test_chat_record_command_triggers_extraction(db_env, monkeypatch):
     ).fetchone()
     conn.close()
     assert row is not None
+
+
+def test_facts_injection_two_tier_window(db_env):
+    """新写入的事实必须进注入窗口（旧实现只取最老 40 条，新事实永远不可见）。"""
+    from app.core import memory
+
+    conn = connect()
+    # 造 35 条老事实（挤满锚点层）
+    for i in range(35):
+        conn.execute(
+            "INSERT INTO facts (user_id, subject, predicate, object, updated_at) "
+            "VALUES ('owner', ?, '老事实', ?, '2026-08-01T00:00:00+00:00')",
+            (f"锚点{i}", f"内容{i}"),
+        )
+    conn.commit()
+    conn.close()
+    # 新写入一条（id 靠后）
+    from app.services.fact_extract import upsert_facts
+
+    upsert_facts([{"subject": "老人", "predicate": "后续走向", "object": "没挺过一周"}])
+    text = memory.get_facts_injection(user_id=None)
+    assert "老人 后续走向 没挺过一周" in text, "新事实未进入两层注入窗口"
+    # 锚点层的老事实也仍在
+    assert "锚点0 老事实" in text
+
+
+def test_facts_injection_anchor_still_first(db_env):
+    """锚点层保持 id ASC 稳定呈现（课程进度不因新事实被挤丢的旧教训）。"""
+    from app.core import memory
+
+    conn = connect()
+    conn.execute(
+        "INSERT INTO facts (user_id, subject, predicate, object, updated_at) "
+        "VALUES ('owner', '六课带教计划', '状态', '第0-5课全部完成', '2026-08-20T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+    text = memory.get_facts_injection(user_id=None)
+    assert text.startswith("- 六课带教计划 状态 第0-5课全部完成")

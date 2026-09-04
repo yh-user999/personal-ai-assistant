@@ -10,6 +10,7 @@ v0.2 采纳外部评审优化：
 """
 import json
 import logging
+from contextvars import ContextVar
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -296,16 +297,17 @@ def deep_keyword_search(query: str, top_k: int = 5, user_id: str | None = None) 
 # 最近一次 search 算出的 query 向量（文本 → 向量），供 write_message 复用。
 # 只缓存一条：聊天主路径是"search(msg) 紧接着 write_message(msg)"，
 # 不需要真正的缓存结构。键用脱敏后文本，确保与入库文本一致才复用。
-_last_query_vec: tuple[str, list[float]] | None = None
+_last_query_vec: ContextVar[tuple[str, list[float]] | None] = ContextVar(
+    "last_query_vec", default=None
+)
 
 
 def take_query_vec(text: str) -> list[float] | None:
-    """取出上一次为 text 算过的 query 向量（取走即失效，避免误用陈旧向量）。"""
-    global _last_query_vec
-    if _last_query_vec is not None and _last_query_vec[0] == text:
-        vec = _last_query_vec[1]
-        _last_query_vec = None
-        return vec
+    """取出当前请求为 text 算过的 query 向量（取走即失效）。"""
+    cached = _last_query_vec.get()
+    if cached is not None and cached[0] == text:
+        _last_query_vec.set(None)
+        return cached[1]
     return None
 
 
@@ -322,16 +324,17 @@ async def search(
     """
     uid = normalize_user_id(user_id)
     vec_rows: list[dict] = []
+    # 每次检索先清除当前任务的旧缓存，避免 embedding 失败时误复用陈旧向量。
+    _last_query_vec.set(None)
 
     # 1) 向量检索（sqlite-vec vec0 是 KNN 虚拟表，必须 MATCH + k 语法，
     #    不能像普通列那样 WHERE v.distance < ?——距离过滤在 Python 层做）
     try:
-        global _last_query_vec
         qvec = (await embedding.embed([query]))[0]
         # 记下来给紧随其后的 write_message 复用（同一条消息不必再算一次）
         from app.services.sanitize import sanitize as _sanitize
 
-        _last_query_vec = (_sanitize(query), qvec)
+        _last_query_vec.set((_sanitize(query), qvec))
         conn = connect()
         try:
             cur = conn.execute(

@@ -25,13 +25,14 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2       # 网络错误自动重试次数
 
     # ── Embedding ───────────────────────────────────────────
-    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_api_key: str = ""
-    embedding_model: str = "Qwen3-Embedding-0.6B"
-    embedding_dimension: int = 1024
+    embedding_model: str = "embedding-3"
+    embedding_dimension: int = 2048
 
     # ── 存储 ────────────────────────────────────────────────
     db_path: str = "./data/assistant.db"
+    novel_root: str = "./data/novels"
 
     # ── 记忆检索 ────────────────────────────────────────────
     inject_top_k: int = 5
@@ -59,6 +60,12 @@ class Settings(BaseSettings):
     # ── API 鉴权（共享密钥，全部端点统一）──────────────────
     # 留空 = 不鉴权（仅限 Tailscale 内网等已隔离环境）
     api_token: str = ""
+    # 按角色分类的 token；为空时回退共享 API_TOKEN 策略
+    owner_api_token: str = ""
+    internal_api_token: str = ""
+    collector_api_token: str = ""
+    executor_api_token: str = ""
+    qq_api_token: str = ""
 
     # ── 采集器心跳 ──────────────────────────────────────────
     # 超过该秒数没心跳视为电脑不在线（执行器分支给 QQ 的提示文案用）
@@ -99,6 +106,14 @@ class Settings(BaseSettings):
     # 占 prompt；想重开需同时开采集器通道与这个开关。
     behavior_inject_enabled: bool = False
 
+    # ── 私人 MCP（默认关闭；独立 stdio 进程启动）────────────────
+    # MCP Server 不随 FastAPI/uvicorn 启动，避免 stdout 与普通日志混用。
+    mcp_enabled: bool = False
+    mcp_stdio_role: str = "owner"       # owner / internal；stdio 默认只服务主人
+    mcp_stdio_user_id: str = ""         # 留空时复用 owner_user_id()；仅供本地启动配置
+    mcp_max_result_chars: int = 12000
+    mcp_max_input_chars: int = 2000
+
     @property
     def db_file(self) -> Path:
         p = Path(self.db_path)
@@ -118,9 +133,11 @@ def get_settings() -> Settings:
             "推送通道不可用——请修正 .env 或清空 QQ_PUSH_URL"
         )
     if s.deployment_env.casefold() == "production":
-        if not s.api_token or len(s.api_token) < 32 or s.api_token == "change-me-random-string":
+        tokens = [s.api_token, s.owner_api_token, s.internal_api_token,
+                  s.collector_api_token, s.executor_api_token, s.qq_api_token]
+        if not any(t and len(t) >= 32 and t != "change-me-random-string" for t in tokens):
             raise ValueError(
-                "生产环境必须配置至少 32 字符的随机 API_TOKEN，不能使用空值或模板占位符"
+                "生产环境必须配置至少一个 32 字符的随机 API token，不能使用空值或模板占位符"
             )
     return s
 

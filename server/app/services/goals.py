@@ -103,6 +103,36 @@ def update_progress(title_or_text: str, user_id: str | None = None) -> bool:
         conn.close()
 
 
+def list_goals(
+    user_id: str | None = None,
+    status: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """结构化读取当前用户目标，供 API/MCP 等外部入口使用。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    if status is not None and status not in {"active", "done", "paused"}:
+        raise ValueError("非法目标状态")
+    limit = max(1, min(int(limit), 50))
+    where = ["user_id=?"]
+    args: list[object] = [uid]
+    if status:
+        where.append("status=?")
+        args.append(status)
+    args.append(limit)
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, status, progress, created_at, updated_at FROM goals "
+            f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+            args,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
 def get_goals_injection(user_id: str | None = None) -> str:
     """活跃目标注入（含进度，限定当前用户）。"""
     from app.core.memory import normalize_user_id

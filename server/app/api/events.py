@@ -2,28 +2,30 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.database import connect
+from app.auth import require_roles
 
 router = APIRouter()
 
 
 class BehaviorEvent(BaseModel):
-    kind: str          # app_usage / browser / git_commit / manual
-    name: str          # 应用名 / 域名 / 仓库名
-    detail: str = ""
-    start_ts: str = ""
-    end_ts: str = ""
-    meta: dict = {}
+    kind: str = Field(..., min_length=1, max_length=50)  # app_usage / browser / git_commit / manual
+    name: str = Field(..., min_length=1, max_length=200)  # 应用名 / 域名 / 仓库名
+    detail: str = Field("", max_length=500)
+    start_ts: str = Field("", max_length=64)
+    end_ts: str = Field("", max_length=64)
+    meta: dict = Field(default_factory=dict, max_length=50)
 
 
 class EventBatch(BaseModel):
-    events: list[BehaviorEvent]
+    events: list[BehaviorEvent] = Field(default_factory=list, max_length=100)
 
 
 @router.post("/events")
-async def receive_events(batch: EventBatch) -> dict:
+async def receive_events(batch: EventBatch, request: Request) -> dict:
+    require_roles(request, "collector", "internal", "owner")
     """批量接收行为事件（采集器断网重试时也是整批推送）。
 
     幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次。
@@ -60,12 +62,13 @@ async def receive_events(batch: EventBatch) -> dict:
 
 
 class HeartbeatBody(BaseModel):
-    client: str = "collector"
-    channels: dict = {}  # 通道名 → 最近成功 ISO 时间
+    client: str = Field("collector", min_length=1, max_length=50)
+    channels: dict = Field(default_factory=dict, max_length=50)  # 通道名 → 最近成功 ISO 时间
 
 
 @router.post("/heartbeat")
 async def heartbeat(body: HeartbeatBody, request: Request) -> dict:
+    require_roles(request, "collector", "internal", "owner")
     """采集器心跳：更新各通道最近成功时间，供健康检查检测采集停滞。
 
     心跳轻量存内存（app.state），服务重启即清零——个人场景足够。

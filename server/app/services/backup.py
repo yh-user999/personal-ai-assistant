@@ -31,7 +31,7 @@ KEEP_DAILY = 3            # 保留最近 3 份日备
 KEEP_WEEKLY = 4           # 保留最近 4 份周备（每周一那份晋升为周备）
 MIN_FREE_BYTES = 1 << 30  # 磁盘剩余低于 1GB 跳过备份
 # 校验时必须能查通的表（缺任何一张说明备份不可用）
-VERIFY_TABLES = ("memories", "facts", "knowledge_chunks")
+VERIFY_TABLES = ("memories", "facts", "knowledge_chunks", "novel_projects", "novel_chapters", "novel_generation_jobs")
 
 
 def backup_dir() -> Path:
@@ -69,6 +69,21 @@ def _compress(src: Path, dest: Path) -> None:
         shutil.copyfileobj(fin, fout, length=1 << 20)
 
 
+def _verify_gzip(path: Path) -> tuple[bool, str]:
+    """读取完整 gzip 内容并对解压后的 SQLite 再做完整性校验。"""
+    fd, name = tempfile.mkstemp(suffix=".db.gz-check")
+    os.close(fd)
+    unpacked = Path(name)
+    try:
+        with gzip.open(path, "rb") as fin, open(unpacked, "wb") as fout:
+            shutil.copyfileobj(fin, fout, length=1 << 20)
+        return _verify(unpacked)
+    except (OSError, gzip.BadGzipFile) as e:
+        return False, f"gzip 校验失败：{e}"
+    finally:
+        unpacked.unlink(missing_ok=True)
+
+
 def _prune(dest_dir: Path) -> int:
     """滚动清理：保留最近 KEEP_DAILY 份日备 + KEEP_WEEKLY 份周备。
 
@@ -89,6 +104,32 @@ def _prune(dest_dir: Path) -> int:
         legacy.unlink(missing_ok=True)
         removed += 1
     return removed
+
+
+def restore_backup(archive: str | Path, destination: str | Path, *, overwrite: bool = False) -> dict:
+    """安全恢复 gzip SQLite 备份，并在替换前完成完整性校验。"""
+    archive_path = Path(archive).expanduser().resolve()
+    destination_path = Path(destination).expanduser().resolve()
+    if not archive_path.is_file() or archive_path.suffix != ".gz":
+        raise ValueError("备份文件必须是存在的 .gz 文件")
+    if destination_path.exists() and not overwrite:
+        raise FileExistsError(f"恢复目标已存在: {destination_path}")
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(dir=str(destination_path.parent), suffix=".restore.tmp")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        with gzip.open(archive_path, "rb") as fin, open(temp_path, "wb") as fout:
+            shutil.copyfileobj(fin, fout, length=1 << 20)
+            fout.flush()
+            os.fsync(fout.fileno())
+        ok, detail = _verify(temp_path)
+        if not ok:
+            raise ValueError(f"备份校验失败：{detail}")
+        os.replace(temp_path, destination_path)
+        return {"restored": str(destination_path), "verified": detail}
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def run_daily_backup() -> dict:
@@ -132,7 +173,21 @@ def run_daily_backup() -> dict:
             return {"skipped": True, "reason": f"校验失败：{detail}"}
 
         raw_mb = tmp.stat().st_size / (1 << 20)
-        _compress(tmp, final)
+        # 压缩先写同目录临时文件，成功后原子替换；失败时保留已有好备份。
+        compressed_fd, compressed_name = tempfile.mkstemp(dir=str(dest_dir), suffix=".gz.tmp")
+        os.close(compressed_fd)
+        compressed_tmp = Path(compressed_name)
+        try:
+            _compress(tmp, compressed_tmp)
+            with open(compressed_tmp, "rb") as compressed:
+                os.fsync(compressed.fileno())
+            gzip_ok, gzip_detail = _verify_gzip(compressed_tmp)
+            if not gzip_ok:
+                logger.error("gzip 备份校验失败，已丢弃本次备份：%s", gzip_detail)
+                return {"skipped": True, "reason": f"gzip 校验失败：{gzip_detail}"}
+            os.replace(compressed_tmp, final)
+        finally:
+            compressed_tmp.unlink(missing_ok=True)
     finally:
         # 连 -wal / -shm 一起清：sqlite 打开临时库时会建这两个旁挂文件，
         # 只删主文件会在备份目录里越积越多。

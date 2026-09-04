@@ -73,8 +73,13 @@ def _wrap_job(func, job_id: str):
 
 
 class SchedulerManager:
+    _active_manager = None
+
     def __init__(self) -> None:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        self._started = False
+        self._stopped = False
+        self._owns_scheduler = False
 
     def _add(self, job_id: str, func, trigger: str, **kw) -> None:
         """统一 add_job：misfire 补跑 + coalesce + 安全 wrapper。"""
@@ -88,6 +93,21 @@ class SchedulerManager:
         )
 
     async def start(self) -> None:
+        """幂等启动：避免重复注册任务（多次 lifespan/测试启动）。"""
+        if self._started and not self._stopped:
+            logger.info("定时任务已启动，跳过重复 start")
+            return
+        if self._stopped:
+            logger.warning("定时任务已停止，拒绝重启同一实例")
+            return
+        if SchedulerManager._active_manager is not None:
+            logger.warning("已有调度器实例运行，跳过重复启动")
+            self._started = True
+            self._stopped = True
+            return
+        SchedulerManager._active_manager = self
+        self._owns_scheduler = True
+        self._started = True
         from app.services.consolidation import consolidate_recent
         from app.services.weekly_reflect import run_weekly_reflect
         from app.services.daily_summary import run_daily_summary
@@ -96,6 +116,7 @@ class SchedulerManager:
         from app.services.backup import run_daily_backup
         from app.services.progress_sync import sync_progress_to_bot
         from app.services.qq_push import push_reminders
+        from app.novel.runner import recover_and_run_pending
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self._add(
@@ -135,6 +156,8 @@ class SchedulerManager:
             "initiative", run_initiative, "cron",
             hour=settings.initiative_hour, minute=settings.initiative_minute,
         )
+        # 小说生成任务：每分钟最多执行一个，queued 任务在重启后自动续跑。
+        self._add("novel_generation", recover_and_run_pending, "interval", seconds=60, max_instances=1)
 
         # QQ 提醒推送（第 8 课）：每分钟检查到期提醒并推主人 QQ（唯一通道）。
         # 高频通道不套告警 wrapper（失败每分钟告警反而轰炸），自身已留痕。
@@ -152,7 +175,16 @@ class SchedulerManager:
             logger.info("定时任务已注册: %s | 下次执行: %s", job.id, job.next_run_time)
 
     async def stop(self) -> None:
+        """关闭并等待正在执行的调度任务完成，且可安全重复调用。"""
+        if self._stopped:
+            return
+        self._stopped = True
         from app.services.qq_push import aclose
 
+        if not self._owns_scheduler:
+            return
+        # 先停止接收新任务，再等待运行中的任务收尾，避免关闭时丢推送。
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=True)
+        SchedulerManager._active_manager = None
         await aclose()  # 长驻推送客户端收尾
-        self.scheduler.shutdown(wait=False)

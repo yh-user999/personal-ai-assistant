@@ -89,6 +89,25 @@ def get_open_issues_injection(limit: int = 3, user_id: str | None = None) -> str
     return "\n".join(f"- {r['topic']}" for r in rows)
 
 
+def list_open_issues(user_id: str | None = None, limit: int = 20) -> list[dict]:
+    """结构化读取当前用户未解决问题。"""
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    limit = max(1, min(int(limit), 50))
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, topic, context, status, created_at, resolved_at "
+            "FROM unresolved_issues WHERE user_id=? AND status='open' "
+            "ORDER BY id DESC LIMIT ?",
+            (uid, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
 def count_open(user_id: str | None = None) -> int:
     from app.core.memory import normalize_user_id
 

@@ -138,23 +138,27 @@ def test_claim_is_atomic_and_not_requeued():
 
 
 def test_claimed_timeout_released():
-    """执行器认领后失联：超时释放为 failed，不永久占队。"""
+    """执行器认领后租约过期：转 unknown，允许迟到结果恢复。"""
     cmd_id = server_executor.enqueue("list_dir", "F:/")
     assert server_executor.get_pending()["id"] == cmd_id
     stale = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
     conn = connect()
-    conn.execute("UPDATE executor_commands SET claimed_at=? WHERE id=?", (stale, cmd_id))
+    conn.execute(
+        "UPDATE executor_commands SET claimed_at=?, lease_expires_at=? WHERE id=?",
+        (stale, stale, cmd_id),
+    )
     conn.commit()
     conn.close()
 
-    assert server_executor.get_pending() is None  # 被释放为 failed，无 pending 可领
+    assert server_executor.get_pending() is None  # 租约过期后无 pending 可领
     conn = connect()
     row = conn.execute(
-        "SELECT status, result FROM executor_commands WHERE id=?", (cmd_id,)
+        "SELECT status, result, claim_token FROM executor_commands WHERE id=?", (cmd_id,)
     ).fetchone()
     conn.close()
-    assert row["status"] == "failed"
-    assert "超时" in row["result"]
+    assert row["status"] == "unknown"
+    assert "租约已过期" in row["result"]
+    assert server_executor.mark_result(cmd_id, True, "迟到成功", row["claim_token"])
 
 
 def test_pending_stale_expired():

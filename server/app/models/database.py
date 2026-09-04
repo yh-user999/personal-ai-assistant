@@ -5,12 +5,21 @@
 """
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
+SCHEMA_VERSION = 4
+
 _BASE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL,
+  applied_at TEXT NOT NULL
+);
+
 -- ① 对话记忆（情境记忆）
 CREATE TABLE IF NOT EXISTS memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,11 +196,15 @@ CREATE TABLE IF NOT EXISTS executor_commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   action TEXT NOT NULL,            -- open / list_dir / read_file / copy / backup / move / rename
   target TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',   -- pending / claimed / done / failed
+  status TEXT DEFAULT 'pending',   -- pending / claimed / done / failed / unknown
   result TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   claimed_at TEXT,
-  executed_at TEXT
+  executed_at TEXT,
+  device_id TEXT DEFAULT '',
+  claim_token TEXT DEFAULT '',
+  lease_expires_at TEXT,
+  result_late INTEGER DEFAULT 0
 );
 
 -- ⑰ 小说设定卡（第 6.19 课：策划数据，人物/事件权威事实）
@@ -229,8 +242,11 @@ CREATE TABLE IF NOT EXISTS reminders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content TEXT NOT NULL,           -- 提醒内容
   remind_at TEXT NOT NULL,         -- 提醒时间（ISO, UTC）
-  status TEXT DEFAULT 'pending',   -- pending / notified / cancelled
-  created_at TEXT NOT NULL
+  status TEXT DEFAULT 'pending',   -- pending / sending / notified / cancelled
+  created_at TEXT NOT NULL,
+  sending_token TEXT DEFAULT '',
+  sending_at TEXT,
+  sending_lease_expires_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
 
@@ -311,7 +327,24 @@ CREATE TABLE IF NOT EXISTS request_traces (
 );
 CREATE INDEX IF NOT EXISTS idx_traces_ts ON request_traces(ts);
 
--- ㉖ 自动实体抽取台账（检索自愈二期）：预算闸与幂等闸的数据源。
+-- ㉖ MCP 工具审计：只记录调用摘要，不保存记忆/facts 全文或密钥。
+CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL,
+  request_id TEXT DEFAULT '',
+  client_name TEXT DEFAULT '',
+  arguments_summary TEXT DEFAULT '{}',
+  success INTEGER NOT NULL DEFAULT 0,
+  error TEXT DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_created ON mcp_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool, created_at);
+
+-- ㉗ 自动实体抽取台账（检索自愈二期）：预算闸与幂等闸的数据源。
 CREATE TABLE IF NOT EXISTS auto_extract_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind_word TEXT NOT NULL,
@@ -362,12 +395,125 @@ CREATE TABLE IF NOT EXISTS index_corrections (
   reason TEXT DEFAULT '',
   corrected_at TEXT NOT NULL
 );
+
+-- ㉚ 章节剧情存档（小说写作增强二期）：每章一句话摘要 + 未回收伏笔。
+-- 跨章连贯的权威依据：写第 N 章前把前情注入 prompt，分析时自动更新。
+-- source: manual（用户"章节存档"命令）/ analysis（章节分析落档）/ auto（生成后被动抓取）。
+-- 幂等靠 UNIQUE(chapter)——同章重复分析只更新，不堆重复行。
+CREATE TABLE IF NOT EXISTS chapter_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chapter TEXT NOT NULL UNIQUE,    -- '1' / '12'（统一阿拉伯数字字符串）
+  summary TEXT NOT NULL,           -- 一句话剧情摘要
+  threads TEXT DEFAULT '[]',       -- JSON 数组：本章埋下/应回收的伏笔
+  source TEXT DEFAULT 'manual',    -- manual / analysis / auto
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ㉛ 小说项目、章节正文/草稿与可恢复生成任务（二期）
+CREATE TABLE IF NOT EXISTS novel_projects (
+  project_id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  root TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_novel_projects_owner ON novel_projects(owner_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS novel_project_members (
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, user_id),
+  FOREIGN KEY(project_id) REFERENCES novel_projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_novel_members_user ON novel_project_members(user_id, project_id);
+
+CREATE TABLE IF NOT EXISTS novel_chapters (
+  project_id TEXT NOT NULL,
+  chapter_no TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  draft_content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, chapter_no),
+  FOREIGN KEY(project_id) REFERENCES novel_projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_novel_chapters_project ON novel_chapters(project_id, chapter_no);
+
+CREATE TABLE IF NOT EXISTS novel_generation_jobs (
+  job_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  project_id TEXT NOT NULL,
+  chapter_no TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  prompt TEXT NOT NULL DEFAULT '',
+  draft_content TEXT NOT NULL DEFAULT '',
+  review_result TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  progress INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at TEXT,
+  claimed_by TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES novel_projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_novel_jobs_project ON novel_generation_jobs(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_novel_jobs_status ON novel_generation_jobs(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS novel_audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  project_id TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '{}',
+  success INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_novel_audit_project ON novel_audit_logs(project_id, created_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS novel_chapters_fts USING fts5(
+  project_id UNINDEXED,
+  chapter_no UNINDEXED,
+  title,
+  content,
+  tokenize='unicode61'
+);
+CREATE TABLE IF NOT EXISTS novel_file_index (
+  project_id TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  mtime_ns INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT NOT NULL DEFAULT '',
+  indexed_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, relative_path),
+  FOREIGN KEY(project_id) REFERENCES novel_projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_novel_file_index_project ON novel_file_index(project_id, relative_path);
 """
 
 # 已有库的增量迁移（新库直接由上面的 schema 建出，迁移语句对其幂等失败即跳过）
 _MIGRATIONS = [
     # 执行器指令认领时间：支撑原子认领 + claimed 超时释放
     "ALTER TABLE executor_commands ADD COLUMN claimed_at TEXT",
+    "ALTER TABLE executor_commands ADD COLUMN device_id TEXT DEFAULT ''",
+    "ALTER TABLE executor_commands ADD COLUMN claim_token TEXT DEFAULT ''",
+    "ALTER TABLE executor_commands ADD COLUMN lease_expires_at TEXT",
+    "ALTER TABLE executor_commands ADD COLUMN result_late INTEGER DEFAULT 0",
+    "ALTER TABLE reminders ADD COLUMN sending_token TEXT DEFAULT ''",
+    "ALTER TABLE reminders ADD COLUMN sending_at TEXT",
+    "ALTER TABLE reminders ADD COLUMN sending_lease_expires_at TEXT",
     # 检索自愈二期：自动抽取的原子占位键（老库补列，唯一索引由 schema 建）
     "ALTER TABLE auto_extract_log ADD COLUMN day_key TEXT DEFAULT ''",
     # 注：lessons.kind 由 _migrate_lessons 处理（要和去重重建一起做）
@@ -390,6 +536,10 @@ _MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN last_hit_at TEXT",
     "ALTER TABLE lessons ADD COLUMN hit_count INTEGER DEFAULT 0",
     "ALTER TABLE lessons ADD COLUMN last_hit_at TEXT",
+    "ALTER TABLE novel_generation_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE novel_generation_jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE novel_generation_jobs ADD COLUMN heartbeat_at TEXT",
+    "ALTER TABLE novel_generation_jobs ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''",
 ]
 
 
@@ -409,11 +559,14 @@ def _migrate_lessons(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "lessons"):
         return
     # ① kind 列（老库加列即可，新库由 schema 建出）
+    added_kind = False
     if not _column_exists(conn, "lessons", "kind"):
         try:
             conn.execute("ALTER TABLE lessons ADD COLUMN kind TEXT NOT NULL DEFAULT 'style'")
-        except sqlite3.OperationalError:
-            pass
+            added_kind = True
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
 
     # ② UNIQUE(content)：SQLite 不能后加约束，必须重建表
     row = conn.execute(
@@ -428,8 +581,14 @@ def _migrate_lessons(conn: sqlite3.Connection) -> None:
         def classify_lesson(_content: str) -> str:  # 兜底：分类失败不阻塞去重
             return "style"
 
+    # 统计列是后续迁移新增的，重建时必须一并保留，避免 lessons 统计归零。
+    has_hit_count = _column_exists(conn, "lessons", "hit_count")
+    has_last_hit_at = _column_exists(conn, "lessons", "last_hit_at")
+    stats_select = ", hit_count, last_hit_at" if has_hit_count and has_last_hit_at else (
+        ", hit_count" if has_hit_count else (", last_hit_at" if has_last_hit_at else "")
+    )
     keep = conn.execute(
-        """SELECT id, content, context, created_at FROM lessons
+        f"""SELECT id, content, context, created_at, kind{stats_select} FROM lessons
            WHERE id IN (
              SELECT id FROM lessons l2
              WHERE l2.content = lessons.content
@@ -445,14 +604,22 @@ def _migrate_lessons(conn: sqlite3.Connection) -> None:
              context TEXT DEFAULT '',
              created_at TEXT NOT NULL,
              kind TEXT NOT NULL DEFAULT 'style',
+             hit_count INTEGER DEFAULT 0,
+             last_hit_at TEXT,
              UNIQUE(content)
            )"""
     )
     for r in keep:
         conn.execute(
-            "INSERT OR IGNORE INTO lessons_new (content, context, created_at, kind) "
-            "VALUES (?, ?, ?, ?)",
-            (r["content"], r["context"], r["created_at"], classify_lesson(r["content"])),
+            "INSERT OR IGNORE INTO lessons_new "
+            "(content, context, created_at, kind, hit_count, last_hit_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                r["content"], r["context"], r["created_at"],
+                classify_lesson(r["content"]) if added_kind else r["kind"],
+                r["hit_count"] if has_hit_count else 0,
+                r["last_hit_at"] if has_last_hit_at else None,
+            ),
         )
     conn.execute("DROP TABLE lessons")
     conn.execute("ALTER TABLE lessons_new RENAME TO lessons")
@@ -493,19 +660,15 @@ def _migrate_user_id(conn: sqlite3.Connection) -> None:
 
     # ① 简单加列（代理主键表；表缺失跳过）
     for t in ("memories", "goals", "unresolved_issues", "style_examples"):
-        try:
-            if _table_exists(conn, t) and not _column_exists(conn, t, "user_id"):
-                conn.execute(
-                    f"ALTER TABLE {t} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
-                )
-        except sqlite3.OperationalError:
-            pass
+        if _table_exists(conn, t) and not _column_exists(conn, t, "user_id"):
+            conn.execute(
+                f"ALTER TABLE {t} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+            )
 
     # ② 重建型：facts（UNIQUE 三列 → 四列）
     if _table_exists(conn, "facts") and not _column_exists(conn, "facts", "user_id"):
-        conn.executescript(
-            """
-            CREATE TABLE facts_new (
+        conn.execute(
+            """CREATE TABLE facts_new (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               user_id TEXT NOT NULL DEFAULT '',
               subject TEXT NOT NULL,
@@ -515,82 +678,52 @@ def _migrate_user_id(conn: sqlite3.Connection) -> None:
               confidence REAL DEFAULT 0.7,
               updated_at TEXT NOT NULL,
               UNIQUE(user_id, subject, predicate, object)
-            );
-            INSERT INTO facts_new (id, subject, predicate, object, source_memory_id,
-                                   confidence, updated_at)
-              SELECT id, subject, predicate, object, source_memory_id,
-                     confidence, updated_at FROM facts;
-            DROP TABLE facts;
-            ALTER TABLE facts_new RENAME TO facts;
-            """
+            )"""
         )
+        conn.execute(
+            """INSERT INTO facts_new (id, subject, predicate, object, source_memory_id,
+                                      confidence, updated_at)
+               SELECT id, subject, predicate, object, source_memory_id,
+                      confidence, updated_at FROM facts"""
+        )
+        conn.execute("DROP TABLE facts")
+        conn.execute("ALTER TABLE facts_new RENAME TO facts")
 
     # ③ 重建型：profile（主键 → (user_id, dimension)）
     if _table_exists(conn, "profile") and not _column_exists(conn, "profile", "user_id"):
-        conn.executescript(
-            """
-            CREATE TABLE profile_new (
-              user_id TEXT NOT NULL DEFAULT '',
-              dimension TEXT NOT NULL,
-              value TEXT NOT NULL,
-              confidence REAL DEFAULT 0.5,
-              updated_at TEXT NOT NULL,
-              PRIMARY KEY(user_id, dimension)
-            );
-            INSERT INTO profile_new (dimension, value, confidence, updated_at)
-              SELECT dimension, value, confidence, updated_at FROM profile;
-            DROP TABLE profile;
-            ALTER TABLE profile_new RENAME TO profile;
-            """
-        )
+        conn.execute("""CREATE TABLE profile_new (
+              user_id TEXT NOT NULL DEFAULT '', dimension TEXT NOT NULL,
+              value TEXT NOT NULL, confidence REAL DEFAULT 0.5,
+              updated_at TEXT NOT NULL, PRIMARY KEY(user_id, dimension))""")
+        conn.execute("INSERT INTO profile_new (dimension, value, confidence, updated_at) SELECT dimension, value, confidence, updated_at FROM profile")
+        conn.execute("DROP TABLE profile")
+        conn.execute("ALTER TABLE profile_new RENAME TO profile")
 
     # ④ 重建型：concerns（主键 → (user_id, topic)）
     if _table_exists(conn, "concerns") and not _column_exists(conn, "concerns", "user_id"):
-        conn.executescript(
-            """
-            CREATE TABLE concerns_new (
-              user_id TEXT NOT NULL DEFAULT '',
-              topic TEXT NOT NULL,
-              mention_count INTEGER DEFAULT 1,
-              last_mentioned_at TEXT NOT NULL,
-              PRIMARY KEY(user_id, topic)
-            );
-            INSERT INTO concerns_new (topic, mention_count, last_mentioned_at)
-              SELECT topic, mention_count, last_mentioned_at FROM concerns;
-            DROP TABLE concerns;
-            ALTER TABLE concerns_new RENAME TO concerns;
-            """
-        )
+        conn.execute("""CREATE TABLE concerns_new (
+              user_id TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL,
+              mention_count INTEGER DEFAULT 1, last_mentioned_at TEXT NOT NULL,
+              PRIMARY KEY(user_id, topic))""")
+        conn.execute("INSERT INTO concerns_new (topic, mention_count, last_mentioned_at) SELECT topic, mention_count, last_mentioned_at FROM concerns")
+        conn.execute("DROP TABLE concerns")
+        conn.execute("ALTER TABLE concerns_new RENAME TO concerns")
 
     # ⑤ 重建型：jargon_terms（主键 → (user_id, term)）
     if _table_exists(conn, "jargon_terms") and not _column_exists(conn, "jargon_terms", "user_id"):
-        conn.executescript(
-            """
-            CREATE TABLE jargon_terms_new (
-              user_id TEXT NOT NULL DEFAULT '',
-              term TEXT NOT NULL,
-              explanation TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              times_used INTEGER DEFAULT 0,
-              PRIMARY KEY(user_id, term)
-            );
-            INSERT INTO jargon_terms_new (term, explanation, created_at, times_used)
-              SELECT term, explanation, created_at, times_used FROM jargon_terms;
-            DROP TABLE jargon_terms;
-            ALTER TABLE jargon_terms_new RENAME TO jargon_terms;
-            """
-        )
+        conn.execute("""CREATE TABLE jargon_terms_new (
+              user_id TEXT NOT NULL DEFAULT '', term TEXT NOT NULL,
+              explanation TEXT NOT NULL, created_at TEXT NOT NULL,
+              times_used INTEGER DEFAULT 0, PRIMARY KEY(user_id, term))""")
+        conn.execute("INSERT INTO jargon_terms_new (term, explanation, created_at, times_used) SELECT term, explanation, created_at, times_used FROM jargon_terms")
+        conn.execute("DROP TABLE jargon_terms")
+        conn.execute("ALTER TABLE jargon_terms_new RENAME TO jargon_terms")
 
     # ⑥ 老数据回填主人身份（幂等：只碰 user_id='' 的行；表缺失跳过）
     for t in ("memories", "facts", "profile", "concerns", "jargon_terms",
               "style_examples", "goals", "unresolved_issues"):
-        try:
-            if _table_exists(conn, t):
-                conn.execute(
-                    f"UPDATE {t} SET user_id = ? WHERE user_id = ''", (owner,)
-                )
-        except sqlite3.OperationalError:
-            pass
+        if _table_exists(conn, t):
+            conn.execute(f"UPDATE {t} SET user_id = ? WHERE user_id = ''", (owner,))
 
     # ⑦ 依赖 user_id 的索引（加列之后再建，避免老库 executescript 中途炸）
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, id)")
@@ -735,22 +868,29 @@ def init_db() -> None:
             logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
         except sqlite3.OperationalError:
             pass
-    # 增量迁移：两条建表路径（vec 可用/降级）都要跑——老库升级加列与 user_id 迁移
+    # 增量迁移必须在单一事务中完成：任何一步失败都回滚，禁止半迁移启动。
     try:
-        # 顺序有讲究：_migrate_user_id 会整表重建 concerns（按固定列名拷贝），
-        # 必须先跑，之后再加 asked_at——反过来会把刚加的列连数据一起丢掉。
-        _migrate_user_id(conn)  # v0.4 多人支持：老库加 user_id 并回填
+        conn.execute("BEGIN IMMEDIATE")
+        # 顺序有讲究：_migrate_user_id 会整表重建 concerns，必须先跑，
+        # 之后再加 asked_at，避免刚加的列被重建丢失。
+        _migrate_user_id(conn)
         for sql in _MIGRATIONS:
             try:
                 conn.execute(sql)
-            except sqlite3.OperationalError:
-                pass  # 列已存在（新库由 schema 直接建出）
-        _migrate_lessons(conn)  # 教训去重（UNIQUE(content)）+ kind 分类列
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+        _migrate_lessons(conn)
+        conn.execute(
+            "INSERT INTO schema_version (id, version, applied_at) VALUES (1, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at",
+            (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+        )
         conn.commit()
-    except sqlite3.OperationalError as e:
-        # 极端情况（连基础表都没建成）下放弃迁移，功能退化为 v0.3 行为
+    except Exception as e:
         conn.rollback()
-        logger.warning("增量迁移失败（基础表缺失？）: %s", e)
+        logger.exception("增量迁移失败，已回滚，启动终止: %s", e)
+        raise
     finally:
         conn.close()
 

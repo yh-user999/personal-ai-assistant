@@ -24,6 +24,7 @@
 """
 import logging
 import re
+import sqlite3
 
 from app.models.database import connect
 
@@ -120,7 +121,10 @@ _dynamic_cache: dict[int, frozenset[str]] = {}
 def _dynamic_class_count() -> int:
     conn = connect()
     try:
-        return conn.execute("SELECT COUNT(*) AS c FROM dynamic_classes").fetchone()["c"]
+        try:
+            return conn.execute("SELECT COUNT(*) AS c FROM dynamic_classes").fetchone()["c"]
+        except sqlite3.OperationalError:
+            return 0
     finally:
         conn.close()
 
@@ -132,12 +136,15 @@ def _dynamic_novel_classes() -> frozenset[str]:
         return cached
     conn = connect()
     try:
-        words = frozenset(
-            r["class_word"]
-            for r in conn.execute(
-                "SELECT class_word FROM dynamic_classes WHERE domain='novel'"
-            ).fetchall()
-        )
+        try:
+            words = frozenset(
+                r["class_word"]
+                for r in conn.execute(
+                    "SELECT class_word FROM dynamic_classes WHERE domain='novel'"
+                ).fetchall()
+            )
+        except sqlite3.OperationalError:
+            words = frozenset()
     finally:
         conn.close()
     _dynamic_cache.clear()

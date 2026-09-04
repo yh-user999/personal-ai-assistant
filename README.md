@@ -18,6 +18,7 @@
 | **学习** | 关切追踪（在意什么）、风格学习（认可的回复形式）、多轮上下文（8 轮原文 + 摘要续接） |
 | **RAG** | 文档知识库：切块 → 向量化 → 混合检索（RRF）→ 带引用回答；Hit@k/MRR 评测体系 |
 | **实体检索** | 小说专名索引 + 五层检索：枚举式提问（"有哪些命丛"）走专名精确匹配而非向量（类名检索精度仅 15.9%，专名接近 100%），注入自带完整度报告 |
+| **小说写作** | 设定冲突检查 + 续写辅助 + 写作台账（6.25）；**章节分析二期**：`分析章节：<正文>` 零 LLM 残留检测（AI 元话语/章节尾标记）+ 字数对照 + 1 次 LLM 逻辑/时间线/动机/称谓/设定五维问题清单（带引句与建议）+ 节奏超载评估；`章节存档：第X章 <摘要>` 零 LLM 入库；写第 N 章自动注入前情提要 + 未回收伏笔；生成档长回复自动提炼章节存档（被动抓取，无需打命令） |
 | **产出** | 对话式文档生成（"写文档"命令）、简历优化（专家 prompt + .docx 导出）、个性化问候 |
 | **交互** | 桌面悬浮机器人（三套自绘皮肤：班德机械版/宇航员重制版/萌系风，呼吸眨眼+状态灯）、气泡聊天（Markdown 渲染 + 面板可缩放/最大化/移动/尺寸记忆）、托盘通知、📌 图钉 |
 | **执行** | 快捷启动器（"记住 打开B站=网址"注册常用软件/网页/搜索模板，打开X / 在X搜索 / 指定浏览器 / 时段常用推荐）、文件手（复制/备份/移动/重命名，白名单内）、远程指令队列（原子认领+超时释放）、破坏性操作确认层 |
@@ -209,7 +210,7 @@
 | | `identity_guard` `few_shot` `jargon` | 人格安全、风格范例、术语口径 |
 | **任务与追踪** | `goals` `unresolved` `concern_tracker` `worklog` `reminders` | 目标、未解决问题、关切话题、工作日志、定时提醒 |
 | **执行器** | `executor` `confirm` | 指令队列（原子认领+超时释放）、破坏性操作确认层 |
-| **产出** | `documents` `resume` `novel_writing` | 文档生成、简历优化（.docx）、小说写作辅助 |
+| **产出** | `documents` `resume` `novel_writing` `chapter_analysis` | 文档生成、简历优化（.docx）、小说写作辅助、章节分析+跨章剧情存档 |
 | **垂直领域** | `fitness` | 健身减脂：台账 + 21 张权威知识卡（含训练学容量/次数/恢复） |
 | **基础设施** | `sanitize` `backup` `behavior_context` `qq_push` `progress_sync` `message_search` | 脱敏、热备份、行为注入、QQ 推送、进度同步、全文搜索 |
 
@@ -220,7 +221,7 @@
 | 记忆核心 | `memories` `memories_fts` `memory_vectors` | 原文 + FTS5 倒排 + 向量（含 `hit_count` 使用反馈）|
 | 长期知识 | `facts` `profile` `lessons` `concerns` `jargon_terms` `style_examples` | 六类注入通道，均按 `user_id` 隔离 |
 | 知识库 | `knowledge_chunks` `knowledge_fts` `chunk_vectors` `documents` | RAG 三件套 + 生成的文档 |
-| 小说 | `novel_entities` `novel_facts` `writing_log` | 专名索引 / 人工修订设定卡 / 写作台账 |
+| 小说 | `novel_entities` `novel_facts` `writing_log` `chapter_notes` | 专名索引 / 人工修订设定卡 / 写作台账 / 章节剧情存档（每章摘要+未回收伏笔） |
 | 行为 | `behavior_events` `work_log` `mood_log` | 采集事件 / 手动日志 / 情绪轨迹 |
 | 任务 | `goals` `unresolved_issues` `reminders` `executor_commands` | 目标 / 未解决 / 提醒 / 指令队列 |
 | 反思归档 | `weekly_reports` `daily_summaries` | 周报 / 每日小结 |

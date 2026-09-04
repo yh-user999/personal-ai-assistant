@@ -177,7 +177,7 @@ Wave Memory 的五阶段检索管线全部源自这里：EPA 嵌入投影分析 
 | <https://arxiv.org/abs/2310.08560> | MemGPT 论文（分层记忆） |
 | <https://arxiv.org/abs/2303.11366> | Reflexion 论文（自我反思） |
 | <https://arxiv.org/abs/1603.09320> | HNSW 论文（近似最近邻） |
-| 硅基流动 / DeepSeek 开放平台文档 | Embedding 与 LLM 接口细节 |
+| 智谱 BigModel / DeepSeek 开放平台文档 | Embedding 与 LLM 接口细节 |
 | sqlite-vec 官方文档 | 向量表 SQL 语法 |
 
 ## 五、许可证提醒

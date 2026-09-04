@@ -11,3 +11,4 @@ numpy==2.5.2
 sqlite-vec==0.1.9
 python-dotenv==1.2.3
 python-docx==1.2.0
+mcp==2.1.1

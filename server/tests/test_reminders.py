@@ -110,10 +110,14 @@ def test_due_marks_notified_once(db):
     conn.close()
     first = reminders.due_reminders()
     assert [i["content"] for i in first] == ["已到期"]
-    # 未推送前不消费：仍然可见（下一轮会重取）
-    assert [i["content"] for i in reminders.due_reminders()] == ["已到期"]
+    assert first[0].get("sending_token")
+    # 已被实例领取后，其他实例不可重复领取；推送失败释放后可重试。
+    assert reminders.due_reminders() == []
+    reminders.release_claim([first[0]["id"]], first[0]["sending_token"])
+    retry = reminders.due_reminders()
+    assert [i["content"] for i in retry] == ["已到期"]
     # 推送成功后显式消费 → 消失
-    reminders.mark_notified([first[0]["id"]])
+    reminders.mark_notified([retry[0]["id"]], retry[0]["sending_token"])
     assert reminders.due_reminders() == []
     assert reminders.list_pending() == []
 

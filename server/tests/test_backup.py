@@ -75,6 +75,46 @@ def test_backup_is_verified_and_restorable(tmp_path):
         conn.close()
 
 
+def test_novel_project_backup_restores_end_to_end(tmp_path, monkeypatch):
+    from app.novel.repository import SQLiteNovelRepository
+
+    repo = SQLiteNovelRepository(owner_id="owner")
+    repo.create_project("恢复小说", project_id="restore-project", slug="restore-book")
+    repo.upsert_chapter("restore-project", "1", title="开端", content="小说正文", status="published")
+    job = repo.create_job("restore-project", "1", "restore-job", "生成提示")
+    repo.update_job(job.job_id, __import__("app.novel.domain", fromlist=["GenerationJobStatus"]).GenerationJobStatus.AWAITING_CONFIRMATION, draft_content="小说草稿")
+
+    result = backup.run_daily_backup()
+    restored = tmp_path / "restored-novel.db"
+    restored_result = backup.restore_backup(backup.backup_dir() / result["backup"], restored)
+    assert restored_result["restored"] == str(restored)
+
+    conn = sqlite3.connect(str(restored))
+    try:
+        assert conn.execute("SELECT name FROM novel_projects WHERE project_id='restore-project'").fetchone()[0] == "恢复小说"
+        assert conn.execute("SELECT content FROM novel_chapters WHERE project_id='restore-project'").fetchone()[0] == "小说正文"
+        assert conn.execute("SELECT prompt FROM novel_generation_jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == "生成提示"
+    finally:
+        conn.close()
+
+
+def test_restore_refuses_overwrite_without_flag(tmp_path):
+    result = backup.run_daily_backup()
+    restored = tmp_path / "existing.db"
+    restored.write_bytes(b"existing")
+    with pytest.raises(FileExistsError):
+        backup.restore_backup(backup.backup_dir() / result["backup"], restored)
+
+
+def test_backup_rejects_corrupt_gzip(monkeypatch):
+    """压缩输出损坏时不得落位。"""
+    monkeypatch.setattr(backup, "_verify_gzip", lambda p: (False, "模拟 gzip 损坏"))
+    result = backup.run_daily_backup()
+    assert result.get("skipped") is True
+    assert "gzip 校验失败" in result["reason"]
+    assert not list(backup.backup_dir().glob("*.db.gz"))
+
+
 def test_backup_rejects_corrupt_snapshot(monkeypatch):
     """校验失败时必须丢弃备份，而不是让坏文件覆盖好备份。"""
     monkeypatch.setattr(backup, "_verify", lambda p: (False, "模拟损坏"))
@@ -83,6 +123,24 @@ def test_backup_rejects_corrupt_snapshot(monkeypatch):
     assert "校验失败" in result["reason"]
     # 没有任何备份落位
     assert not list(backup.backup_dir().glob("*.db.gz"))
+
+
+def test_backup_compression_failure_preserves_existing(monkeypatch):
+    """压缩失败时不得覆盖同名的既有好备份。"""
+    real_dt = backup.datetime
+    class FakeDatetime(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt(2026, 1, 7, 3, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(backup, "datetime", FakeDatetime)
+    d = backup.backup_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    final = d / "assistant-20260107.db.gz"
+    final.write_bytes(b"known-good")
+    monkeypatch.setattr(backup, "_compress", lambda src, dest: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        backup.run_daily_backup()
+    assert final.read_bytes() == b"known-good"
 
 
 def test_backup_leaves_no_temp_files():

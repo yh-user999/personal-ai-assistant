@@ -137,3 +137,50 @@ def test_novel_facts_match():
     conn.close()
     assert knowledge.get_novel_facts("左志诚被谁挖走了命丛") == ["设定A"]
     assert knowledge.get_novel_facts("今天天气") == []
+
+
+@pytest.mark.asyncio
+async def test_replace_embedding_failure_keeps_old_version(monkeypatch):
+    from app.core import knowledge
+    from app.models.database import connect
+
+    conn = connect()
+    conn.execute(
+        "INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at) "
+        "VALUES ('文档', 0, '旧版本', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        knowledge.embedding, "embed_batched",
+        lambda chunks: (_ for _ in ()).throw(RuntimeError("embedding down")),
+    )
+    with pytest.raises(RuntimeError):
+        await knowledge.ingest_document("文档", "新版本")
+    row = conn.execute(
+        "SELECT content FROM knowledge_chunks WHERE doc_name='文档'"
+    ).fetchone()
+    assert row["content"] == "旧版本"
+
+
+@pytest.mark.asyncio
+async def test_replace_switches_chunks_and_fts_atomically(monkeypatch):
+    from app.core import knowledge
+    from app.models.database import connect
+
+    async def fake_embed(chunks):
+        return [[0.0] * settings.embedding_dimension for _ in chunks]
+
+    monkeypatch.setattr(knowledge.embedding, "embed_batched", fake_embed)
+    await knowledge.ingest_document("文档", "旧内容")
+    await knowledge.ingest_document("文档", "新内容")
+    conn = connect()
+    chunks = conn.execute(
+        "SELECT content FROM knowledge_chunks WHERE doc_name='文档'"
+    ).fetchall()
+    fts = conn.execute(
+        "SELECT f.grams FROM knowledge_fts f JOIN knowledge_chunks c ON c.id=f.chunk_id "
+        "WHERE c.doc_name='文档'"
+    ).fetchall()
+    assert [r["content"] for r in chunks] == ["新内容"]
+    assert len(fts) == 1 and fts[0]["grams"]
+    assert knowledge._bm25_rank("新内容", docs=["文档"])[0]["content"] == "新内容"

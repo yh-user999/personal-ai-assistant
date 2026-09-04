@@ -105,6 +105,7 @@ async def push_reminders() -> int:
             logger.warning("积压提醒摘要推送异常: %s", e)
 
     pushed_ids: list[int] = []
+    pushed_token = None
     for item in fresh:
         try:
             r = await client.post(
@@ -117,6 +118,7 @@ async def push_reminders() -> int:
             )
             if r.status_code == 200 and r.json().get("status") == "ok":
                 pushed_ids.append(item["id"])
+                pushed_token = item.get("sending_token") or pushed_token
             else:
                 logger.warning(
                     "QQ 提醒推送失败 #%s（下轮重推）: HTTP %s %s",
@@ -125,6 +127,9 @@ async def push_reminders() -> int:
         except Exception as e:
             logger.warning("QQ 提醒推送异常 #%s（下轮重推）: %s", item["id"], e)
     if pushed_ids:
-        # 只消费确认送达的；失败的留在 pending 下一分钟重推
-        await asyncio.to_thread(reminders.mark_notified, pushed_ids)
+        # 只消费确认送达的；失败的释放 claim，下一分钟重试
+        await asyncio.to_thread(reminders.mark_notified, pushed_ids, pushed_token)
+    failed_ids = [it["id"] for it in fresh if it["id"] not in pushed_ids]
+    if failed_ids:
+        await asyncio.to_thread(reminders.release_claim, failed_ids, pushed_token)
     return len(pushed_ids)

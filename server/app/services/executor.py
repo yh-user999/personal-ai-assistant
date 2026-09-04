@@ -12,6 +12,7 @@ open 仅 startfile（打开文件/文件夹/应用，不执行命令）。
 import json
 import os
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
@@ -307,36 +308,30 @@ def enqueue(action: str, target: str) -> int:
         conn.close()
 
 
-def get_pending() -> dict | None:
-    """原子认领队首 pending 指令（executor 轮询）。
-
-    认领即置 status='claimed' 并记录 claimed_at：同一指令不会被两个轮询
-    重复领取，也不会因回传丢失被反复执行（旧实现执行期间仍标记 pending，
-    采集器回传失败时会每 5s 重跑同一指令直到过期）。超时清理：
-    - pending 超 30 分钟未领取 → failed（过期，防"延迟的惊喜"）
-    - claimed 超 10 分钟未回传 → failed（执行器失联，不永久占队）
-    """
+def get_pending(device_id: str = "") -> dict | None:
+    """原子认领队首 pending 指令并签发持久 lease。"""
     conn = connect()
     try:
         now = datetime.now(timezone.utc)
+        now_s = now.isoformat()
         conn.execute(
-            "UPDATE executor_commands SET status='failed', "
-            "result='指令已过期（超时未执行）', executed_at=? "
+            "UPDATE executor_commands SET status='failed', result='指令已过期（超时未执行）', executed_at=? "
             "WHERE status='pending' AND created_at < ?",
             (_now(), (now - timedelta(seconds=STALE_SECONDS)).isoformat()),
         )
+        # 租约过期转 unknown：允许带原 token 的迟到结果完成，避免执行器实际成功却丢失。
         conn.execute(
-            "UPDATE executor_commands SET status='failed', "
-            "result='执行器回传超时，已标记失败', executed_at=? "
-            "WHERE status='claimed' AND claimed_at < ?",
-            (_now(), (now - timedelta(seconds=CLAIM_SECONDS)).isoformat()),
+            "UPDATE executor_commands SET status='unknown', result='执行器租约已过期，等待迟到结果', result_late=1 "
+            "WHERE status='claimed' AND COALESCE(lease_expires_at, claimed_at) < ?",
+            (now_s,),
         )
+        token = secrets.token_urlsafe(24)
+        lease = (now + timedelta(seconds=CLAIM_SECONDS)).isoformat()
         cur = conn.execute(
-            "UPDATE executor_commands SET status='claimed', claimed_at=? "
-            "WHERE id = (SELECT id FROM executor_commands "
-            "            WHERE status='pending' ORDER BY id LIMIT 1) "
-            "RETURNING id, action, target, created_at",
-            (_now(),),
+            "UPDATE executor_commands SET status='claimed', claimed_at=?, device_id=?, claim_token=?, lease_expires_at=? "
+            "WHERE id = (SELECT id FROM executor_commands WHERE status='pending' ORDER BY id LIMIT 1) "
+            "RETURNING id, action, target, created_at, device_id, claim_token, lease_expires_at",
+            (now_s, device_id[:100], token, lease),
         )
         row = cur.fetchone()
         conn.commit()
@@ -345,14 +340,21 @@ def get_pending() -> dict | None:
         conn.close()
 
 
-def mark_result(cmd_id: int, ok: bool, result: str) -> bool:
-    """只接受已认领指令的一次性结果回传，防止伪造任意执行结果。"""
+def mark_result(cmd_id: int, ok: bool, result: str, claim_token: str = "", device_id: str = "") -> bool:
+    """接受匹配 token 的结果；租约过期的 unknown 结果标记为迟到但仍落库。"""
     conn = connect()
     try:
+        where = "id=? AND status IN ('claimed','unknown')"
+        params: list = ["done" if ok else "failed", result[:3000], _now(), cmd_id]
+        if claim_token:
+            where += " AND claim_token=?"
+            params.append(claim_token)
+        if device_id:
+            where += " AND device_id=?"
+            params.append(device_id[:100])
         cur = conn.execute(
-            """UPDATE executor_commands SET status=?, result=?, executed_at=?
-               WHERE id=? AND status='claimed'""",
-            ("done" if ok else "failed", result[:3000], _now(), cmd_id),
+            f"UPDATE executor_commands SET status=?, result=?, executed_at=?, result_late=CASE WHEN status='unknown' THEN 1 ELSE result_late END WHERE {where}",
+            params,
         )
         conn.commit()
         return cur.rowcount == 1

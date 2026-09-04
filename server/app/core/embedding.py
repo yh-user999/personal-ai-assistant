@@ -1,4 +1,4 @@
-"""Embedding 客户端：OpenAI 兼容协议（硅基流动 Qwen3-Embedding 等）。"""
+"""Embedding 客户端：OpenAI 兼容协议（智谱 BigModel embedding-3）。"""
 from openai import AsyncOpenAI
 
 from app.config import settings

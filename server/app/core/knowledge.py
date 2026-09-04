@@ -5,6 +5,7 @@ RAG 流水线：load → chunk → embed → store → search → generate。
 """
 import json
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from app.core import embedding
@@ -29,14 +30,13 @@ VECTOR_SPREAD_MIN = 0.005
 VECTOR_FILTER_FANOUT = 8
 MAX_VECTOR_K = 200
 
-# 向量无区分力降级标志（检索可观测性 P0）：hybrid_search 每轮开始重置，
-# 触发降级置 True；chat 决策轨迹读取。进程级单线程事件循环下安全。
-_vector_degraded_last: bool = False
+# 向量无区分力降级标志按 asyncio 任务隔离，避免并发请求互相覆盖。
+_vector_degraded_last: ContextVar[bool] = ContextVar("vector_degraded_last", default=False)
 
 
 def last_vector_degraded() -> bool:
-    """上一轮混合检索是否因向量无区分力而整轮放弃向量。"""
-    return _vector_degraded_last
+    """当前请求最近一轮混合检索是否因向量无区分力而降级。"""
+    return _vector_degraded_last.get()
 
 
 # 人物别名（小说知识库策划数据：同一角色的多个名字/称呼，检索时多变体融合）
@@ -111,10 +111,24 @@ async def ingest_document(
     if not chunks:
         return {"chunks": 0, "error": "文档为空或无可切分内容"}
 
+    # 分批向量化必须先完成：任何 embedding 失败都保留旧版本。
+    vectors = await embedding.embed_batched(chunks)
+    if len(vectors) != len(chunks):
+        raise ValueError(
+            f"embedding 返回数量不匹配：chunks={len(chunks)}, vectors={len(vectors)}"
+        )
+
+    # 入库即定域：新块若留空 domain，分域检索会永远找不到它们
+    from app.services.knowledge_domain import classify_doc
+
+    domain = classify_doc(name)
+
+    # replace 的删除与新版本写入必须是同一事务：提交时原子切换，
+    # 避免出现只有向量/只有 FTS 或新旧版本混杂的中间状态。
     conn = connect()
     try:
+        conn.execute("BEGIN")
         if replace:
-            # 删除同文档旧块及其向量（sqlite-vec 虚拟表按 chunk_id 删除）
             old = conn.execute(
                 "SELECT id FROM knowledge_chunks WHERE doc_name=?", (name,)
             ).fetchall()
@@ -122,20 +136,6 @@ async def ingest_document(
                 conn.execute("DELETE FROM chunk_vectors WHERE chunk_id=?", (r["id"],))
                 conn.execute("DELETE FROM knowledge_fts WHERE chunk_id=?", (r["id"],))
             conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
-            conn.commit()
-    finally:
-        conn.close()
-
-    # 分批向量化（长文档单批超 API 上限）
-    vectors = await embedding.embed_batched(chunks)
-
-    # 入库即定域：新块若留空 domain，分域检索会永远找不到它们
-    from app.services.knowledge_domain import classify_doc
-
-    domain = classify_doc(name)
-
-    conn = connect()
-    try:
         for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
             cur = conn.execute(
                 """INSERT INTO knowledge_chunks (doc_name, chunk_index, content, created_at, domain)
@@ -151,6 +151,9 @@ async def ingest_document(
                 (cur.lastrowid, _grams_text(chunk)),
             )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
     # 灌库改变了块数与体系词分布 → 失效书籍归属缓存
@@ -260,8 +263,7 @@ async def hybrid_search(query: str, top_k: int = 3, *,
     评测结果：MRR 0.906 → 0.938，精确词问题（"几小时运行一次"）显著受益。
     domains/docs 为分域过滤（见 services/knowledge_domain）。
     """
-    global _vector_degraded_last
-    _vector_degraded_last = False
+    _vector_degraded_last.set(False)
     vec_hits = await _vector_search(query, top_k=10, domains=domains, docs=docs)
     bm25_hits = _bm25_rank(query, 10, domains=domains, docs=docs)
 
@@ -273,7 +275,7 @@ async def hybrid_search(query: str, top_k: int = 3, *,
         if max(sims) - min(sims) < VECTOR_SPREAD_MIN:
             logger.debug("向量相似度无区分力（极差 %.4f），本轮仅用 BM25",
                          max(sims) - min(sims))
-            _vector_degraded_last = True
+            _vector_degraded_last.set(True)
             vec_hits = []
 
     rrf: dict[int, float] = {}

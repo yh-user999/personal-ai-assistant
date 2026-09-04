@@ -1,7 +1,8 @@
 """执行器 API：入队 / 轮询 / 回传。鉴权由全局中间件统一处理。"""
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from app.auth import require_roles
 from pydantic import BaseModel
 
 from app.core import memory
@@ -32,10 +33,13 @@ class ResultRequest(BaseModel):
     id: int
     ok: bool
     result: str = ""
+    claim_token: str = ""
+    device_id: str = ""
 
 
 @router.post("/executor/enqueue")
-async def enqueue(req: EnqueueRequest) -> dict:
+async def enqueue(req: EnqueueRequest, request: Request) -> dict:
+    require_roles(request, "owner", "internal")
     """入队。白名单在此强制执行——聊天解析与 API 直调两条入口都受控。"""
     if req.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail=f"不支持的指令类型：{req.action}")
@@ -55,13 +59,16 @@ async def enqueue(req: EnqueueRequest) -> dict:
 
 
 @router.get("/executor/pending")
-async def pending() -> dict:
-    cmd = executor.get_pending()
+async def pending(request: Request) -> dict:
+    require_roles(request, "executor", "internal", "owner")
+    device_id = request.headers.get("X-Executor-Device", "")[:100]
+    cmd = executor.get_pending(device_id)
     return {"command": cmd}  # null = 无待执行
 
 
 @router.get("/executor/results")
-async def results(since_id: int = 0) -> dict:
+async def results(request: Request, since_id: int = 0) -> dict:
+    require_roles(request, "executor", "internal", "owner")
     """id > since_id 的已执行指令（桌面端轮询显示执行结果）。"""
     from app.models.database import connect
 
@@ -78,8 +85,10 @@ async def results(since_id: int = 0) -> dict:
 
 
 @router.post("/executor/result")
-async def result(req: ResultRequest) -> dict:
-    accepted = executor.mark_result(req.id, req.ok, req.result)
+async def result(req: ResultRequest, request: Request) -> dict:
+    require_roles(request, "executor", "internal", "owner")
+    device_id = req.device_id or request.headers.get("X-Executor-Device", "")
+    accepted = executor.mark_result(req.id, req.ok, req.result, req.claim_token, device_id)
     if not accepted:
         raise HTTPException(status_code=409, detail="指令不存在、未认领或结果已回传")
     # 结果写为 assistant 消息，用户下次聊天/看历史可见

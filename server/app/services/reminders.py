@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -154,48 +155,74 @@ def cancel_by_keyword(keyword: str) -> int:
         conn.close()
 
 
-def due_reminders(stale_hours: float = 24.0) -> list[dict]:
-    """取出已到期的未提醒项（不消费，调用方推送成功后 mark_notified）。
-
-    消费语义与推送解耦：QQ 是提醒的唯一通道，若"选中即标记"，NapCat
-    掉线期间的到期提醒会被静默吞掉（标记了但没推出去，永不重试）。
-    改为推送确认后消费，失败项下一轮重推。
-
-    stale_hours：超龄分组阈值。掉线超阈值的老项单独标 stale=True——
-    调用方可合并成摘要推送，避免 NapCat 恢复后积压轰炸。
-    """
+def due_reminders(stale_hours: float = 24.0, claim_token: str | None = None) -> list[dict]:
+    """原子领取到期提醒，防多实例重复推送；返回 token 供 mark_notified 使用。"""
     conn = connect()
     try:
-        now = _utc_str(_now())
-        stale_cutoff = _utc_str(_now() - timedelta(hours=stale_hours))
+        now_dt = _now()
+        now = _utc_str(now_dt)
+        stale_cutoff = _utc_str(now_dt - timedelta(hours=stale_hours))
+        # 回收过期 sending 租约，允许重试。
+        conn.execute(
+            "UPDATE reminders SET status='pending', sending_token='', sending_at=NULL, sending_lease_expires_at=NULL "
+            "WHERE status='sending' AND sending_lease_expires_at < ?", (now,)
+        )
+        token = claim_token or secrets.token_urlsafe(24)
+        lease = _utc_str(now_dt + timedelta(minutes=5))
         rows = conn.execute(
-            "SELECT id, content, remind_at FROM reminders WHERE status='pending' AND remind_at <= ? "
-            "ORDER BY remind_at ASC LIMIT 10",
+            "SELECT id, content, remind_at FROM reminders WHERE status='pending' AND remind_at <= ? ORDER BY remind_at ASC LIMIT 10",
             (now,),
         ).fetchall()
-        return [
-            {
-                "id": r["id"],
-                "content": r["content"],
-                "stale": bool(r["remind_at"] and r["remind_at"] < stale_cutoff),
-            }
-            for r in rows
-        ]
+        result = []
+        for r in rows:
+            updated = conn.execute(
+                "UPDATE reminders SET status='sending', sending_token=?, sending_at=?, sending_lease_expires_at=? WHERE id=? AND status='pending'",
+                (token, now, lease, r["id"]),
+            )
+            if updated.rowcount:
+                result.append({"id": r["id"], "content": r["content"], "stale": bool(r["remind_at"] and r["remind_at"] < stale_cutoff), "sending_token": token})
+        conn.commit()
+        return result
     finally:
         conn.close()
 
 
-def mark_notified(ids: list[int]) -> None:
-    """推送成功后消费（幂等：重复标记无副作用）。"""
+def mark_notified(ids: list[int], sending_token: str | None = None) -> None:
+    """推送成功后消费；支持 token 校验并兼容旧调用方。"""
     if not ids:
         return
     conn = connect()
     try:
+        placeholders = ",".join("?" * len(ids))
+        params: list = [*ids]
+        predicate = f"id IN ({placeholders}) AND status IN ('sending','pending')"
+        if sending_token:
+            predicate += " AND (sending_token=? OR status='pending')"
+            params.append(sending_token)
         conn.execute(
-            "UPDATE reminders SET status='notified' WHERE id IN ({})".format(
-                ",".join("?" * len(ids))
-            ),
-            ids,
+            f"UPDATE reminders SET status='notified', sending_token='', sending_lease_expires_at=NULL WHERE {predicate}",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def release_claim(ids: list[int], sending_token: str | None = None) -> None:
+    """推送失败时释放 sending claim，下一轮可重试。"""
+    if not ids:
+        return
+    conn = connect()
+    try:
+        placeholders = ",".join("?" * len(ids))
+        params: list = [*ids]
+        predicate = f"id IN ({placeholders}) AND status='sending'"
+        if sending_token:
+            predicate += " AND sending_token=?"
+            params.append(sending_token)
+        conn.execute(
+            f"UPDATE reminders SET status='pending', sending_token='', sending_at=NULL, sending_lease_expires_at=NULL WHERE {predicate}",
+            params,
         )
         conn.commit()
     finally:

@@ -5,7 +5,6 @@ M2 里程碑：注册 events/stats 路由。
 M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 """
 import logging
-import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.api import chat, documents, events, executor, knowledge, reminders, reports, stats
+from app.auth import authenticate_token
+
+from app.api import chat, documents, events, executor, knowledge, novel, reminders, reports, stats
 from app.config import settings
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
@@ -42,22 +43,54 @@ async def lifespan(app: FastAPI):
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """API 鉴权：配置 API_TOKEN 后，除白名单外所有请求需 Bearer token。
+    """API 鉴权：配置 token 后统一建立角色上下文并执行端点权限校验。
 
     白名单：静态页 "/"、健康检查 /api/health（无敏感数据）。
     每次请求实时读 settings.api_token（测试可 monkeypatch）。
     """
 
     PUBLIC_PATHS = {"/", "/api/health"}
+    ROLE_RULES = (
+        ("/api/events", {"collector", "internal", "owner"}),
+        ("/api/heartbeat", {"collector", "internal", "owner"}),
+        ("/api/knowledge", {"owner", "internal"}),
+        ("/api/documents", {"owner", "internal"}),
+        ("/api/reports", {"owner", "internal"}),
+        ("/api/daily", {"owner", "internal"}),
+        ("/api/stats", {"owner", "internal"}),
+        ("/api/reminders", {"owner", "internal"}),
+        ("/api/messages", {"owner", "internal"}),
+        ("/api/novel", {"owner", "internal"}),
+        ("/api/mood", {"owner", "internal"}),
+        ("/api/executor/pending", {"executor", "internal", "owner"}),
+        ("/api/executor/results", {"executor", "internal", "owner"}),
+        ("/api/executor/result", {"executor", "internal", "owner"}),
+        ("/api/executor/enqueue", {"owner", "internal"}),
+        ("/api/knowledge/ingest", {"owner", "internal"}),
+        ("/api/documents/generate", {"owner", "internal"}),
+        ("/api/reports/generate", {"owner", "internal"}),
+    )
 
     async def dispatch(self, request, call_next):
-        if settings.api_token and request.url.path not in self.PUBLIC_PATHS:
-            auth = request.headers.get("authorization", "")
-            # 常数时间比较，防时序侧信道逐字节猜 token
-            if not secrets.compare_digest(
-                auth.encode(), f"Bearer {settings.api_token}".encode()
-            ):
+        if request.url.path in self.PUBLIC_PATHS:
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        # 无任何 token 配置时保持旧的开放策略；一旦启用分类 token，统一建立上下文。
+        configured = any(getattr(settings, name, "") for name in (
+            "api_token", "owner_api_token", "internal_api_token",
+            "collector_api_token", "executor_api_token", "qq_api_token",
+        ))
+        if configured:
+            ctx = authenticate_token(token)
+            if ctx is None:
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            request.state.auth = ctx
+            for prefix, allowed in self.ROLE_RULES:
+                if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
+                    if ctx.role not in allowed:
+                        return JSONResponse({"detail": "forbidden"}, status_code=403)
+                    break
         return await call_next(request)
 
 
@@ -77,6 +110,7 @@ app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
 app.include_router(documents.router, prefix="/api", tags=["documents"])
 app.include_router(executor.router, prefix="/api", tags=["executor"])
 app.include_router(reminders.router, prefix="/api", tags=["reminders"])
+app.include_router(novel.router, prefix="/api", tags=["novel"])
 
 
 @app.get("/api/health")

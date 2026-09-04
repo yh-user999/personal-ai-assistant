@@ -47,6 +47,19 @@ content 格式要求（Markdown，共 3-5 行）：
 """
 
 
+def get_latest_daily_summary() -> dict:
+    """读取最近一份日报，不触发生成，也不调用 LLM。"""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT date, content, created_at FROM daily_summaries "
+            "ORDER BY date DESC, id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else {}
+
+
 async def run_daily_summary() -> dict:
     """生成今天的每日小结并存储。返回 {date, content} 或 {'skipped': True}。
 

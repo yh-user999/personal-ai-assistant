@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from app.core import knowledge, llm, memory
 from app.models.database import connect
+from app.services import sepia
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -146,7 +147,7 @@ def parse_continue_command(msg: str) -> str | None:
 
 
 async def continue_story(text: str) -> str:
-    """注入设定 + 剧情背景，续写 300~500 字。失败给友好提示。"""
+    """注入设定 + 前情提要 + 剧情背景，续写 300~500 字。失败给友好提示。"""
     novel_facts = knowledge.get_novel_facts(text)
     hits = await knowledge.search_knowledge(text, top_k=3)
     hits = knowledge.expand_chunks(hits, radius=1, max_chars=2000)
@@ -154,14 +155,21 @@ async def continue_story(text: str) -> str:
     facts_text = memory.get_facts_injection()
 
     authority, _ = _build_authority(novel_facts, facts_text)
+    # 二期：前情提要（章节存档非空才出现）——写第 N 段时知道前面各章写了什么
+    from app.services import chapter_analysis
+
+    continuity = chapter_analysis.build_continuity_block()
 
     system = (
         "你是网络小说写手，文风参考《寂静杀戮》：冷静克制、短句有力、动作感强、"
         "心理描写克制。根据【权威设定】和【剧情背景】，从【当前段落】之后自然续写 300~500 字。\n"
-        "规则：不得引入与权威设定冲突的新设定；承接上一句的视角与节奏；"
-        "结尾停在有悬念或情绪落点的句子。只输出正文，不要任何解释或标题。"
+        f"{sepia.build_generation_block()}\n"
+        "补充要求：不得引入与权威设定冲突的新设定；承接上一句的视角与节奏；"
+        "结尾停在有悬念或情绪落点的句子。"
     )
     user = f"【权威设定】\n{authority}\n\n【剧情背景】\n{background}\n\n【当前段落】\n{text[:3000]}"
+    if continuity:
+        user = f"{continuity}\n\n{user}"
     try:
         out = await llm.chat(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],

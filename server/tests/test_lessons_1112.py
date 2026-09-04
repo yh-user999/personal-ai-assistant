@@ -145,3 +145,37 @@ def test_executor_fresh_pending_ok():
     """刚入队的指令不受过期逻辑影响。"""
     cmd_id = executor.enqueue("open", "notepad")
     assert executor.get_pending()["id"] == cmd_id
+
+
+def test_lessons_rebuild_preserves_hit_statistics():
+    """lessons 去重重建时保留统计列，避免注入命中数据归零。"""
+    import sqlite3
+    from app.models import database
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            context TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'style',
+            hit_count INTEGER DEFAULT 0,
+            last_hit_at TEXT
+        );
+        INSERT INTO lessons(content, context, created_at, kind, hit_count, last_hit_at)
+        VALUES ('纠正内容', 'ctx', '2026-01-01', 'fact', 7, '2026-01-02');
+        INSERT INTO lessons(content, context, created_at, kind, hit_count, last_hit_at)
+        VALUES ('纠正内容', 'newer', '2026-01-03', 'fact', 99, '2026-01-04');
+        """
+    )
+    database._migrate_lessons(conn)
+    row = conn.execute(
+        "SELECT content, hit_count, last_hit_at FROM lessons"
+    ).fetchone()
+    assert row["content"] == "纠正内容"
+    assert row["hit_count"] == 7
+    assert row["last_hit_at"] == "2026-01-02"
+    conn.close()

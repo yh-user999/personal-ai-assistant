@@ -95,6 +95,8 @@ def test_parse_continue_command():
 def test_continue_story(db, monkeypatch):
     async def fake_chat(messages, **kw):
         assert any("寂静杀戮" in m["content"] for m in messages)
+        assert any("Sepia 小说生成规则" in m["content"] for m in messages)
+        assert any("权威设定" in m["content"] for m in messages)
         return "李羽握紧了刀，向门外走去。"
 
     async def fake_search(query, **kw):

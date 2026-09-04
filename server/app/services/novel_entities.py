@@ -31,6 +31,7 @@
 import asyncio
 import logging
 import re
+import sqlite3
 from datetime import datetime, timezone
 
 from app.models.database import connect
@@ -121,9 +122,12 @@ def detect_kinds(query: str) -> list[str]:
             kinds.append(w)
     conn = connect()
     try:
-        db_kinds = [r["kind"] for r in conn.execute(
-            "SELECT DISTINCT kind FROM novel_entities"
-        ).fetchall()]
+        try:
+            db_kinds = [r["kind"] for r in conn.execute(
+                "SELECT DISTINCT kind FROM novel_entities"
+            ).fetchall()]
+        except sqlite3.OperationalError:
+            db_kinds = []
     finally:
         conn.close()
     for k in db_kinds:
@@ -186,6 +190,40 @@ def list_entities(book: str = "", kind: str = "",
         return [dict(r) for r in conn.execute(sql, args).fetchall()]
     finally:
         conn.close()
+
+
+def search_entities(
+    query: str,
+    entity_kind: str | None = None,
+    book: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """按名称/类别/所属书检索实体，供外部只读入口使用。"""
+    term = (query or "").strip()
+    if not term:
+        raise ValueError("实体查询不能为空")
+    limit = max(1, min(int(limit), 100))
+    where = ["(name LIKE ? OR note LIKE ? OR group_name LIKE ? OR kind LIKE ? OR book LIKE ?)"]
+    like = f"%{term}%"
+    args: list[object] = [like, like, like, like, like]
+    if entity_kind:
+        where.append("kind=?")
+        args.append(entity_kind.strip())
+    if book:
+        where.append("book=?")
+        args.append(book.strip())
+    args.append(limit)
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, kind, book, group_name, first_chunk, verified, note, created_at "
+            f"FROM novel_entities WHERE {' AND '.join(where)} "
+            "ORDER BY verified DESC, kind, first_chunk, id LIMIT ?",
+            args,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
 
 
 def delete_entity(entity_id: int) -> bool:

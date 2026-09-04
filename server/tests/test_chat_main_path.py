@@ -3,6 +3,7 @@
 锁定三件事：system prompt 注入段齐全（含稳定档案区在前）、双方消息入库、
 被引用记忆 importance 提升。这是 prompt 换序（前缀缓存优化）的回归保险。
 """
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -100,6 +101,35 @@ def test_chat_main_path_injections_and_persistence(env, captured):
     ).fetchall()]
     conn.close()
     assert "user" in senders and "assistant" in senders
+
+
+def test_chat_request_id_deduplicates_inflight_and_cached(monkeypatch):
+    """客户端超时重试不会重复执行 LLM 主链路。"""
+    from app.api import chat as chat_api
+
+    calls = []
+
+    async def fake_impl(req, request):
+        calls.append(req.message)
+        await asyncio.sleep(0)
+        return chat_api.ChatResponse(reply="ok", memories_used=0)
+
+    monkeypatch.setattr(chat_api, "_chat_impl", fake_impl)
+    chat_api._request_cache.clear()
+    chat_api._request_inflight.clear()
+    req = chat_api.ChatRequest(message="长文", request_id="rid-1")
+    request = type("Request", (), {"state": type("State", (), {})()})()
+
+    async def run():
+        first, second = await asyncio.gather(
+            chat_api.chat(req, request), chat_api.chat(req, request)
+        )
+        third = await chat_api.chat(req, request)
+        return first, second, third
+
+    first, second, third = asyncio.run(run())
+    assert first.reply == second.reply == third.reply == "ok"
+    assert calls == ["长文"]
 
 
 def test_chat_no_llm_shortcut_paths(env):

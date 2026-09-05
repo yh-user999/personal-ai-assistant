@@ -140,6 +140,27 @@ function showNovel() {
   document.getElementById('novel-panel').classList.add('active');
   loadNovel();
 }
+function clearNode(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+function appendTextElement(parent, tag, text, className) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  element.textContent = text == null ? '' : String(text);
+  parent.appendChild(element);
+  return element;
+}
+function appendNovelHeader(parent, text) {
+  appendTextElement(parent, 'h3', text);
+}
+function appendNovelCard(parent, title, body) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  appendTextElement(card, 'b', title);
+  appendTextElement(card, 'div', body, 'muted');
+  parent.appendChild(card);
+  return card;
+}
 async function loadNovel() {
   const panel = document.getElementById('novel-panel');
   panel.classList.add('active');
@@ -147,7 +168,13 @@ async function loadNovel() {
   if (!r.ok) { document.getElementById('novel-status').textContent = '项目加载失败'; return; }
   const d = await r.json();
   const select = document.getElementById('novel-project');
-  select.innerHTML = d.projects.map(p => `<option value="${p.project_id}">${p.name}</option>`).join('');
+  clearNode(select);
+  d.projects.forEach(p => {
+    const option = document.createElement('option');
+    option.value = String(p.project_id);
+    option.textContent = p.name == null ? '' : String(p.name);
+    select.appendChild(option);
+  });
   if (select.value) await loadNovelDetails(select.value);
   select.onchange = () => loadNovelDetails(select.value);
 }
@@ -159,8 +186,35 @@ async function loadNovelDetails(projectId) {
   ]);
   const chapters = await cr.json(), jobs = await jr.json(), index = await ir.json();
   document.getElementById('novel-status').textContent = `章节 ${chapters.chapters.length} · 文件索引 ${index.files.files} 个`;
-  document.getElementById('novel-chapters').innerHTML = '<h3>章节</h3>' + chapters.chapters.map(c => `<div class="card"><b>第${c.chapter_no}章 ${c.title || ''}</b><div class="muted">${(c.content || '').slice(0, 160)}</div></div>`).join('');
-  document.getElementById('novel-jobs').innerHTML = '<h3>生成任务</h3>' + jobs.jobs.map(j => `<div class="card"><b>${j.status}</b> · ${j.progress}% · 尝试 ${j.attempts}<div class="muted">${j.error || ''}</div><button onclick="jobAction('${projectId}','${j.job_id}','cancel')">取消</button><button onclick="jobAction('${projectId}','${j.job_id}','retry')">重试</button></div>`).join('');
+
+  const chaptersNode = document.getElementById('novel-chapters');
+  clearNode(chaptersNode);
+  appendNovelHeader(chaptersNode, '章节');
+  chapters.chapters.forEach(c => {
+    appendNovelCard(
+      chaptersNode,
+      `第${c.chapter_no}章 ${c.title || ''}`,
+      (c.content || '').slice(0, 160)
+    );
+  });
+
+  const jobsNode = document.getElementById('novel-jobs');
+  clearNode(jobsNode);
+  appendNovelHeader(jobsNode, '生成任务');
+  jobs.jobs.forEach(j => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    appendTextElement(card, 'b', j.status);
+    appendTextElement(card, 'span', ` · ${j.progress}% · 尝试 ${j.attempts}`);
+    appendTextElement(card, 'div', j.error || '', 'muted');
+    ['cancel', 'retry'].forEach(action => {
+      const button = document.createElement('button');
+      button.textContent = action === 'cancel' ? '取消' : '重试';
+      button.addEventListener('click', () => jobAction(projectId, j.job_id, action));
+      card.appendChild(button);
+    });
+    jobsNode.appendChild(card);
+  });
 }
 async function jobAction(projectId, jobId, action) {
   const r = await fetch(`/api/novel/projects/${projectId}/jobs/${jobId}/${action}`, {method: 'POST', headers: authHeaders()});
@@ -173,7 +227,12 @@ async function searchNovel() {
   if (!projectId || !q) return;
   const r = await fetch(`/api/novel/projects/${projectId}/chapters/search?q=${q}`, {headers: authHeaders()});
   const d = await r.json();
-  document.getElementById('novel-chapters').innerHTML = '<h3>搜索结果</h3>' + d.results.map(x => `<div class="card"><b>第${x.chapter_no}章 ${x.title || ''}</b><div>${x.snippet || ''}</div></div>`).join('');
+  const chaptersNode = document.getElementById('novel-chapters');
+  clearNode(chaptersNode);
+  appendNovelHeader(chaptersNode, '搜索结果');
+  d.results.forEach(x => {
+    appendNovelCard(chaptersNode, `第${x.chapter_no}章 ${x.title || ''}`, x.snippet || '');
+  });
 }
 async function rebuildNovelIndex() {
   const projectId = document.getElementById('novel-project').value;

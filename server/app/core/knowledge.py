@@ -5,8 +5,11 @@ RAG 流水线：load → chunk → embed → store → search → generate。
 """
 import json
 import logging
+import sqlite3
 from contextvars import ContextVar
 from datetime import datetime, timezone
+
+from openai import OpenAIError
 
 from app.core import embedding
 
@@ -248,7 +251,7 @@ def _bm25_rank(query: str, top_k: int = 10, *,
             args,
         ).fetchall()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except (sqlite3.Error, ValueError, TypeError) as e:
         logger.warning("知识库 FTS 检索失败（退化为空候选）: %s", e)
         return []
     finally:
@@ -374,7 +377,7 @@ async def search_knowledge(query: str, top_k: int = 3, method: str = "hybrid") -
             logger.debug("分域 %s/%s 无结果（多变体），退回全域", domains, docs)
             out = await _run_variants(None, None)
         return out
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError) as e:
         logger.warning("知识库检索失败，退化为空候选: %s", e)
         return []
 

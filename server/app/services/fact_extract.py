@@ -11,6 +11,8 @@ import json
 import logging
 import re
 
+from openai import OpenAIError
+
 from app.core import llm
 from app.models.database import connect
 
@@ -158,7 +160,7 @@ async def extract_from_last_ai(last_ai: str, user_id: str | None = None) -> int:
             temperature=0,
             max_tokens=400,
         )
-    except Exception as e:
+    except OpenAIError as e:
         logger.warning("AI 回复设定提取 LLM 失败: %s", e)
         return 0
     triples = parse_facts_json(text or "")
@@ -181,7 +183,7 @@ async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:
             temperature=0,
             max_tokens=400,
         )
-    except Exception as e:
+    except OpenAIError as e:
         logger.warning("事实提取 LLM 调用失败: %s", e)
         return 0
     triples = parse_facts_json(text or "")

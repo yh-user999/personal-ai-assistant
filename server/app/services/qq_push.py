@@ -56,7 +56,7 @@ async def send_private(text: str) -> bool:
             json={"user_id": int(settings.qq_admin_id), "message": text},
             headers=headers,
         )
-    except Exception as e:
+    except (httpx.HTTPError, ValueError, TypeError) as e:
         logger.warning("QQ 推送异常: %s", e)
         return False
     if r.status_code == 200 and r.json().get("status") == "ok":
@@ -101,7 +101,7 @@ async def push_reminders() -> int:
                 fresh.extend(stale)  # 摘要送达即消费，不再逐条轰炸
             else:
                 logger.warning("积压提醒摘要推送失败: HTTP %s", r.status_code)
-        except Exception as e:
+        except (httpx.HTTPError, ValueError, TypeError) as e:
             logger.warning("积压提醒摘要推送异常: %s", e)
 
     pushed_ids: list[int] = []
@@ -124,7 +124,7 @@ async def push_reminders() -> int:
                     "QQ 提醒推送失败 #%s（下轮重推）: HTTP %s %s",
                     item["id"], r.status_code, r.text[:120],
                 )
-        except Exception as e:
+        except (httpx.HTTPError, ValueError, TypeError) as e:
             logger.warning("QQ 提醒推送异常 #%s（下轮重推）: %s", item["id"], e)
     if pushed_ids:
         # 只消费确认送达的；失败的释放 claim，下一分钟重试

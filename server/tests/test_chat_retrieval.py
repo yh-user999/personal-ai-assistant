@@ -3,8 +3,8 @@ import asyncio
 
 import pytest
 
-from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat import retrieval
+from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.config import settings
 from app.core import memory as memory_module
 from app.models.database import init_db, reset_connections
@@ -221,7 +221,6 @@ class _OwnerSafe:
 
 def make_runtime(services_map, knowledge=None):
     import logging
-
     from types import SimpleNamespace
 
     from app.core import knowledge as knowledge_module

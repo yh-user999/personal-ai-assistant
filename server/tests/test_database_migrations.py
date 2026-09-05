@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models import database  # noqa: E402
+from app.models import database
 
 
 def test_schema_version_is_recorded_and_idempotent(tmp_path, monkeypatch):

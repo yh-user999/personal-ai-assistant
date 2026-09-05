@@ -5,9 +5,8 @@ import json
 from typing import Any
 
 from app.core import memory
-from app.models.database import connect
-from app.services import daily_summary, goals, profile, unresolved
 from app.novel.repository import SQLiteNovelRepository
+from app.services import daily_summary, goals, profile, unresolved
 
 from .context import current_context
 from .permissions import require_owner

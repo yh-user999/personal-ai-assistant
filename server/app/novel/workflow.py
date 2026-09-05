@@ -14,7 +14,7 @@ class NovelWorkflow:
     version: int = 1
 
     @classmethod
-    def from_job(cls, job: GenerationJob, repository: object) -> "NovelWorkflow":
+    def from_job(cls, job: GenerationJob, repository: object) -> NovelWorkflow:
         return cls(job.status, repository, job.job_id, job.version)
 
     def _set(self, status: GenerationJobStatus, **kwargs) -> None:

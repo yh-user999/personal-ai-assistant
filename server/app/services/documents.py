@@ -2,12 +2,17 @@
 
 保存后的文档自动 ingest 进知识库（切块+向量化），之后可检索/问答。
 """
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openai import OpenAIError
+
 from app.core import knowledge, llm
 from app.models.database import connect
+
+logger = logging.getLogger("assistant.documents")
 
 DOC_PROMPT = """你是文档撰写助手。根据用户给出的标题与要求，生成一份结构化的 Markdown 文档。
 要求：
@@ -77,8 +82,8 @@ async def generate_and_save(title: str, requirement: str) -> dict:
     # 同步进知识库（切块+向量化，之后可检索）
     try:
         await knowledge.ingest_document(f"文档-{title}", content)
-    except Exception:
-        pass  # 知识库同步失败不阻塞文档保存
+    except (OpenAIError, TimeoutError, RuntimeError, ValueError, TypeError) as exc:
+        logger.warning("文档知识库同步失败: %s", exc)
 
     return {"id": doc_id, "title": title, "words": len(content)}
 
@@ -143,7 +148,7 @@ def export_docx(doc_id: int, out_dir: str = "") -> str:
             r.font.size = Pt(13)
         elif line.startswith("# "):
             continue  # 大标题已由 title 呈现
-        elif line.startswith("- ") or line.startswith("* "):
+        elif line.startswith(("- ", "* ")):
             d.add_paragraph(line[2:], style="List Bullet")
         elif re.match(r"^\d+[.、]", line):
             d.add_paragraph(re.sub(r"^\d+[.、]\s*", "", line), style="List Number")

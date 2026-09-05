@@ -8,15 +8,13 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models.database import connect  # noqa: E402
-from app.services import cooccurrence as co  # noqa: E402
+from app.models.database import connect
+from app.services import cooccurrence as co
 
 
 def _seed(topics: list[str], content: str = "x", user_id: str = "owner") -> int:

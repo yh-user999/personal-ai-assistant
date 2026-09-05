@@ -2,9 +2,9 @@
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
-from app.auth import require_roles
 from pydantic import BaseModel
 
+from app.auth import require_roles
 from app.core import memory
 from app.services import executor
 
@@ -49,11 +49,12 @@ async def enqueue(req: EnqueueRequest, request: Request) -> dict:
     if req.action == "open":
         if not executor.check_open_target(req.target):
             raise HTTPException(status_code=400, detail="打开目标不在白名单或不是已登记别名")
-    elif not (req.action == "search_files" and not paths):
-        if not paths or not all(executor.check_roots(p) for p in paths):
-            raise HTTPException(
-                status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
-            )
+    elif (req.action != "search_files" or paths) and (
+        not paths or not all(executor.check_roots(p) for p in paths)
+    ):
+        raise HTTPException(
+            status_code=400, detail="目标路径超出白名单（EXECUTOR_ALLOWED_ROOTS）"
+        )
     cmd_id = executor.enqueue(req.action, req.target)
     return {"id": cmd_id}
 

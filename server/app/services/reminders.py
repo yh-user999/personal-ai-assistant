@@ -13,8 +13,6 @@ from zoneinfo import ZoneInfo
 from app.common.timeutil import TZ, now_local, utc_str
 from app.models.database import connect
 
-TZ = ZoneInfo("Asia/Shanghai")
-
 
 def _now() -> datetime:
     return now_local()

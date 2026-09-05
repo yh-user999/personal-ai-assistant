@@ -7,14 +7,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
+
+from openai import OpenAIError
 
 from app.chat.context import ChatContext, ChatRuntime
 from app.models.database import connect
 from app.services import sepia
+
+logger = logging.getLogger("assistant.chat.retrieval")
 
 
 @dataclass
@@ -242,9 +249,9 @@ def _known_index_anchors(ctx: ChatContext, history: list[dict[str, Any]]) -> set
         anchors.update(knowledge_domain._novel_class_words())
         for names in knowledge_domain._novel_person_names().values():
             anchors.update(names)
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError, ValueError) as exc:
         # 词表不可用时仍允许历史中的显式术语安全降级。
-        pass
+        logger.debug("小说锚点词表不可用: %s", exc)
     return anchors
 
 
@@ -326,7 +333,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                                 runtime,
                                 index_healer.auto_extract_task(diagnosis["words"], auto_book),
                             )
-            except Exception as exc:
+            except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
                 runtime.logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", exc)
 
         knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
@@ -425,7 +432,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             extra_blocks.append(generation_block)
         try:
             block = services.chapter_analysis.build_continuity_block()
-        except Exception as exc:
+        except (sqlite3.Error, KeyError, TypeError, ValueError, AttributeError) as exc:
             runtime.logger.warning("[chapter] 前情提要构建失败（不影响主回复）: %s", exc)
             block = ""
         if block:

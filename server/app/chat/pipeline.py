@@ -7,16 +7,17 @@ from __future__ import annotations
 
 import asyncio
 
+from openai import OpenAIError
+
+from app.chat import prompting, retrieval, routing
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
-    GUEST_WINDOW_SECONDS,
     OWNER_MAX_MSG_CHARS,
     ChatContext,
     ChatResponse,
     ChatRuntime,
     guest_rate_limited,
 )
-from app.chat import prompting, retrieval, routing
 
 
 async def _call_llm_with_fallback(
@@ -41,7 +42,7 @@ async def _call_llm_with_fallback(
             runtime.logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
             reply = plain_text.strip_markdown(reply)
         return reply, False
-    except Exception:
+    except (OpenAIError, TimeoutError, RuntimeError, AttributeError):
         if not assembly.gen_profile:
             runtime.logger.exception("LLM 调用失败")
             return None, False
@@ -54,7 +55,7 @@ async def _call_llm_with_fallback(
                 reply = plain_text.strip_markdown(reply)
             runtime.logger.info("[gen] 重试成功，回复 %d 字", len(reply))
             return reply, False
-        except Exception:
+        except (OpenAIError, TimeoutError, RuntimeError, AttributeError):
             runtime.logger.exception("[gen] 重试仍然失败")
             return None, True
 

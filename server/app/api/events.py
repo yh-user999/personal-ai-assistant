@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from app.models.database import connect
 from app.auth import require_roles
+from app.models.database import connect
 
 router = APIRouter()
 

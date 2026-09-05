@@ -63,7 +63,7 @@ def _pending_count():
 # ── 破坏性操作要确认 ──────────────────────────────────────
 
 def test_move_asks_before_executing():
-    name, reply = _run("把/tmp/allowed/a.txt移动到/tmp/allowed/old/")
+    _name, reply = _run("把/tmp/allowed/a.txt移动到/tmp/allowed/old/")
     assert "需要我" in reply and "确认" in reply
     assert _pending_count() == 0, "确认前不该入队"
 
@@ -104,7 +104,7 @@ def test_unrelated_reply_drops_pending_and_falls_through():
     否则"确认"状态会黏住，用户下一句无论说什么都被当成对上一条的回答。
     """
     _run("把/tmp/allowed/a.txt移动到/tmp/allowed/old/")
-    name, reply = _run("算了我们聊点别的吧")
+    _name, _reply = _run("算了我们聊点别的吧")
     assert confirm.peek("owner") is None, "挂起指令应被丢弃"
     assert _pending_count() == 0
 
@@ -113,19 +113,19 @@ def test_read_operations_not_gated():
     """读类操作不打扰用户（list_dir/read_file 无破坏性）。"""
     for msg in ["看看/tmp/allowed目录有什么", "读一下 /tmp/allowed/a.txt"]:
         confirm.reset()
-        name, reply = _run(msg)
+        _name, reply = _run(msg)
         assert "已收到指令" in reply, msg
 
 
 def test_explicit_path_open_not_gated():
     """给了明确路径的 open 是高置信度，直接执行。"""
-    name, reply = _run("打开 /tmp/allowed")
+    _name, reply = _run("打开 /tmp/allowed")
     assert "已收到指令" in reply
 
 
 def test_ambiguous_open_is_gated():
     """形态像别名但无法核实的长中文短语 → 先问。"""
-    name, reply = _run("打开新世界的大门")
+    _name, reply = _run("打开新世界的大门")
     assert "需要我" in reply
     assert _pending_count() == 0
 

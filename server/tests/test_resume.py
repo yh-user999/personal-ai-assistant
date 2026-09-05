@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.services.resume import parse_resume_command  # noqa: E402
+from app.services.resume import parse_resume_command
 
 
 def test_parse_with_target_job():

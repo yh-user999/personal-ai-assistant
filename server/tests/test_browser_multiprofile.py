@@ -196,7 +196,7 @@ def test_bump_records_hour_bucket(launcher_store):
     launcher.bump("微信")
     item = launcher.load()["items"]["微信"]
     assert item["use_count"] == 21
-    hour = str(datetime.datetime.now().hour)
+    hour = str(datetime.datetime.now(datetime.timezone.utc).astimezone().hour)
     assert item["hours"].get(hour, 0) >= 1
 
 

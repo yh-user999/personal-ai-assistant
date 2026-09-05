@@ -10,10 +10,13 @@ v0.2 采纳外部评审优化：
 """
 import json
 import logging
-from contextvars import ContextVar
+import sqlite3
 import time
 from collections import Counter
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+
+from openai import OpenAIError
 
 from app.core import embedding
 from app.models.database import connect
@@ -128,7 +131,7 @@ def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]
             (match, *uargs, top_k),
         ).fetchall()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning("FTS 检索失败（退化为空候选）: %s", e)
         return []
     finally:
@@ -191,7 +194,7 @@ async def write_message(
             conn.commit()
         finally:
             conn.close()
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, TypeError, ValueError) as e:
         # 降级不阻塞写入，但必须留痕——否则 embedding key 失效会静默退化数周无人知晓
         logger.warning("记忆向量化失败，该条退化为关键词检索: %s", e)
     return memory_id
@@ -353,7 +356,7 @@ async def search(
             vec_rows = vec_rows[:20]
         finally:
             conn.close()
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, ValueError, TypeError) as e:
         # 向量检索失败退化为关键词，但留痕排障（key 失效/服务宕机不该无声无息）
         logger.warning("向量检索失败，退化为关键词检索: %s", e)
 
@@ -396,7 +399,7 @@ async def search(
         imp = float(r.get("importance", 1.0))
         try:
             age_days = (now - datetime.fromisoformat(r["ts"]).timestamp()) / 86400
-        except Exception:
+        except (TypeError, ValueError, KeyError):
             age_days = 0
         decay = 0.5 ** (age_days / 30.0)  # 30 天半衰期
         boost = _compute_topic_boost(r.get("topics", ""), freq)

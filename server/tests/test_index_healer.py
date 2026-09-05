@@ -3,8 +3,6 @@
 立项案例：「炼神里面有哪些境界」——索引未覆盖"炼神"，书里写作"练神"。
 验证：检测触发条件、静态词不误触、聚合提炼注入、动态登记后第二次判域。
 """
-import asyncio
-from datetime import datetime, timezone
 
 import pytest
 
@@ -136,7 +134,7 @@ def test_register_class_then_domain_routing(db_env):
     assert knowledge_domain.register_class("炼神", domain="novel", source_query="测试") is True
     assert knowledge_domain.register_class("炼神", domain="novel") is False  # 幂等
     # 登记后 detect_domains 能判出 novel 域（第二次同类问题秒答的机制）
-    domains, docs = knowledge_domain.detect_domains("炼神有哪些境界")
+    domains, _docs = knowledge_domain.detect_domains("炼神有哪些境界")
     assert domains == ["novel"]
     # 未登记/无词仍判不出
     assert knowledge_domain.detect_domains("一个全新体系词有哪些") == ([], [])
@@ -144,7 +142,7 @@ def test_register_class_then_domain_routing(db_env):
 
 def test_register_class_empty_domain_not_routed(db_env):
     knowledge_domain.register_class("某词", domain="", source_query="测试")
-    domains, docs = knowledge_domain.detect_domains("某词有哪些")
+    domains, _docs = knowledge_domain.detect_domains("某词有哪些")
     assert domains == []  # domain='' 不参与路由，只做登记
 
 

@@ -6,8 +6,6 @@
   主人专属命令族跳过；滑动窗口限流；消息长度上限 2000
 - 主人路径行为不变（含前缀缓存契约）
 """
-import asyncio
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -132,9 +130,8 @@ def test_guest_rate_limit(env, captured):
     """访客限流：窗口内第 11 条被拒，不烧 LLM。"""
     from fastapi.testclient import TestClient
 
-    from app.main import app
-
     import app.api.chat as _chat_api
+    from app.main import app
     _chat_api._guest_events.clear()  # 测试间清状态
 
     with TestClient(app) as client:
@@ -252,9 +249,8 @@ def test_rate_limit_owner_exempt(env, captured):
     """主人不限流。"""
     from fastapi.testclient import TestClient
 
-    from app.main import app
-
     import app.api.chat as _chat_api
+    from app.main import app
     _chat_api._guest_events.clear()
 
     with TestClient(app) as client:

@@ -5,11 +5,11 @@ import pytest
 
 from app.config import settings
 from app.core.memory import owner_user_id
-from app.models.database import connect
 from app.mcp.context import McpContext
 from app.mcp.schemas import cap_payload, summarize_arguments
 from app.mcp.server import create_server
 from app.mcp.tools import write as write_tools
+from app.models.database import connect
 
 
 def owner_ctx() -> McpContext:

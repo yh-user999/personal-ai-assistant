@@ -12,9 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.config import settings  # noqa: E402
-from app.models.database import connect, init_db  # noqa: E402
-from app.services import mood  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db
+from app.services import mood
 
 TZ = ZoneInfo("Asia/Shanghai")
 

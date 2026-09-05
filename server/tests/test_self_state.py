@@ -9,15 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models.database import connect  # noqa: E402
-from app.services.self_state import get_self_state_injection  # noqa: E402
+from app.models.database import connect
+from app.services.self_state import get_self_state_injection
 
 TZ = ZoneInfo("Asia/Shanghai")
 

@@ -34,6 +34,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+from openai import OpenAIError
+
 from app.models.database import connect
 
 logger = logging.getLogger("assistant.novel_entities")
@@ -491,7 +493,7 @@ async def extract_entities(book: str, kind: str, *, dry_run: bool = False,
                 result = await llm.chat_json(
                     "你是小说设定提取助手，只输出 JSON。", prompt
                 )
-            except Exception as e:
+            except OpenAIError as e:
                 logger.warning("实体抽取失败 chunk#%s: %s", b["chunk_index"], e)
                 return b["chunk_index"], []
         return b["chunk_index"], [str(n).strip() for n in (result.get("names") or [])]

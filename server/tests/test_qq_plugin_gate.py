@@ -1,6 +1,4 @@
 """QQ 插件白名单纯函数测试：不依赖 astrbot 包（main.py 只 import 纯函数）。"""
-import importlib.util
-import sys
 from pathlib import Path
 
 

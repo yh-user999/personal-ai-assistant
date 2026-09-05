@@ -15,8 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.services.plain_text import has_markdown, strip_markdown  # noqa: E402
-
+from app.services.plain_text import has_markdown, strip_markdown
 
 # ── 各类标记的转换 ────────────────────────────────────────
 

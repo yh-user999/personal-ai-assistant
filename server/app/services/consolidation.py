@@ -3,7 +3,6 @@ summary / topics / facts(三元组) / relations，写回 memories 并更新 fact
 
 思路照抄 Wave Memory services/consolidation.py 的 prompt 设计，去掉群聊维度。
 """
-import json
 from datetime import datetime, timedelta, timezone
 
 from app.core import llm

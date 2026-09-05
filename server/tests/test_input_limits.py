@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.documents import GenerateRequest
-from app.api.events import BehaviorEvent, EventBatch, HeartbeatBody
+from app.api.events import BehaviorEvent, EventBatch
 from app.api.knowledge import IngestRequest
 from app.core import knowledge, memory
 

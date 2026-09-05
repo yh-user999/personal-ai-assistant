@@ -11,9 +11,9 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_DIMENSION", "1024")
 
-from app.config import settings  # noqa: E402
-from app.core.chunker import chunk_text  # noqa: E402
-from app.models.database import init_db, reset_connections  # noqa: E402
+from app.config import settings
+from app.core.chunker import chunk_text
+from app.models.database import init_db, reset_connections
 
 
 @pytest.fixture(autouse=True)

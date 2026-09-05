@@ -7,7 +7,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .context import McpContext, from_context
 
-
 # 第一阶段仅本地 owner/internal stdio。远程、多用户及采集/执行角色后续再开放。
 READ_ROLES = frozenset({"owner", "internal"})
 

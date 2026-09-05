@@ -283,14 +283,14 @@ def unpack_paths(action: str, target: str) -> list[str]:
         try:
             parts = json.loads(target)
             return [str(p) for p in parts]
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return []
     if action == "search_files":
         try:
             parts = json.loads(target)
             dir_spec = str(parts[0])
             return [dir_spec] if dir_spec else []  # 空目录 = 全白名单搜索（执行端逐根校验）
-        except Exception:
+        except (json.JSONDecodeError, TypeError, IndexError):
             return []
     return [target]
 
@@ -397,9 +397,7 @@ def check_open_target(target: str) -> bool:
     # 正常业务路径不会用到，出现即视为绕过尝试。
     if text.find(":", 2) != -1:
         return False
-    if _exec_ext(text) in REMOTE_BLOCKED_EXTS:
-        return False
-    return True
+    return _exec_ext(text) not in REMOTE_BLOCKED_EXTS
 
 
 def check_roots(target: str) -> bool:

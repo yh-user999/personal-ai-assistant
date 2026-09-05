@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from types import SimpleNamespace
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.chat.context import ChatContext, ChatRequest, ChatResponse, ChatRuntime, computer_online
-
+from app.chat.context import (
+    ChatContext,
+    ChatRequest,
+    ChatResponse,
+    ChatRuntime,
+    computer_online,
+)
 
 TIME_QUESTION = re.compile(r"几点了|现在几点|今天星期几|今天几号|今天几月几号|今天日期|现在时间|什么时间了")
 TZ = ZoneInfo("Asia/Shanghai")

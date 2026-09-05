@@ -8,7 +8,6 @@ import json
 import os
 
 import pytest
-
 from common import launcher
 from desktop import local_exec
 

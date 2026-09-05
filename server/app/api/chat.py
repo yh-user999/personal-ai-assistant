@@ -11,7 +11,26 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, Request
 
-from app.auth import get_auth, require_roles
+from app.chat.context import (
+    ChatRequest,
+    ChatResponse,
+    ChatRuntime,
+    _guest_events,
+    _request_cache,
+    _request_inflight,
+    authenticated_uid,
+    build_context,
+    computer_online,
+    deduplicate_request,
+    guest_rate_limited,
+)
+from app.chat.pipeline import run_chat
+from app.chat.prompting import _GENERATION_INTENT, SYSTEM_PROMPT, _untrusted_reference
+from app.chat.routing import (
+    _COMMAND_HANDLERS,
+    GUEST_BLOCKED_HANDLERS,
+    parse_time_question,
+)
 from app.config import settings
 from app.core import knowledge, llm, memory
 from app.models.database import connect
@@ -19,14 +38,14 @@ from app.novel import NovelApplicationService
 from app.services import (
     behavior_context,
     chapter_analysis,
-    cooccurrence,
-    confirm,
     concern_tracker,
+    confirm,
+    cooccurrence,
     documents,
     executor,
     fact_extract,
-    fitness,
     few_shot,
+    fitness,
     goals,
     growth,
     identity_guard,
@@ -54,59 +73,19 @@ from app.services import (
     worklog,
 )
 
-from app.chat.context import (
-    GUEST_DAY_LIMIT,
-    GUEST_MAX_MSGS_TRACKED,
-    GUEST_WINDOW_LIMIT,
-    GUEST_WINDOW_SECONDS,
-    OWNER_MAX_MSG_CHARS,
-    GUEST_MAX_MSG_CHARS,
-    ChatContext,
-    ChatRequest,
-    ChatResponse,
-    ChatRuntime,
-    _REQUEST_CACHE_MAX,
-    _guest_events,
-    _request_cache,
-    _request_inflight,
-    _request_lock,
-    authenticated_uid,
-    build_context,
-    computer_online,
-    deduplicate_request,
-    guest_rate_limited,
-)
-from app.chat.pipeline import run_chat
-from app.chat.prompting import (
-    SYSTEM_PROMPT,
-    _GENERATION_INTENT,
-    _guest_note,
-    _intent_rules_text,
-    _untrusted_reference,
-)
-from app.chat.routing import (
-    GUEST_BLOCKED_HANDLERS,
-    _COMMAND_HANDLERS,
-    _enqueue_and_reply,
-    _handle_confirm,
-    _handle_documents,
-    _handle_entity_candidates,
-    _handle_executor,
-    _handle_fitness,
-    _handle_goals,
-    _handle_identity,
-    _handle_novel,
-    _handle_reminders,
-    _handle_resume,
-    _handle_search,
-    _handle_slang,
-    _handle_time,
-    _handle_worklog,
-    parse_time_question,
-)
-
-
 router = APIRouter()
+
+__all__ = [
+    "GUEST_BLOCKED_HANDLERS",
+    "SYSTEM_PROMPT",
+    "_COMMAND_HANDLERS",
+    "_GENERATION_INTENT",
+    "_guest_events",
+    "_request_cache",
+    "_request_inflight",
+    "_untrusted_reference",
+    "parse_time_question",
+]
 
 
 # 后台任务引用集：保持原模块级符号，兼容测试与外部调用方。

@@ -7,8 +7,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))  # collector 与 common 共享包
 
-from app.config import settings  # noqa: E402
-from app.models.database import connect, init_db, reset_connections  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db, reset_connections
 
 
 def test_collector_channel_defaults_off():

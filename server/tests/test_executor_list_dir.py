@@ -11,7 +11,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, REPO_ROOT)
 
 from common.file_ops import MAX_LIST, is_hidden_system, natural_key
-from desktop import local_exec  # noqa: E402
+from desktop import local_exec
 
 
 def _make_tree(path, dirs=(), files=()):
@@ -63,7 +63,7 @@ def test_list_dir_truncation():
         ok, text = local_exec._execute("list_dir", td)
         assert ok
         assert f"共 {MAX_LIST + 2} 项" in text
-        assert f"… 其余 2 项" in text
+        assert "… 其余 2 项" in text
         # 文件段只列出 MAX_LIST 个（分隔符数量 = MAX_LIST - 1）
         assert text.count(" · ") == MAX_LIST - 1
 

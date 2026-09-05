@@ -1,10 +1,10 @@
 """MCP 记忆工具测试。"""
-import json
 
 import pytest
 
 from app.config import settings
 from app.mcp.context import McpContext
+from app.mcp.permissions import McpPermissionError
 from app.mcp.schemas import McpInputError
 from app.mcp.tools import memory as memory_tools
 
@@ -59,5 +59,5 @@ async def test_get_recent_history_bounds_limit(db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_user_facts_requires_owner(db):
-    with pytest.raises(Exception):
+    with pytest.raises(McpPermissionError):
         await memory_tools.get_user_facts(ctx=McpContext(uid="123", role="owner", is_owner=False))

@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models.database import connect  # noqa: E402
-from app.services import novel_entities as ne  # noqa: E402
+from app.models.database import connect
+from app.services import novel_entities as ne
 
 BOOK = "测试小说"
 
@@ -143,7 +143,7 @@ def test_extract_snippet_targets_sentence(db):
     content = ("众人发出了惊叹。马儿嘶鸣着朝后退去。" * 10
                + "这个命丛，被称之为夜海，是失传命丛之一。"
                + "他转身离开了。" * 10)
-    snippet, score = ne.extract_snippet(content, "夜海")
+    snippet, _score = ne.extract_snippet(content, "夜海")
     assert "夜海" in snippet
     assert len(snippet) <= ne.MAX_SNIPPET_CHARS
     # 关键是密度：原块 400+ 字里只有一句含专名，裁剪后应大幅缩短。

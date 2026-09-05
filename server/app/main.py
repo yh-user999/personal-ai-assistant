@@ -7,15 +7,25 @@ M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import ClassVar
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from app.api import (
+    chat,
+    documents,
+    events,
+    executor,
+    knowledge,
+    novel,
+    reminders,
+    reports,
+    stats,
+)
 from app.auth import authenticate_token
-
-from app.api import chat, documents, events, executor, knowledge, novel, reminders, reports, stats
 from app.config import settings
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
@@ -49,8 +59,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     每次请求实时读 settings.api_token（测试可 monkeypatch）。
     """
 
-    PUBLIC_PATHS = {"/", "/api/health"}
-    ROLE_RULES = (
+    PUBLIC_PATHS: ClassVar[set[str]] = {"/", "/api/health"}
+    ROLE_RULES: ClassVar[tuple] = (
         ("/api/events", {"collector", "internal", "owner"}),
         ("/api/heartbeat", {"collector", "internal", "owner"}),
         ("/api/knowledge", {"owner", "internal"}),

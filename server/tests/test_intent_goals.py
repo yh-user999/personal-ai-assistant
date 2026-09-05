@@ -15,9 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models.database import connect  # noqa: E402
-from app.services import intent_goals as ig  # noqa: E402
-
+from app.services import intent_goals as ig
 
 # ── 意向识别：真目标（全部取自用户实际说过的话）────────────
 

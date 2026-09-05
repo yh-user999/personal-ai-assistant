@@ -20,7 +20,7 @@ def setup_db(tmp_path, monkeypatch):
 
 
 def test_project_chapter_job_survives_reopen(tmp_path, monkeypatch):
-    db_file = setup_db(tmp_path, monkeypatch)
+    setup_db(tmp_path, monkeypatch)
     repo = SQLiteNovelRepository(owner_id="u1")
     project = repo.create_project("测试书", project_id="p1", slug="test-book")
     repo.upsert_chapter(project.project_id, "1", title="第一章", draft_content="草稿")

@@ -2,9 +2,7 @@
 
 不依赖 astrbot 包——从 main.py 源码截取纯函数段执行（与 test_qq_plugin_gate 同法）。
 """
-import importlib.util
 import os
-import sys
 from pathlib import Path
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.worklog import _parse_time_range  # noqa: E402
+from app.services.worklog import _parse_time_range
 
 
 def test_cn_afternoon_range():

@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.models.database import connect  # noqa: E402
-from app.services import subjective_time as st  # noqa: E402
+from app.models.database import connect
+from app.services import subjective_time as st
 
 TODAY = date(2026, 9, 1)
 

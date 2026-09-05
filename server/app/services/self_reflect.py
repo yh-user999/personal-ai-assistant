@@ -10,10 +10,14 @@ LIMIT 5 的注入窗口被同一句话的副本占满，"你就叫小月吧"这�
 优先级：identity 类（起名/身份设定）永远排在最前且不占普通配额——
 "你叫小月"是人格锚点，不该和"重排序放检索之后"这种技术细节抢窗口。
 """
+import logging
 import re
+import sqlite3
 from datetime import datetime, timezone
 
 from app.models.database import connect
+
+logger = logging.getLogger("assistant.self_reflect")
 
 # 纠正信号（中文口语常见表达；命中任一词即判定）
 # 含身份设定类："给你起名 X / 你叫 X / 你的名字是 X"
@@ -151,8 +155,8 @@ def _record_hits(contents: list[str]) -> None:
             [(now, c) for c in contents],
         )
         conn.commit()
-    except Exception:  # noqa: BLE001 — 统计失败不该让聊天挂掉
-        pass
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.debug("更新教训命中统计失败: %s", exc)
     finally:
         conn.close()
 

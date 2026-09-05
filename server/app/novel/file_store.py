@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 
 
 class NovelFileStore:
-    ALLOWED_EXTENSIONS = {".md", ".txt", ".json"}
+    ALLOWED_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".md", ".txt", ".json"})
 
     def __init__(self, root: str | os.PathLike[str], *, max_bytes: int = 2_000_000) -> None:
         self.root = Path(root).expanduser().resolve()

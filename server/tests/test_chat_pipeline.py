@@ -5,11 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.chat.context import ChatContext, ChatRequest, ChatResponse, ChatRuntime
+from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
 from app.config import settings
 from app.core import knowledge as knowledge_module
-from app.core import llm as llm_module
 from app.core import memory as memory_module
 from app.models.database import connect, init_db, reset_connections
 
@@ -47,7 +46,7 @@ class _Services:
         self.reminders = SimpleNamespace(
             parse_reminder_cmd=lambda msg: None,
             add_reminder=lambda *a, **k: None,
-            list_pending=lambda: [],
+            list_pending=list,
             cancel_by_keyword=lambda kw: 0,
         )
         self.documents = SimpleNamespace(parse_doc_command=lambda msg: None)
@@ -308,9 +307,8 @@ def test_user_and_assistant_messages_persisted(db_env, monkeypatch):
 
 def test_message_length_limit_guest(db_env, monkeypatch):
     """访客消息超长：直接拒绝且不调 LLM（设置显式支持该上限字段）。"""
-    from pydantic import ValidationError
-
     import pydantic
+    from pydantic import ValidationError
 
     llm = _LLM()
     runtime = make_runtime(llm=llm)

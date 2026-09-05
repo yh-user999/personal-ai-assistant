@@ -4,8 +4,6 @@
 STAR 法则量化成果。
 """
 import re
-from datetime import datetime, timezone
-from pathlib import Path
 
 from app.core import llm
 from app.models.database import connect
@@ -78,7 +76,7 @@ async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEF
         return {"error": "生成失败：LLM 未返回内容"}
 
     # 标题：目标岗位版简历
-    title = f"简历优化版" + (f"-{target_job}" if target_job else "")
+    title = "简历优化版" + (f"-{target_job}" if target_job else "")
     result = await documents.generate_and_save(title, content)
     if "error" in result:
         return result
@@ -87,6 +85,6 @@ async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEF
     try:
         docx_path = documents.export_docx(result["id"])
         result["docx"] = docx_path
-    except Exception as e:
+    except (ImportError, OSError, ValueError, FileNotFoundError) as e:
         result["docx_error"] = str(e)
     return result

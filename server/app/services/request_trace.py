@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
 from app.models.database import connect
@@ -49,7 +50,7 @@ def record(
         finally:
             conn.close()
         return True
-    except Exception as e:
+    except (sqlite3.Error, TypeError, ValueError, RuntimeError) as e:
         logger.warning("[trace] 决策轨迹写入失败（不影响回复）: %s", e)
         return False
 

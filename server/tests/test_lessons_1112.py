@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.config import settings  # noqa: E402
-from app.models.database import connect, init_db, reset_connections  # noqa: E402
-from app.services import executor, goals, unresolved  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db, reset_connections
+from app.services import executor, goals, unresolved
 
 
 @pytest.fixture(autouse=True)
@@ -150,6 +150,7 @@ def test_executor_fresh_pending_ok():
 def test_lessons_rebuild_preserves_hit_statistics():
     """lessons 去重重建时保留统计列，避免注入命中数据归零。"""
     import sqlite3
+
     from app.models import database
 
     conn = sqlite3.connect(":memory:")

@@ -45,7 +45,7 @@ def test_cross_timezone_ordering_differs_from_string_compare():
 
 
 @pytest.mark.skipif(
-    subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
+    subprocess.run(["git", "--version"], capture_output=True, check=False).returncode != 0,
     reason="需要 git",
 )
 def test_cursor_takes_truly_latest_commit(tmp_path):

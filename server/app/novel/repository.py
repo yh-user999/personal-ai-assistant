@@ -9,7 +9,14 @@ from typing import Protocol
 
 from app.config import settings
 from app.models.database import db_connection
-from app.novel.domain import Chapter, GenerationJob, GenerationJobStatus, NovelDraft, NovelProject, can_transition_job
+from app.novel.domain import (
+    Chapter,
+    GenerationJob,
+    GenerationJobStatus,
+    NovelDraft,
+    NovelProject,
+    can_transition_job,
+)
 
 
 def _now() -> str:

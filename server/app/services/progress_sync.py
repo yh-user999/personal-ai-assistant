@@ -8,6 +8,7 @@ facts 停在旧状态（第11课显示"待开始"）。本服务由 scheduler �
 """
 import asyncio
 import logging
+import sqlite3
 from pathlib import Path
 
 from app.core import knowledge
@@ -24,11 +25,11 @@ DOCS_DIR = Path(__file__).resolve().parents[3] / "docs"  # 仓库根 /docs
 PROGRESS_FACTS = [
     ("六课带教计划", "状态", "第0-5课全部完成"),
     ("扩展课程进度", "状态",
-     "第6课测试工程与CI待开始；第7课行为数据仪表盘待开始；"
+     ("第6课测试工程与CI待开始；第7课行为数据仪表盘待开始；"
      "第8课QQ私聊接入已完成（含v0.4多人支持）；第9课RAG知识库已完成；"
      "第10课检索评测已完成；第11课执行器通道已完成；"
      "第12课Goal系统与unresolved已完成；第13课执行器扩展已完成；"
-     "第14课动画形象与主题系统已完成"),
+     "第14课动画形象与主题系统已完成")),
     ("项目", "知识库", "已入库两本小说并建设定卡（RAG+别名融合）"),
     ("项目", "当前版本", "v4.8 主题系统（4套配色）"),
 ]
@@ -112,8 +113,8 @@ def purge_excluded_docs() -> int:
                                  ("knowledge_fts", "chunk_id")):
                     try:
                         conn.execute(f"DELETE FROM {tbl} WHERE {col}=?", (r["id"],))
-                    except Exception:  # noqa: BLE001 — 向量表可能不可用
-                        pass
+                    except sqlite3.Error as exc:
+                        logger.debug("清理检索索引表 %s 失败: %s", tbl, exc)
             cur = conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
             removed += cur.rowcount
         conn.commit()

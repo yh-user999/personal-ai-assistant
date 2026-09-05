@@ -14,14 +14,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from openai import OpenAIError
+
 from app.core import knowledge, llm, memory
 from app.models.database import connect
+
+logger = logging.getLogger("assistant.chapter_analysis")
 from app.services import sepia
-from app.services.novel_writing import _build_authority, looks_like_file_path
+from app.services.novel_writing import _build_authority
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -289,8 +294,8 @@ async def capture_chapter_reply(chapter_no: str, reply: str, user_id: str | None
             [str(t) for t in threads] if isinstance(threads, list) else [],
             source="auto",
         )
-    except Exception:
-        pass  # 被动抓取失败静默，绝不影响主回复
+    except (OpenAIError, TimeoutError, RuntimeError) as exc:
+        logger.debug("被动章节抓取失败: %s", exc)  # 绝不影响主回复
 
 
 # ── 章节分析主流程 ─────────────────────────────────────────
@@ -477,7 +482,7 @@ async def analyze_chapter(text: str, user_id: str | None = None) -> dict:
             temperature=0.2,
             max_tokens=2000,
         )
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError) as e:
         # LLM 挂了也要把零 LLM 预检结果带回去（这部分不依赖 LLM）。
         head_lines: list[str] = []
         if residue or word_lines:

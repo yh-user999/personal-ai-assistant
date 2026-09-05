@@ -9,15 +9,13 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DEPLOYMENT_ENV", "test")
 
-from app.core.scheduler import _wrap_job  # noqa: E402
+from app.core.scheduler import _wrap_job
 
 
 def _sync_job(a, b=1):
@@ -109,6 +107,7 @@ def test_scheduler_rejects_duplicate_active_manager(monkeypatch):
 
 def test_stale_generation_jobs_are_recovered_before_scheduler_run(db):
     from datetime import datetime, timedelta, timezone
+
     from app.models import database
     from app.novel.domain import GenerationJobStatus
     from app.novel.repository import SQLiteNovelRepository

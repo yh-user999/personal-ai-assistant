@@ -4,7 +4,6 @@
 被引用记忆 importance 提升。这是 prompt 换序（前缀缓存优化）的回归保险。
 """
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest

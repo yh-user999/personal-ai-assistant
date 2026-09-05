@@ -2,7 +2,7 @@
 import pytest
 
 from app.config import settings
-from app.models.database import connect, init_db, reset_connections
+from app.models.database import init_db, reset_connections
 from app.services import request_trace
 from app.services.cost_report import cost_report
 

@@ -1,9 +1,8 @@
 """聊天命令路由层测试：注册顺序契约、访客门禁、快捷命令零 LLM。"""
 import pytest
 
-from app.chat.context import ChatContext, ChatRequest, ChatResponse
 from app.chat import routing
-
+from app.chat.context import ChatContext, ChatRequest, ChatResponse
 
 # ── 注册顺序契约 ───────────────────────────────────────────
 
@@ -27,7 +26,6 @@ def test_dispatch_skips_guest_blocked_and_falls_through():
 
     async def fake_handler(msg, request, ctx, runtime=None):
         seen.append(ctx["uid"])
-        return None
 
     original = routing._COMMAND_HANDLERS
     routing._COMMAND_HANDLERS = [("executor", fake_handler), ("time", fake_handler)]
@@ -66,7 +64,6 @@ def test_dispatch_short_circuits_on_first_hit():
 
     async def never_handler(msg, request, ctx, runtime=None):
         calls.append("never")
-        return None
 
     original = routing._COMMAND_HANDLERS
     routing._COMMAND_HANDLERS = [("time", hit_handler), ("search", never_handler)]
@@ -88,7 +85,6 @@ def test_dispatch_short_circuits_on_first_hit():
 
 def test_legacy_handler_signature_still_supported():
     """旧 (msg, request, ctx) 调用形态兼容：不传 runtime 也能工作。"""
-    from types import SimpleNamespace
 
     async def run():
         reply = await routing._handle_time(

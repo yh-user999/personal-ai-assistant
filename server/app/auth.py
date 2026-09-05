@@ -1,9 +1,11 @@
 """统一认证上下文与角色权限。"""
-from dataclasses import dataclass
 import secrets
+from dataclasses import dataclass
+
 from fastapi import HTTPException, Request
 
 from app.config import settings
+
 
 @dataclass(frozen=True)
 class AuthContext:

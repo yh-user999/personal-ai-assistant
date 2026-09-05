@@ -22,6 +22,7 @@ def detect_definition(text: str) -> str | None:
 def save_term(term: str, explanation: str, user_id: str | None = None) -> int:
     """存术语（已存在则更新解释并刷新时间，入库前统一脱敏）。"""
     from datetime import datetime, timezone
+
     from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
 

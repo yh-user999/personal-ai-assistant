@@ -18,6 +18,7 @@ def detect_positive_feedback(text: str) -> bool:
 def save_example(content: str, user_id: str | None = None) -> int:
     """存一条风格范例（用户满意的 AI 回复，入库前统一脱敏）。"""
     from datetime import datetime, timezone
+
     from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
 

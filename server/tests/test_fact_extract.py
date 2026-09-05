@@ -8,11 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-import pytest  # noqa: E402
+import pytest
 
-from app.config import settings  # noqa: E402
-from app.services.fact_extract import parse_facts_json, upsert_facts  # noqa: E402
-from app.models.database import connect, init_db, reset_connections  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db, reset_connections
+from app.services.fact_extract import parse_facts_json, upsert_facts
 
 
 @pytest.fixture(autouse=True)

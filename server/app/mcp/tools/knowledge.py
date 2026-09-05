@@ -12,7 +12,8 @@ from app.services import knowledge_domain, novel_entities
 from ..audit import audited_tool
 from ..permissions import require_read
 from ..schemas import cap_payload
-from .common import get_context, known_anchors, limit as bounded_count, text
+from .common import get_context, known_anchors, text
+from .common import limit as bounded_count
 
 
 def _public_hit(item: dict[str, Any]) -> dict[str, Any]:

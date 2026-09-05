@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import settings  # noqa: E402
-from app.models.database import connect, init_db  # noqa: E402
-from app.services import chapter_analysis as ca  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db
+from app.services import chapter_analysis as ca
 
 
 @pytest.fixture
@@ -142,7 +142,7 @@ def test_build_continuity_block_with_data(db):
 # ── ④ 分析主流程 ───────────────────────────────────────────
 
 def _patch_llm(monkeypatch, fn):
-    import app.core.llm as llm
+    from app.core import llm
 
     monkeypatch.setattr(llm, "chat", fn)
 
@@ -317,8 +317,10 @@ def test_maybe_capture_chapter_gates(monkeypatch):
     )
 
     class _S:
-        calls: list = []
         extract_chapter_no = staticmethod(ca.extract_chapter_no)
+
+        def __init__(self):
+            self.calls = []
 
         async def capture_chapter_reply(self, ch, reply, uid):
             self.calls.append((ch, uid))
@@ -349,8 +351,8 @@ def test_maybe_capture_chapter_gates(monkeypatch):
 
 def test_dispatch_novel_analysis_short_circuit(db, monkeypatch):
     """「分析章节：…」经 _novel 短路返回，不落主流水线。"""
-    from app.chat.context import ChatContext, ChatRequest
     from app.chat import routing
+    from app.chat.context import ChatContext, ChatRequest
 
     async def fake_chat(messages, **kw):
         return '{"summary":"剧情","problems":[],"pacing":"","threads":[]}'
@@ -387,8 +389,8 @@ def test_dispatch_novel_analysis_short_circuit(db, monkeypatch):
 
 def test_dispatch_novel_archive_short_circuit(db):
     """「章节存档：…」零 LLM 入库并确认。"""
-    from app.chat.context import ChatContext, ChatRequest
     from app.chat import routing
+    from app.chat.context import ChatContext, ChatRequest
 
     ctx = ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
@@ -419,8 +421,8 @@ def test_dispatch_novel_archive_short_circuit(db):
 
 def test_dispatch_novel_analysis_rejects_file_path(db):
     """「分析章节：F:/稿子.txt」提示粘贴正文而不是烧 LLM。"""
-    from app.chat.context import ChatContext, ChatRequest
     from app.chat import routing
+    from app.chat.context import ChatContext, ChatRequest
 
     ctx = ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),

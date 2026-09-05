@@ -11,7 +11,7 @@ from app.core import memory
 from ..audit import audited_tool
 from ..permissions import require_owner, require_read
 from ..schemas import cap_payload
-from .common import build_query, get_context, known_anchors, limit, text
+from .common import build_query, known_anchors, limit, text
 
 
 def _public_memory(item: dict[str, Any]) -> dict[str, Any]:

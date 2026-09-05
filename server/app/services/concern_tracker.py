@@ -60,8 +60,8 @@ def get_concerns_injection(limit: int = 4, user_id: str | None = None) -> str:
         try:
             last = datetime.fromisoformat(r["last_mentioned_at"])
             days = f"，最近提及 {(datetime.now(timezone.utc) - last).days} 天前"
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            days = ""
         parts.append(f"- {r['topic']}（提到 {r['mention_count']} 次{days}）")
     return "\n".join(parts)
 

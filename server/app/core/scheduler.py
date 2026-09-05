@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import logging
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
@@ -43,7 +44,7 @@ async def _push_alert(text: str) -> None:
 
         if not await send_private(text):
             logger.error("任务失败告警推送未送达: %s", text)
-    except Exception as e:
+    except (httpx.HTTPError, RuntimeError, OSError, ValueError, TypeError) as e:
         logger.error("任务失败告警推送也失败: %s（原始告警: %s）", e, text)
 
 
@@ -108,15 +109,15 @@ class SchedulerManager:
         SchedulerManager._active_manager = self
         self._owns_scheduler = True
         self._started = True
-        from app.services.consolidation import consolidate_recent
-        from app.services.weekly_reflect import run_weekly_reflect
-        from app.services.daily_summary import run_daily_summary
-        from app.services.profile import refresh_profile
+        from app.novel.runner import recover_and_run_pending
         from app.services.analyzer import evict_stale
         from app.services.backup import run_daily_backup
+        from app.services.consolidation import consolidate_recent
+        from app.services.daily_summary import run_daily_summary
+        from app.services.profile import refresh_profile
         from app.services.progress_sync import sync_progress_to_bot
         from app.services.qq_push import push_reminders
-        from app.novel.runner import recover_and_run_pending
+        from app.services.weekly_reflect import run_weekly_reflect
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self._add(

@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.core import memory
 from app.models.database import connect, init_db, reset_connections
 
 
@@ -100,7 +99,7 @@ def test_daily_summary_scope_sql_owner(db_env):
     from app.services.daily_summary import run_daily_summary
 
     conn = connect()
-    now_iso = _iso(0)
+    _iso(0)
     conn.execute(
         "INSERT INTO memories (user_id, sender, content, ts, summary) VALUES ('10002','user','访客有摘要','2026-08-20T00:00:00+00:00','访客摘要不应出现')"
     )

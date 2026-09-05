@@ -2,13 +2,14 @@
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
-from desktop import local_exec  # noqa: E402
+from desktop import local_exec
 
 
 @pytest.fixture
@@ -18,11 +19,11 @@ def sandbox(monkeypatch):
         # 目录结构：proj/todo.md、proj/deep/计划-todo.txt、proj/other.md（内容含关键词）
         proj = os.path.join(td, "proj")
         os.makedirs(os.path.join(proj, "deep"))
-        open(os.path.join(proj, "todo.md"), "w").write("# 待办")
-        open(os.path.join(proj, "deep", "计划-todo.txt"), "w").write("计划")
-        open(os.path.join(proj, "other.md"), "w").write("这里提到了 周报模板 三个字")
+        Path(proj, "todo.md").write_text("# 待办")
+        Path(proj, "deep", "计划-todo.txt").write_text("计划")
+        Path(proj, "other.md").write_text("这里提到了 周报模板 三个字")
         # >300KB 的大文件：内容搜索应跳过（护栏）
-        open(os.path.join(proj, "big.md"), "w").write("周报模板" + "x" * (300 * 1024))
+        Path(proj, "big.md").write_text("周报模板" + "x" * (300 * 1024))
         yield td
 
 
@@ -159,6 +160,7 @@ def test_collector_search_blocked(sandbox):
 def test_server_parse_search_files():
     """服务端聊天解析：目录句式 + 全根句式 + 误吞防护（与桌面同规则）。"""
     import json as _json
+
     from app.services import executor as srv_exec
 
     assert srv_exec.parse_executor_command("帮我找包含todo的文件") == (

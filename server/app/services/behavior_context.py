@@ -3,6 +3,7 @@
 数据源：behavior_events（采集器）。全部为轻量 SQL 查询，无新 API 调用。
 防护：陈旧数据不注入 / "今天"按北京时间 / 空值兜底 / 敏感信息再截断。
 """
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -93,11 +94,13 @@ def get_recent_activity(hours: int = 1) -> str | None:
 def get_behavior_injection() -> str:
     """组装行为上下文；全空返回空串（chat 端显示"暂无行为数据"）。"""
     parts = []
+    logger = logging.getLogger("assistant.behavior_context")
     for fn in (get_current_window, get_today_commits, get_recent_activity):
         try:
             text = fn()
             if text:
                 parts.append(text)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("行为上下文采集失败: %s", exc)
             continue  # 行为注入失败不阻塞聊天（非关键路径）
     return "\n".join(parts)

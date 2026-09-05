@@ -151,7 +151,6 @@ def test_generation_intent_detection():
 
 def test_continuation_injects_full_last_ai(db_env, monkeypatch):
     """生成档的"继续"：上一条完整回复注入用户消息作上文（历史只截 500 字）。"""
-    import app.api.chat as _chat_api
     import app.core.embedding as _embedding
 
     chapter = "第一章 灰烬里醒来。" + "李羽在疼痛中苏醒。" * 60  # >500 字

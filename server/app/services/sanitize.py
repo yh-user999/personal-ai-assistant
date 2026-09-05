@@ -21,16 +21,8 @@ _REPO_ROOT = str(Path(__file__).resolve().parents[3])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from common.redact import redact  # noqa: E402
-
 # 兼容原有引用（旧测试/脚本按名字导入这些正则）
-from common.redact import (  # noqa: E402,F401
-    RE_EMAIL,
-    RE_IDCARD,
-    RE_IP,
-    RE_PHONE,
-    is_private_ip as _is_private_ip,
-)
+from common.redact import redact
 
 
 def _custom_terms() -> list[str]:

@@ -577,7 +577,7 @@ def _migrate_lessons(conn: sqlite3.Connection) -> None:
 
     try:
         from app.services.self_reflect import classify_lesson
-    except Exception:
+    except ImportError:
         def classify_lesson(_content: str) -> str:  # 兜底：分类失败不阻塞去重
             return "style"
 
@@ -775,8 +775,8 @@ _vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过�
 # 线程本地连接缓存：一次聊天请求会开 20+ 连接（十几个注入器各开各的），
 # 每个连接都重跑 WAL pragma + 加载 sqlite-vec 扩展，是纯开销。
 # SQLite 连接不可跨线程，threading.local 正好每线程一条长驻连接。
-import threading  # noqa: E402
-from contextlib import contextmanager  # noqa: E402
+import threading
+from contextlib import contextmanager
 
 _local = threading.local()
 
@@ -802,8 +802,8 @@ def connect() -> sqlite3.Connection:
             # 连接损坏：重建
             try:
                 conn.close()
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                logger.debug("关闭失效 SQLite 连接时忽略异常: %s", exc)
             _local.conn = None
 
     db_file = settings.db_file
@@ -822,7 +822,7 @@ def connect() -> sqlite3.Connection:
         if _vec_state is not True:
             logger.info("sqlite-vec 已加载: %s", sqlite_vec.loadable_path())
         _vec_state = True
-    except Exception as e:
+    except (ImportError, OSError, sqlite3.Error) as e:
         # 扩展未加载不致命：向量检索功能暂不可用，其余功能正常
         if _vec_state is not False:
             logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", e)
@@ -843,7 +843,7 @@ def db_connection():
     try:
         yield conn
         conn.commit()
-    except Exception:
+    except sqlite3.Error:
         conn.rollback()
         raise
 
@@ -887,9 +887,9 @@ def init_db() -> None:
             (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
-    except Exception as e:
+    except (sqlite3.Error, ValueError, ImportError):
         conn.rollback()
-        logger.exception("增量迁移失败，已回滚，启动终止: %s", e)
+        logger.exception("增量迁移失败，已回滚，启动终止")
         raise
     finally:
         conn.close()
@@ -904,5 +904,5 @@ def init_db() -> None:
                 getattr(mod, fn_name)(conn)
             finally:
                 conn.close()
-        except Exception as e:
+        except (ImportError, AttributeError, sqlite3.Error, ValueError) as e:
             logger.warning("FTS 回填失败 %s（检索退化为空候选）: %s", backfill, e)

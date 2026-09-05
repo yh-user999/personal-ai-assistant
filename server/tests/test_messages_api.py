@@ -10,11 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from app.config import settings  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models.database import init_db, connect, reset_connections  # noqa: E402
+from app.config import settings
+from app.main import app
+from app.models.database import connect, init_db, reset_connections
 
 
 @pytest.fixture(autouse=True)

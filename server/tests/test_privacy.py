@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "collector"))
 
-from privacy_filter import sanitize, sanitize_event  # noqa: E402
+from privacy_filter import sanitize, sanitize_event
 
 
 def test_password_masked():

@@ -95,9 +95,8 @@ def expand(hits: list[dict], user_id: str | None = None,
     # 命中记忆涉及的话题
     seed_topics: set[str] = set()
     for topic, ids in index.items():
-        if hit_ids & set(ids):
-            if len(set(ids)) <= MAX_MEMORIES_PER_TOPIC:  # 跳过泛话题
-                seed_topics.add(topic)
+        if hit_ids & set(ids) and len(set(ids)) <= MAX_MEMORIES_PER_TOPIC:  # 跳过泛话题
+            seed_topics.add(topic)
 
     # 候选：与种子话题共现、且不在已命中里；按共现话题数排序
     votes: Counter = Counter()

@@ -16,16 +16,16 @@ prompt 规则是概率性的，temperature 0.7 下总会有漏网。实测线上
 import re
 
 # 代码块：保留内容，去掉围栏（```python\ncode\n``` → code）
-_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.S)
+_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 # 行首列表符号：`- ` `* ` `+ `（要求行首，避免误伤"3 - 2"这类算式）
-_BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.M)
+_BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE)
 # 行首编号：`1. ` `2) `
-_ORDERED = re.compile(r"^[ \t]*\d+[.)][ \t]+", re.M)
+_ORDERED = re.compile(r"^[ \t]*\d+[.)][ \t]+", re.MULTILINE)
 # 标题：`## 标题` → `标题`
-_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]*", re.M)
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]*", re.MULTILINE)
 # 加粗/斜体：**x** __x__ *x* _x_ → x
 #   加粗先处理，否则 ** 会被单星号规则拆坏
-_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.S)
+_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.DOTALL)
 # 斜体判据不能用 (?<![\w*])：**中文字符属于 `\w`**，"这是*斜体*文字" 会被
 # 前置断言排除掉（本项目第三次栽在这条上，见 LESSONS 6.30 全角冒号、
 # 6.35 中文弯引号）。改为只排除星号本身，并要求星号内侧无空白——
@@ -42,9 +42,9 @@ def _italic_sub(m: re.Match) -> str:
 # 行内代码：`x` → x（反引号在中文语境里几乎只用于代码标记）
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 # 引用块：`> 文字` → 文字
-_QUOTE = re.compile(r"^[ \t]*>[ \t]?", re.M)
+_QUOTE = re.compile(r"^[ \t]*>[ \t]?", re.MULTILINE)
 # 分隔线整行
-_HR = re.compile(r"^[ \t]*([-*_])\1{2,}[ \t]*$", re.M)
+_HR = re.compile(r"^[ \t]*([-*_])\1{2,}[ \t]*$", re.MULTILINE)
 # 连续 3+ 空行压成 2 行
 _BLANKS = re.compile(r"\n{3,}")
 

@@ -12,7 +12,10 @@ LLM 诚实地说"没有记载"，但书里其实有内容。
 """
 import logging
 import re
+import sqlite3
 from datetime import datetime, timezone
+
+from openai import OpenAIError
 
 from app.core import knowledge, llm
 from app.models.database import connect
@@ -122,7 +125,7 @@ def aggregate_chunks(variants: list[str], limit: int = AGGREGATE_TOP) -> list[di
     for v in variants:
         try:
             hits = knowledge._bm25_rank(v, top_k=10)
-        except Exception as e:
+        except (sqlite3.Error, ValueError, TypeError) as e:
             logger.warning("[healer] 变体检索失败 %s: %s", v, e)
             continue
         for h in hits:
@@ -174,15 +177,15 @@ async def synthesize(query: str, words: list[str], chunks: list[dict]) -> str:
             logger.warning("[healer] 提炼疑似回显原文，弃用")
             return ""
         return text
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError, ValueError, TypeError) as e:
         logger.warning("[healer] 聚合提炼失败: %s", e)
         return ""
 
 
 def _already_covered_words() -> frozenset[str]:
     """静态词表已覆盖的词（实体索引/书名）——这些词有专门路径，自愈不抢活。"""
-    from app.services.novel_entities import ENTITY_KINDS
     from app.services.knowledge_domain import _novel_names
+    from app.services.novel_entities import ENTITY_KINDS
 
     words = set(ENTITY_KINDS.keys())
     for group in ENTITY_KINDS.values():
@@ -379,7 +382,7 @@ async def auto_extract_task(words: list[str], book: str) -> dict | None:
         payload = await novel_entities.extract_entities(
             book, kind_word, dry_run=True, max_blocks=AUTO_MAX_BLOCKS
         )
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError, ValueError, TypeError) as e:
         _settle_extract_slot(kind_word, book, 0)
         return {"kind": kind_word, "skipped": f"extract_error: {e}"}
 

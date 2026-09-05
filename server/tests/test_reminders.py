@@ -8,9 +8,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models.database import connect, init_db  # noqa: E402
-from app.config import settings  # noqa: E402
-from app.services import reminders  # noqa: E402
+from app.config import settings
+from app.models.database import connect, init_db
+from app.services import reminders
 
 TZ = ZoneInfo("Asia/Shanghai")
 

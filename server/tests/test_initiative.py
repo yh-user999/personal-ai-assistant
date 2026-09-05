@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.config import settings  # noqa: E402
-from app.models.database import connect  # noqa: E402
-from app.services import initiative  # noqa: E402
+from app.config import settings
+from app.models.database import connect
+from app.services import initiative
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -106,7 +106,7 @@ def test_quiet_hours_block(channel, monkeypatch):
 def test_quiet_hours_boundaries(db, monkeypatch):
     monkeypatch.setattr(settings, "initiative_quiet_start", 23)
     monkeypatch.setattr(settings, "initiative_quiet_end", 8)
-    at = lambda h: datetime.now(TZ).replace(hour=h)  # noqa: E731
+    at = lambda h: datetime.now(TZ).replace(hour=h)
     assert initiative.in_quiet_hours(at(23)) is True
     assert initiative.in_quiet_hours(at(3)) is True
     assert initiative.in_quiet_hours(at(7)) is True

@@ -18,7 +18,6 @@ from common.file_ops import exec_ext, is_blocked_open
 
 from app.services import executor as srv
 
-
 # ── ① 扩展名黑名单的变形绕过 ──────────────────────────────
 # Windows 打开文件时会剥掉结尾的点与空格，NTFS 备用数据流（x.bat::$DATA）
 # 同样照常执行主文件——裸 os.path.splitext 对这些变形全部漏判。

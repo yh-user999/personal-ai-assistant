@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "desktop"))
 
-from robot_pose import arm_angle, leg_angles  # noqa: E402
+from robot_pose import arm_angle, leg_angles
 
 
 def test_idle_arms_symmetric_sway():

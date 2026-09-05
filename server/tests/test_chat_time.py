@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
-from app.api.chat import parse_time_question  # noqa: E402
+from app.api.chat import parse_time_question
 
 
 def test_time_questions_match():

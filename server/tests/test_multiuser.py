@@ -9,13 +9,11 @@
 """
 import asyncio
 import sqlite3
-from pathlib import Path
 
 import pytest
 
 from app.core import memory
 from app.models.database import init_db, reset_connections
-
 
 # ── 1. 老库迁移 ─────────────────────────────────────────────
 

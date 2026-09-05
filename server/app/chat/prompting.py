@@ -7,11 +7,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
 
 from app.chat.context import ChatContext, ChatRuntime
 from app.chat.retrieval import RetrievalBundle
-
 
 SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工作风格、问题偏好和行为特征。
 

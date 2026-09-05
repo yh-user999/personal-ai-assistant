@@ -6,13 +6,14 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
-from desktop import local_exec  # noqa: E402
+from desktop import local_exec
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def test_parse_run_script():
 
 def test_copy_file_into_dir(sandbox):
     src = os.path.join(sandbox, "a.txt")
-    open(src, "w").write("hello" * 1000)
+    Path(src).write_text("hello" * 1000)
     dst_dir = os.path.join(sandbox, "out")
     os.makedirs(dst_dir)
     ok, text = local_exec._execute("copy", src, dst_dir)
@@ -55,7 +56,7 @@ def test_copy_file_into_dir(sandbox):
 
 def test_backup_creates_timestamp_dir(sandbox):
     src = os.path.join(sandbox, "a.txt")
-    open(src, "w").write("x")
+    Path(src).write_text("x")
     dst = os.path.join(sandbox, "bk")
     os.makedirs(dst)
     ok, _ = local_exec._execute("backup", src, dst)
@@ -68,7 +69,7 @@ def test_backup_creates_timestamp_dir(sandbox):
 def test_copy_dir_merge(sandbox):
     src = os.path.join(sandbox, "d1")
     os.makedirs(src)
-    open(os.path.join(src, "f.txt"), "w").write("1")
+    Path(src, "f.txt").write_text("1")
     ok, _ = local_exec._execute("copy", src, os.path.join(sandbox, "d2"))
     assert ok
     assert os.path.isfile(os.path.join(sandbox, "d2", "f.txt"))
@@ -76,7 +77,7 @@ def test_copy_dir_merge(sandbox):
 
 def test_move_and_rename(sandbox):
     src = os.path.join(sandbox, "m.txt")
-    open(src, "w").write("m")
+    Path(src).write_text("m")
     dst_dir = os.path.join(sandbox, "mv")
     os.makedirs(dst_dir)
     ok, _ = local_exec._execute("move", src, dst_dir)
@@ -98,7 +99,7 @@ def test_copy_missing_src(sandbox):
 
 def test_run_script_ok(sandbox):
     script = os.path.join(sandbox, "hello.py")
-    open(script, "w", encoding="utf-8").write("print('hello 小月')")
+    Path(script).write_text("print('hello 小月')", encoding="utf-8")
     ok, text = local_exec._execute("run_script", script)
     assert ok
     assert "hello 小月" in text and "exit 0" in text
@@ -106,7 +107,7 @@ def test_run_script_ok(sandbox):
 
 def test_run_script_bad_ext(sandbox):
     script = os.path.join(sandbox, "x.ps1")
-    open(script, "w").write("echo hi")
+    Path(script).write_text("echo hi")
     ok, text = local_exec._execute("run_script", script)
     assert not ok
     assert "仅支持" in text
@@ -115,7 +116,7 @@ def test_run_script_bad_ext(sandbox):
 def test_run_script_timeout(sandbox, monkeypatch):
     monkeypatch.setattr(local_exec, "SCRIPT_TIMEOUT", 1)
     script = os.path.join(sandbox, "slow.py")
-    open(script, "w").write("import time\ntime.sleep(30)")
+    Path(script).write_text("import time\ntime.sleep(30)")
     ok, text = local_exec._execute("run_script", script)
     assert not ok
     assert "超时" in text
@@ -123,7 +124,7 @@ def test_run_script_timeout(sandbox, monkeypatch):
 
 def test_run_script_failure(sandbox):
     script = os.path.join(sandbox, "bad.py")
-    open(script, "w").write("raise SystemExit(3)")
+    Path(script).write_text("raise SystemExit(3)")
     ok, text = local_exec._execute("run_script", script)
     assert not ok
     assert "exit 3" in text
@@ -143,7 +144,7 @@ def test_try_execute_whitelist_blocked(sandbox):
 
 def test_try_execute_copy_end_to_end(sandbox):
     src = os.path.join(sandbox, "a.txt")
-    open(src, "w").write("hi")
+    Path(src).write_text("hi")
     dst = os.path.join(sandbox, "b.txt")
     handled, text = local_exec.try_execute(f"帮我复制{src}到{dst}")
     assert handled
@@ -155,7 +156,7 @@ def test_collector_file_op_json_target(sandbox):
     from collector.executor import Executor
 
     src = os.path.join(sandbox, "a.txt")
-    open(src, "w").write("hi")
+    Path(src).write_text("hi")
     dst = os.path.join(sandbox, "b.txt")
     ok, text = Executor("http://x", "")._execute("copy", json.dumps([src, dst]))
     assert ok

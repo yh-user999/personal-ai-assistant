@@ -8,7 +8,6 @@ import os
 import shutil
 import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,8 +19,8 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DB_PATH", "/tmp/test_backup_data/assistant.db")
 
-from app.models.database import connect, init_db, reset_connections  # noqa: E402
-from app.services import backup  # noqa: E402
+from app.models.database import connect, init_db, reset_connections
+from app.services import backup
 
 
 @pytest.fixture(autouse=True)

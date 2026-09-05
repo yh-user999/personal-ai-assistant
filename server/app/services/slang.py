@@ -12,6 +12,8 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from openai import OpenAIError
+
 from app.core import llm
 from app.core.memory import normalize_user_id, owner_user_id
 from app.models.database import connect
@@ -185,7 +187,7 @@ async def infer_candidate(prev_msg: str, cur_msg: str, user_id: str | None = Non
             INFER_PROMPT.replace("{prev}", (prev_msg or "")[:300])
                        .replace("{cur}", cur_msg),
         )
-    except Exception as e:
+    except OpenAIError as e:
         logger.warning("[slang] 语境推断 LLM 失败: %s", e)
         return False
     if not result.get("is_slang"):

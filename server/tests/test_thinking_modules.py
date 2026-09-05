@@ -11,18 +11,22 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 os.environ.setdefault("DB_PATH", "/tmp/test_thinking.db")
 
-from app.models.database import init_db, reset_connections  # noqa: E402
-from app.services.concern_tracker import (  # noqa: E402
+from app.models.database import init_db, reset_connections
+from app.services.concern_tracker import (
     get_concerns_injection,
     get_stale_concerns,
     upsert_concerns,
 )
-from app.services.few_shot import (  # noqa: E402
+from app.services.few_shot import (
     detect_positive_feedback,
     get_examples_injection,
     save_example,
 )
-from app.services.jargon import detect_definition, get_jargon_injection, save_term  # noqa: E402
+from app.services.jargon import (
+    detect_definition,
+    get_jargon_injection,
+    save_term,
+)
 
 
 @pytest.fixture(autouse=True)

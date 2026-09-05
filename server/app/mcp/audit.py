@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -59,7 +60,7 @@ def record_tool_call(
             conn.commit()
         finally:
             conn.close()
-    except Exception as exc:  # pragma: no cover - 审计故障不得影响主流程
+    except (sqlite3.Error, TypeError, ValueError) as exc:  # pragma: no cover - 审计故障不得影响主流程
         logger.warning("MCP 审计写入失败: %s", exc)
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from pathlib import Path
 
 from app.models.database import db_connection
 from app.novel.file_store import NovelFileStore

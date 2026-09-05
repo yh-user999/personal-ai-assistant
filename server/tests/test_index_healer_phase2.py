@@ -1,6 +1,5 @@
 """检索自愈二期/三期回归：自动抽取三闸、候选池、纠错反馈回路。"""
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 import pytest
 

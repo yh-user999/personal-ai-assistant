@@ -2,7 +2,12 @@
 import pytest
 
 from app.mcp.context import McpContext
-from app.mcp.permissions import McpPermissionError, require_confirmed_action, require_owner, require_read
+from app.mcp.permissions import (
+    McpPermissionError,
+    require_confirmed_action,
+    require_owner,
+    require_read,
+)
 
 
 def test_read_only_allows_first_phase_roles():

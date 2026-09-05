@@ -31,10 +31,10 @@ os.environ.setdefault("QQ_PUSH_URL", "")
 # 长驻线程本地连接（database.connect 缓存）要求切换 db_path 后 reset；
 # 各测试文件用共享的 db fixture（monkeypatch db_path → init_db → reset）。
 
-import pytest  # noqa: E402
+import pytest
 
-from app.config import Settings, settings  # noqa: E402
-from app.models.database import init_db, reset_connections  # noqa: E402
+from app.config import Settings, settings
+from app.models.database import init_db, reset_connections
 
 
 @pytest.fixture

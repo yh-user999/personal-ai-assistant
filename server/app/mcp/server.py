@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
@@ -49,7 +48,7 @@ def main() -> int:
     )
     try:
         server = create_server()
-    except Exception as exc:
+    except (RuntimeError, OSError, ImportError, ValueError) as exc:
         logger.error("MCP Server 启动失败: %s", exc)
         return 1
     logger.info("MCP stdio Server 已启动")

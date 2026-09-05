@@ -4,18 +4,16 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.models import database
 from app.novel.domain import GenerationJobStatus
 from app.novel.repository import SQLiteNovelRepository
-from app.novel.runner import run_one_job, retry_failed_jobs
+from app.novel.runner import retry_failed_jobs, run_one_job
 
 
 def test_runner_persists_draft_and_is_idempotent(db):
     repo = SQLiteNovelRepository(owner_id="owner")
     repo.create_project("书", project_id="p", slug="runner-book")
-    job = repo.create_job("p", "1", "runner-1", "片段")
+    repo.create_job("p", "1", "runner-1", "片段")
 
     async def generator(prompt):
         assert prompt == "片段"

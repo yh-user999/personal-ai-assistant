@@ -50,7 +50,7 @@ def known_anchors(ctx: McpContext) -> set[str]:
         anchors.update(knowledge_domain._novel_class_words())
         for names in knowledge_domain._novel_person_names().values():
             anchors.update(names)
-    except Exception:
+    except (ImportError, AttributeError, TypeError, ValueError):
         # 词表故障不影响正常原文查询，退化为无锚点检索。
         return set()
     return anchors

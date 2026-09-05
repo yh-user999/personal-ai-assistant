@@ -1,8 +1,7 @@
 """聊天提示词层测试：稳定/动态区顺序、长文消息构造、不可信资料包装。"""
-import pytest
 
-from app.chat.context import ChatContext, ChatRequest
 from app.chat import prompting
+from app.chat.context import ChatContext, ChatRequest
 from app.chat.retrieval import RetrievalBundle
 
 

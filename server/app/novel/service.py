@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from app.novel.context import NovelContextBuilder, NovelProjectContext
 from app.novel.generation import NovelGenerationService
 from app.novel.outline import NovelOutlineService
+from app.novel.repository import SQLiteNovelRepository
 from app.novel.review import NovelReviewService
 from app.novel.workflow import NovelWorkflow
-from app.novel.repository import SQLiteNovelRepository
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class NovelApplicationService:
     repository: SQLiteNovelRepository | None = None
 
     @classmethod
-    def from_legacy(cls, writer, chapters, entities=None) -> "NovelApplicationService":
+    def from_legacy(cls, writer, chapters, entities=None) -> NovelApplicationService:
         return cls(
             writer=writer,
             chapters=chapters,

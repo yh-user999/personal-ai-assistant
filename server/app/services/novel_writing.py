@@ -13,6 +13,8 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from openai import OpenAIError
+
 from app.core import knowledge, llm, memory
 from app.models.database import connect
 from app.services import sepia
@@ -114,7 +116,7 @@ async def check_conflicts(text: str) -> dict:
             temperature=0.2,
             max_tokens=1500,
         )
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError) as e:
         return {"reply": f"😅 冲突检查暂时没跑通（LLM 调用失败：{type(e).__name__}），稍后再试"}
 
     conflicts = parse_conflicts_json(out)
@@ -176,7 +178,7 @@ async def continue_story(text: str) -> str:
             temperature=0.8,
             max_tokens=1200,
         )
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError) as e:
         return f"😅 续写暂时没跑通（LLM 调用失败：{type(e).__name__}），稍后再试"
     return out.strip() or "（模型没吐出内容，重试一次看看）"
 
@@ -257,12 +259,12 @@ def writing_summary() -> str:
 
     recent_lines = "\n".join(_fmt(r) for r in rows[:5])
     lines = [
-        f"📝 写作台账：",
+        "📝 写作台账：",
         f"  累计：{total:,} 字（{len(rows)} 次记录）",
         f"  近 7 天：{week:,} 字 ｜ 今日：{day:,} 字",
         f"  连续写作：{streak} 天",
         f"  最新章节：第{latest_chapter}章" if latest_chapter else "  最新章节：未标注",
-        f"  最近记录：",
+        "  最近记录：",
         recent_lines,
     ]
     return "\n".join(lines)

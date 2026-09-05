@@ -6,9 +6,20 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_roles
 from app.models.database import db_connection
-from app.novel.domain import chapter_payload, draft_payload, job_payload, project_payload, GenerationJobStatus
+from app.novel.domain import (
+    GenerationJobStatus,
+    chapter_payload,
+    draft_payload,
+    job_payload,
+    project_payload,
+)
 from app.novel.file_store import NovelFileStore
-from app.novel.index import file_index_status, rebuild_chapter_index, search_chapters, sync_file_index
+from app.novel.index import (
+    file_index_status,
+    rebuild_chapter_index,
+    search_chapters,
+    sync_file_index,
+)
 from app.novel.repository import SQLiteNovelRepository
 from app.novel.workflow import NovelWorkflow
 
@@ -70,8 +81,8 @@ def _repo(request: Request) -> tuple[SQLiteNovelRepository, str]:
 
 
 def _audit(user_id: str, project_id: str, action: str, target: str, success: bool = True, summary: dict | None = None) -> None:
-    from datetime import datetime, timezone
     import json
+    from datetime import datetime, timezone
     with db_connection() as conn:
         conn.execute("INSERT INTO novel_audit_logs(user_id,project_id,action,target,summary,success,created_at) VALUES(?,?,?,?,?,?,?)", (user_id, project_id, action, target, json.dumps(summary or {}, ensure_ascii=False), int(success), datetime.now(timezone.utc).isoformat()))
 

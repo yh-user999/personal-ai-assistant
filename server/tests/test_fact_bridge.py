@@ -1,6 +1,5 @@
 """设定结论补漏回归：记录指令/短肯定确认 → 从 AI 回复提取事实。"""
 import asyncio
-import re
 
 import pytest
 

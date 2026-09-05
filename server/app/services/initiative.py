@@ -16,6 +16,8 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+from openai import OpenAIError
+
 from app.config import settings
 from app.models.database import connect
 
@@ -175,7 +177,7 @@ async def build_daily_line(summary: str) -> str:
             "你是「小月」，只输出 JSON。",
             DAILY_LINE_PROMPT.replace("{summary}", summary[:1500]),
         )
-    except Exception as e:
+    except (OpenAIError, TimeoutError, RuntimeError) as e:
         logger.warning("主动开口文案生成失败: %s", e)
         return ""
     line = (result.get("line") or "").strip()

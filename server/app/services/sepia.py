@@ -6,8 +6,7 @@ Sepia 的叙事/话语建议属于软约束；表层污染属于可由正文直�
 from __future__ import annotations
 
 import re
-from typing import Iterable
-
+from collections.abc import Iterable
 
 GENERATION_GUIDE = """【Sepia 小说生成规则】
 这是叙事方法约束，不是新的世界观设定；权威设定与前情事实优先于文风建议。

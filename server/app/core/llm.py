@@ -87,7 +87,7 @@ async def chat(
     注意：本 SDK 版本的 create() 不支持每请求 max_retries，重试次数
     沿用客户端全局设置。
     """
-    kwargs = dict(model=settings.llm_model, messages=messages, temperature=temperature, max_tokens=max_tokens)
+    kwargs = {"model": settings.llm_model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if response_format:
         kwargs["response_format"] = response_format
     if timeout is not None:

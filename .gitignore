@@ -27,6 +27,10 @@ env/
 logs/
 *.log
 
+# 运行时数据（数据库、备份、日志、小说正文及个人行为数据，绝不入库）
+data/
+server/data/
+
 # 采集器断网缓存（个人行为数据，绝不入库）
 collector/cache/
 

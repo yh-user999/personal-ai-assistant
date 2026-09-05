@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.chat.context import ChatContext, ChatRuntime
 from app.chat.retrieval import RetrievalBundle
@@ -132,6 +133,9 @@ _INTENT_RULES: dict[str, str] = {
     ),
 }
 
+DEFAULT_VISION_INSTRUCTION = "请识别并描述图片内容，结合用户文字问题作答；无法确认的细节请明确说明不确定。"
+
+
 _GENERATION_INTENT = re.compile(
     r"继续写|接着写|往下写|续写|写正文|写第[一二三四五六七八九十百0-9]+章|"
     r"生成.{0,8}章|字数|大于.{0,6}字|[0-9]{3,}字|"
@@ -174,8 +178,8 @@ def _guest_note(uid: str) -> str:
 @dataclass
 class PromptAssembly:
     system: str
-    llm_messages: list[dict[str, str]]
-    gen_messages: list[dict[str, str]]
+    llm_messages: list[dict[str, Any]]
+    gen_messages: list[dict[str, Any]]
     gen_profile: bool
 
 
@@ -218,14 +222,26 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
     return system
 
 
+def _user_content(ctx: ChatContext) -> str | list[dict[str, Any]]:
+    """图片请求使用 OpenAI 兼容多模态 content；纯文本保持原字符串契约。"""
+    if ctx.image is None:
+        return ctx.message
+    caption = ctx.message or DEFAULT_VISION_INSTRUCTION
+    return [
+        {"type": "text", "text": caption},
+        {"type": "image_url", "image_url": {"url": ctx.image.data_url}},
+    ]
+
+
 def build_messages(ctx: ChatContext, bundle: RetrievalBundle, system: str) -> PromptAssembly:
     """构造普通档与长文生成档消息，保持历史后置自愈资料位置。"""
     llm_messages = [{"role": "system", "content": system}] + list(bundle.history)
     if bundle.healed_text:
         llm_messages.append({"role": "system", "content": bundle.healed_text})
-    llm_messages.append({"role": "user", "content": ctx.message})
+    llm_messages.append({"role": "user", "content": _user_content(ctx)})
 
-    gen_profile = ctx.is_owner and bool(_GENERATION_INTENT.search(ctx.message))
+    # 图片请求始终走普通视觉问答，不进入小说长文生成判定。
+    gen_profile = (ctx.image is None) and ctx.is_owner and bool(_GENERATION_INTENT.search(ctx.message))
     if gen_profile and bundle.last_ai and len(bundle.last_ai) > 500:
         msg_gen = (
             f"{ctx.message}\n\n"

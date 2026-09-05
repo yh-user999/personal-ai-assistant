@@ -36,17 +36,21 @@ def _parse_time_range(content: str) -> str:
     return ""
 
 
-def add_log(content: str, project: str = "") -> int:
-    """新增一条工作日志。入库前统一脱敏。"""
+def add_log(content: str, project: str = "", user_id: str | None = None) -> int:
+    """新增一条工作日志。入库前统一脱敏，按用户主体保存。"""
+    from app.core.memory import normalize_user_id
     from app.services.sanitize import sanitize
+
+    uid = normalize_user_id(user_id)
     content = sanitize(content)
     project = sanitize(project)
     now = datetime.now(timezone.utc)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO work_log (date, time_range, content, project, created_at) VALUES (?, ?, ?, ?, ?)",
-            (now.date().isoformat(), _parse_time_range(content), content, project, now.isoformat()),
+            "INSERT INTO work_log (user_id, date, time_range, content, project, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uid, now.date().isoformat(), _parse_time_range(content), content, project, now.isoformat()),
         )
         conn.commit()
         return cur.lastrowid

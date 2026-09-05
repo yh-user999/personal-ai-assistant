@@ -52,7 +52,25 @@ LEISURE_APPS = ("dota", "steam", "game", "wegame", "bilibili", "youku", "iqiyi")
 DEFAULT_DAYS = 7
 
 
+def _empty_evidence(days: int) -> dict:
+    return {
+        "days": days,
+        "commits": 0,
+        "work_hours": 0.0,
+        "leisure_hours": 0.0,
+        "top_apps": [],
+        "topics": [],
+        "topic_count": 0,
+        "turns": 0,
+        "work_logs": [],
+        "summaries": [],
+        "ingested_docs": [],
+        "corrections": 0,
+    }
+
+
 def detect_self_doubt(text: str) -> bool:
+
     """是否在质疑自己的收获/状态。"""
     return bool(SELF_DOUBT_RE.search(text or ""))
 
@@ -65,46 +83,59 @@ def _local_cutoff_date(days: int) -> str:
     return (datetime.now(TZ) - timedelta(days=days)).date().isoformat()
 
 
-def collect_evidence(days: int = DEFAULT_DAYS) -> dict:
-    """近 N 天的成长证据。纯 SQL 聚合，不含任何判断。"""
+def collect_evidence(days: int = DEFAULT_DAYS, user_id: str | None = None) -> dict:
+    """近 N 天的成长证据。纯 SQL 聚合，不含任何判断。
+
+    成长证据来自主人专属行为/台账；访客调用时返回空结果，且记忆查询仍
+    使用统一 user scope，避免把主人数据当成访客证据。
+    """
+    from app.core.memory import _user_scope, is_owner_user, normalize_user_id
+
+    days = max(1, min(int(days), 90))
+    uid = normalize_user_id(user_id)
+    if not is_owner_user(uid):
+        return _empty_evidence(days)
+    clause, args = _user_scope(uid)
     cutoff_utc = _utc_cutoff(days)
     cutoff_date = _local_cutoff_date(days)
     conn = connect()
     try:
         commits = conn.execute(
-            "SELECT COUNT(*) AS c FROM behavior_events "
-            "WHERE kind='git_commit' AND start_ts >= ?", (cutoff_utc,),
+            f"SELECT COUNT(*) AS c FROM behavior_events "
+            f"WHERE kind='git_commit' AND start_ts >= ? AND {clause}",
+            (cutoff_utc, *args),
         ).fetchone()["c"]
 
         apps = conn.execute(
-            "SELECT name, SUM((julianday(end_ts)-julianday(start_ts))*24) AS h "
-            "FROM behavior_events WHERE kind='app_usage' AND start_ts >= ? "
-            "AND end_ts IS NOT NULL GROUP BY name ORDER BY h DESC LIMIT 12",
-            (cutoff_utc,),
+            f"SELECT name, SUM((julianday(end_ts)-julianday(start_ts))*24) AS h "
+            f"FROM behavior_events WHERE kind='app_usage' AND start_ts >= ? "
+            f"AND end_ts IS NOT NULL AND {clause} GROUP BY name ORDER BY h DESC LIMIT 12",
+            (cutoff_utc, *args),
         ).fetchall()
 
         # 话题演进：consolidation 提取的 topics
         topic_rows = conn.execute(
-            "SELECT topics FROM memories WHERE topics NOT IN ('', '[]') "
-            "AND topics IS NOT NULL AND ts >= ?", (cutoff_utc,),
+            f"SELECT topics FROM memories WHERE topics NOT IN ('', '[]') "
+            f"AND topics IS NOT NULL AND ts >= ? AND {clause}",
+            (cutoff_utc, *args),
         ).fetchall()
 
         turns = conn.execute(
-            "SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ?",
-            (cutoff_utc,),
+            f"SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ? AND {clause}",
+            (cutoff_utc, *args),
         ).fetchone()["c"]
 
         # DISTINCT：work_log 有重复行（测试灌入过 18 条同样的"下午2-4点调参"），
         # 不去重会让注入里出现三遍同一句手记
         logs = conn.execute(
-            "SELECT DISTINCT date, content FROM work_log WHERE date >= ? "
+            f"SELECT DISTINCT date, content FROM work_log WHERE date >= ? AND {clause} "
             "ORDER BY date DESC LIMIT 10",
-            (cutoff_date,),
+            (cutoff_date, *args),
         ).fetchall()
 
         summaries = conn.execute(
-            "SELECT date, content FROM daily_summaries WHERE date >= ? ORDER BY date DESC",
-            (cutoff_date,),
+            f"SELECT date, content FROM daily_summaries WHERE date >= ? AND {clause} ORDER BY date DESC",
+            (cutoff_date, *args),
         ).fetchall()
 
         # 知识库灌入（学习投入的直接证据）
@@ -116,7 +147,8 @@ def collect_evidence(days: int = DEFAULT_DAYS) -> dict:
 
         # 被纠正次数：说明在校准她，这本身是判断力的体现
         lessons = conn.execute(
-            "SELECT COUNT(*) AS c FROM lessons WHERE created_at >= ?", (cutoff_utc,),
+            f"SELECT COUNT(*) AS c FROM lessons WHERE created_at >= ? AND {clause}",
+            (cutoff_utc, *args),
         ).fetchone()["c"]
     finally:
         conn.close()
@@ -163,13 +195,13 @@ def has_evidence(ev: dict) -> bool:
     )
 
 
-def build_injection(days: int = DEFAULT_DAYS) -> str:
+def build_injection(days: int = DEFAULT_DAYS, user_id: str | None = None) -> str:
     """成长证据注入。无证据返回空串。
 
     只给事实与解读方向，不给结论——结论由 LLM 结合当下语境说，
     但它手里必须有可核对的数字，否则又变成空泛安慰。
     """
-    ev = collect_evidence(days)
+    ev = collect_evidence(days, user_id=user_id)
     if not has_evidence(ev):
         return ""
 

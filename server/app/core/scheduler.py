@@ -17,6 +17,7 @@
 import asyncio
 import inspect
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -109,40 +110,82 @@ class SchedulerManager:
         SchedulerManager._active_manager = self
         self._owns_scheduler = True
         self._started = True
+        from app.core.memory import owner_user_id
         from app.novel.runner import recover_and_run_pending
         from app.services.analyzer import evict_stale
         from app.services.backup import run_daily_backup
         from app.services.consolidation import consolidate_recent
         from app.services.daily_summary import run_daily_summary
+        from app.services.llm_usage import logical_request_id
         from app.services.profile import refresh_profile
         from app.services.progress_sync import sync_progress_to_bot
         from app.services.qq_push import push_reminders
+        from app.services.request_dedup import cleanup_expired as cleanup_chat_dedup
         from app.services.weekly_reflect import run_weekly_reflect
+
+        owner = owner_user_id()
+        schedule_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # 摘要整合：每 4h 一次，整合窗口 = 间隔（4h），不漏消息
         self._add(
             "consolidation", consolidate_recent, "interval",
             hours=settings.consolidation_interval_hours,
             args=[settings.consolidation_interval_hours],
+            kwargs={
+                "request_id": logical_request_id(
+                    "consolidation", owner, f"{schedule_key}:{settings.consolidation_interval_hours}h"
+                )
+            },
         )
         # 画像刷新：周报前一小时（周日 20:00），周报生成时能读到最新画像
         self._add(
             "profile_refresh", refresh_profile, "cron",
             day_of_week=settings.weekly_report_weekday,
             hour=max(0, settings.weekly_report_hour - 1),
+            kwargs={
+                "user_id": owner,
+                "request_id": logical_request_id("profile_refresh", owner, schedule_key),
+            },
         )
         # 每日画像（6.23 课）：凌晨 4:30 滚动更新，画像不再是"一周前的你"
-        self._add("profile_daily", refresh_profile, "cron", hour=4, minute=30)
+        self._add(
+            "profile_daily",
+            refresh_profile,
+            "cron",
+            hour=4,
+            minute=30,
+            kwargs={
+                "user_id": owner,
+                "request_id": logical_request_id("profile_daily", owner, schedule_key),
+            },
+        )
         # 每周反思：周日 21:00（Asia/Shanghai）
         self._add(
-            "weekly_reflect", run_weekly_reflect, "cron",
+            "weekly_reflect",
+            run_weekly_reflect,
+            "cron",
             day_of_week=settings.weekly_report_weekday,
             hour=settings.weekly_report_hour,
+            kwargs={
+                "user_id": owner,
+                "request_id": logical_request_id("weekly_reflect", owner, schedule_key),
+            },
         )
         # 每日小结：每晚 22:00（错过窗口 → 1h 内补跑，不再永久缺失）
-        self._add("daily_summary", run_daily_summary, "cron", hour=22)
+        self._add(
+            "daily_summary",
+            run_daily_summary,
+            "cron",
+            hour=22,
+            kwargs={
+                "user_id": owner,
+                "request_id": logical_request_id("daily_summary", owner, schedule_key),
+            },
+        )
         # 淘汰：noise 30 天 / 低 importance chat 365 天（同步清 FTS 索引）
         self._add("eviction", evict_stale, "interval", hours=6)
+        # 清理聊天幂等表的过期租约与旧响应，避免 request_id 表无限增长。
+        self._add("chat_request_dedup_cleanup", cleanup_chat_dedup, "interval", hours=6)
         # 每日备份：凌晨 3:00（避开周报/整合高峰；热备份+滚动保留 7 份）
         self._add("daily_backup", run_daily_backup, "cron", hour=3)
         # 每日进度同步：4:10 把仓库 docs/*.md 重灌知识库 + 刷新课程进度事实
@@ -154,8 +197,15 @@ class SchedulerManager:
         from app.services.initiative import run_initiative
 
         self._add(
-            "initiative", run_initiative, "cron",
-            hour=settings.initiative_hour, minute=settings.initiative_minute,
+            "initiative",
+            run_initiative,
+            "cron",
+            hour=settings.initiative_hour,
+            minute=settings.initiative_minute,
+            kwargs={
+                "user_id": owner,
+                "request_id": logical_request_id("initiative", owner, schedule_key),
+            },
         )
         # 小说生成任务：每分钟最多执行一个，queued 任务在重启后自动续跑。
         self._add("novel_generation", recover_and_run_pending, "interval", seconds=60, max_instances=1)

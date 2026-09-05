@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
+from app.auth import require_roles
 from app.chat.context import (
     ChatRequest,
     ChatResponse,
+    ImagePayload,
     ChatRuntime,
     _guest_events,
     _request_cache,
@@ -71,6 +73,7 @@ from app.services import (
     subjective_time,
     unresolved,
     worklog,
+    vision,
 )
 
 router = APIRouter()
@@ -167,6 +170,34 @@ async def _chat_impl(req: ChatRequest, request: Request) -> ChatResponse:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     """聊天入口：对带 request_id 的客户端重试做单飞与结果复用。"""
+    if req.image is not None:
+        raise HTTPException(status_code=400, detail="图片提问请使用 multipart /api/chat/vision")
+    return await deduplicate_request(req, request, memory, _chat_impl)
+
+
+@router.post("/chat/vision", response_model=ChatResponse)
+async def vision_chat(
+    request: Request,
+    message: str | None = Form(None),
+    request_id: str | None = Form(None),
+    user_id: str | None = Form(None),
+    image: UploadFile | None = File(None),
+) -> ChatResponse:
+    """图片+文字提问：先在边界读取/校验图片，再复用认证、幂等和主聊天链路。"""
+    if image is None:
+        raise HTTPException(status_code=400, detail="缺少 image 图片文件")
+    if not str(request_id or "").strip():
+        raise HTTPException(status_code=400, detail="request_id 不能为空")
+    validated = await vision.validate_upload(
+        image,
+        max_bytes=getattr(settings, "vision_max_image_bytes", vision.DEFAULT_MAX_IMAGE_BYTES),
+    )
+    req = ChatRequest(
+        message=message or "",
+        request_id=request_id,
+        user_id=user_id,
+        image=ImagePayload(**validated.__dict__),
+    )
     return await deduplicate_request(req, request, memory, _chat_impl)
 
 
@@ -207,9 +238,11 @@ async def search_messages_api(q: str = "") -> dict:
 
 
 @router.get("/mood/state")
-async def mood_state() -> dict:
-    """情绪状态：悬浮球轮询使用。"""
+async def mood_state(request: Request) -> dict:
+    """情绪状态：悬浮球轮询使用，仅返回认证主体数据。"""
+    auth = require_roles(request, "owner", "internal")
+    uid = str(auth.subject or memory.owner_user_id())
     return {
-        "streak_active": bool(mood.get_streak_injection()),
-        "today_text": mood.get_today_injection(),
+        "streak_active": bool(mood.get_streak_injection(user_id=uid)),
+        "today_text": mood.get_today_injection(user_id=uid),
     }

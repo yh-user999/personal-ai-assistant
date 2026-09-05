@@ -51,12 +51,20 @@ def parse_training(msg: str) -> str | None:
     return None
 
 
-def add_log(kind: str, value: float | None, detail: str) -> int:
+def add_log(
+    kind: str,
+    value: float | None,
+    detail: str,
+    user_id: str | None = None,
+) -> int:
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO fitness_log (kind, value, detail, created_at) VALUES (?, ?, ?, ?)",
-            (kind, value, detail, _now_utc()),
+            "INSERT INTO fitness_log (user_id, kind, value, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+            (uid, kind, value, detail, _now_utc()),
         )
         conn.commit()
         return cur.lastrowid
@@ -64,12 +72,18 @@ def add_log(kind: str, value: float | None, detail: str) -> int:
         conn.close()
 
 
-def fitness_summary() -> str:
+def fitness_summary(user_id: str | None = None) -> str:
     """健身进度汇总：体重趋势 + 近 7 天训练 + 最近记录。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT kind, value, detail, created_at FROM fitness_log ORDER BY id DESC LIMIT 200"
+            f"SELECT kind, value, detail, created_at FROM fitness_log WHERE {clause} "
+            "ORDER BY id DESC LIMIT 200",
+            args,
         ).fetchall()
     finally:
         conn.close()

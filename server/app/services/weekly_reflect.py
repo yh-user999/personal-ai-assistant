@@ -57,18 +57,18 @@ def _enforce_real_numbers(report: str, stats: dict) -> str:
     return report.rstrip() + "\n" + "\n".join(lines)
 
 
-async def run_weekly_reflect() -> dict:
-    """生成本周反思并归档。返回 {week, report}。
-
-    v0.4：周报是主人专属——记忆/画像只读主人自己的（访客数据不混入）。
-    """
-    from app.core.memory import _user_scope, owner_user_id
+async def run_weekly_reflect(
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """生成指定主体本周反思并归档；无 user_id 时使用主人主体。"""
+    from app.core.memory import _user_scope, normalize_user_id
 
     now = datetime.now(timezone.utc)
     week = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
     since = (now - timedelta(days=7)).isoformat()
-    owner = owner_user_id()
-    clause, uargs = _user_scope(owner)
+    uid = normalize_user_id(user_id)
+    clause, uargs = _user_scope(uid)
 
     conn = connect()
     try:
@@ -77,19 +77,19 @@ async def run_weekly_reflect() -> dict:
             (since, *uargs),
         ).fetchall()
         logs = conn.execute(
-            "SELECT date, time_range, content, project FROM work_log WHERE created_at >= ?",
-            (since,),
+            f"SELECT date, time_range, content, project FROM work_log WHERE created_at >= ? AND {clause}",
+            (since, *uargs),
         ).fetchall()
         profile = conn.execute(
-            "SELECT dimension, value FROM profile WHERE user_id = ?", (owner,)
+            f"SELECT dimension, value FROM profile WHERE {clause}", tuple(uargs)
         ).fetchall()
     finally:
         conn.close()
 
     from app.services.analyzer import weekly_stats
     from app.services.self_reflect import count_lessons_since
-    stats = weekly_stats(days=7)
-    stats["本周被纠正次数"] = count_lessons_since(since)
+    stats = weekly_stats(days=7, user_id=uid)
+    stats["本周被纠正次数"] = count_lessons_since(since, user_id=uid)
 
     summary_text = "\n".join(
         f"[{r['ts'][:10]}] {r['summary']} topics={r['topics']}" for r in summaries[:50]
@@ -98,6 +98,8 @@ async def run_weekly_reflect() -> dict:
     profile_text = "\n".join(f"[{r['dimension']}] {r['value']}" for r in profile) or "（空）"
     stats_text = "\n".join(f"{k}: {v}" for k, v in stats.items())
 
+    from app.services.llm_usage import logical_request_id
+
     result = await llm.chat_json(
         "你是用户的私人 AI 助手，只输出 JSON。",
         REFLECT_PROMPT
@@ -105,23 +107,26 @@ async def run_weekly_reflect() -> dict:
         .replace("{stats}", stats_text)
         .replace("{logs}", log_text)
         .replace("{profile}", profile_text),
+        request_id=request_id or logical_request_id("weekly_reflect", uid, week),
+        user_id=uid,
     )
     report = (result.get("report") or "").strip()
     if report:
         # 数据准确性兜底：LLM 可能抄错数字，概览区的关键数字直接用真实统计替换
         report = _enforce_real_numbers(report, stats)
         # 第 6.28 课 C1：情绪周报——零 LLM 确定性追加，不依赖模型自觉
-        mood_section = mood.weekly_report_section(days=7)
+        mood_section = mood.weekly_report_section(days=7, user_id=uid)
         if mood_section:
             report = report.rstrip() + "\n\n" + mood_section
 
     conn = connect()
     try:
         conn.execute(
-            """INSERT INTO weekly_reports (week, content, stats, created_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(week) DO UPDATE SET content=excluded.content, stats=excluded.stats""",
-            (week, report, str(stats), now.isoformat()),
+            """INSERT INTO weekly_reports (user_id, week, content, stats, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, week) DO UPDATE SET
+                 content=excluded.content, stats=excluded.stats, created_at=excluded.created_at""",
+            (uid, week, report, str(stats), now.isoformat()),
         )
         conn.commit()
     finally:

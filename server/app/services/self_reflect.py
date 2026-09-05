@@ -57,6 +57,15 @@ LESSON_KINDS = ("identity", "style", "fact")
 IDENTITY_MAX = 5
 
 
+def _user_scope(user_id: str | None) -> tuple[str, str, tuple]:
+    from app.core.memory import _user_scope as build_scope
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, args = build_scope(uid, col="user_id")
+    return uid, clause, args
+
+
 def detect_correction(text: str) -> bool:
     """用户消息是否含纠正信号。"""
     return any(p in text for p in CORRECTION_PATTERNS)
@@ -81,63 +90,75 @@ def classify_lesson(content: str) -> str:
     return "fact"
 
 
-def save_lesson(content: str, context: str = "") -> int:
+def save_lesson(content: str, context: str = "", user_id: str | None = None) -> int:
     """存一条教训：用户原话 + 被纠正的 AI 回复上下文（统一脱敏）。
 
-    去重语义：同 content 已存在时不再插新行，只刷新 created_at 与 context
-    （重复纠正 = 这条更重要，让它排到更前面），返回既有行 id。
+    去重语义：同一用户的同 content 已存在时不再插新行，只刷新 created_at 与
+    context；不同用户各自保留自己的教训。
     """
     from app.services.sanitize import sanitize
+
+    uid, clause, user_args = _user_scope(user_id)
     content = sanitize(content)[:300]
     context = sanitize(context)[:300]
     kind = classify_lesson(content)
+    now = datetime.now(timezone.utc).isoformat()
     conn = connect()
     try:
-        conn.execute(
-            """INSERT INTO lessons (content, context, created_at, kind)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(content) DO UPDATE SET
-                 created_at = excluded.created_at,
-                 context = excluded.context,
-                 kind = excluded.kind""",
-            (content, context, datetime.now(timezone.utc).isoformat(), kind),
+        row = conn.execute(
+            f"SELECT id FROM lessons WHERE content=? AND {clause} ORDER BY id DESC LIMIT 1",
+            (content, *user_args),
+        ).fetchone()
+        if row:
+            conn.execute(
+                f"UPDATE lessons SET created_at=?, context=?, kind=? WHERE id=? AND {clause}",
+                (now, context, kind, row["id"], *user_args),
+            )
+            conn.commit()
+            return row["id"]
+        cur = conn.execute(
+            "INSERT INTO lessons (user_id, content, context, created_at, kind) VALUES (?, ?, ?, ?, ?)",
+            (uid, content, context, now, kind),
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT id FROM lessons WHERE content = ?", (content,)
-        ).fetchone()
-        return row["id"] if row else 0
+        return cur.lastrowid
     finally:
         conn.close()
 
 
-def get_lessons_injection(limit: int = 5) -> str:
+def get_lessons_injection(limit: int = 5, user_id: str | None = None) -> str:
     """教训注入：identity 类全部在前（不占配额）+ 最近 limit 条其他教训。
 
     DISTINCT 是兜底（防迁移遗漏的老库仍出现重复行）。
     排序：越新的越靠后，权重感更强（LLM 对末尾更敏感）。
     """
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         identity = conn.execute(
-            "SELECT DISTINCT content FROM lessons WHERE kind = 'identity' "
+            f"SELECT DISTINCT content FROM lessons WHERE kind = 'identity' AND {clause} "
             "ORDER BY id DESC LIMIT ?",
-            (IDENTITY_MAX,),
+            (*user_args, IDENTITY_MAX),
         ).fetchall()
         others = conn.execute(
-            "SELECT DISTINCT content FROM lessons WHERE kind != 'identity' "
+            f"SELECT DISTINCT content FROM lessons WHERE kind != 'identity' AND {clause} "
             "ORDER BY id DESC LIMIT ?",
-            (limit,),
+            (*user_args, limit),
         ).fetchall()
     finally:
         conn.close()
     lines = [f"- {r['content']}" for r in reversed(identity)]
     lines += [f"- {r['content']}" for r in reversed(others)]
-    _record_hits([r["content"] for r in identity] + [r["content"] for r in others])
+    hit_contents = [r["content"] for r in identity] + [r["content"] for r in others]
+    if user_id is None:
+        # 兼容旧 monkeypatch 替身（只接受 contents 一个参数）。
+        _record_hits(hit_contents)
+    else:
+        _record_hits(hit_contents, user_id=user_id)
     return "\n".join(lines)
 
 
-def _record_hits(contents: list[str]) -> None:
+def _record_hits(contents: list[str], user_id: str | None = None) -> None:
     """记一次注入命中（不衰减的累计使用次数）。
 
     用途是回答"这条教训到底有没有被用上"——没被命中过的大概是噪声
@@ -146,13 +167,14 @@ def _record_hits(contents: list[str]) -> None:
     """
     if not contents:
         return
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             "UPDATE lessons SET hit_count = COALESCE(hit_count, 0) + 1, last_hit_at = ? "
-            "WHERE content = ?",
-            [(now, c) for c in contents],
+            f"WHERE content = ? AND {clause}",
+            [(now, c, *user_args) for c in contents],
         )
         conn.commit()
     except (sqlite3.Error, TypeError, ValueError) as exc:
@@ -161,12 +183,14 @@ def _record_hits(contents: list[str]) -> None:
         conn.close()
 
 
-def count_lessons_since(since_iso: str) -> int:
+def count_lessons_since(since_iso: str, user_id: str | None = None) -> int:
     """统计某时间以来的教训数（周报用）。"""
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         n = conn.execute(
-            "SELECT COUNT(*) AS c FROM lessons WHERE created_at >= ?", (since_iso,)
+            f"SELECT COUNT(*) AS c FROM lessons WHERE created_at >= ? AND {clause}",
+            (since_iso, *user_args),
         ).fetchone()["c"]
     finally:
         conn.close()

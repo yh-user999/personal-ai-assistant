@@ -305,17 +305,21 @@ def _compute_books_for_class_words(words: list[str]) -> list[str]:
 FACT_SUBJECT_MIN_LEN = 2
 
 
-def _fact_subject_hit(query: str) -> bool:
-    """查询主体是否已被 facts 覆盖，且知识库里没有对应内容。
+def _fact_subject_hit(query: str, user_id: str | None = None) -> bool:
+    """查询主体是否已被当前用户 facts 覆盖，且知识库里没有对应内容。
 
-    两个条件都要满足才跳过：主体在 facts 里（说明已注入）+ 知识库块数极少
-    （说明检索没东西可捞）。只满足前者时仍应检索——很多主体两边都有。
+    两个条件都要满足才跳过：主体在当前用户 facts 里（说明已注入）+ 知识库
+    块数极少（说明检索没东西可捞）。访客不能借此探测或使用主人的 facts。
     """
+    from app.core.memory import _user_scope, normalize_user_id
+
     q = query or ""
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         subjects = {r["subject"] for r in conn.execute(
-            "SELECT DISTINCT subject FROM facts"
+            f"SELECT DISTINCT subject FROM facts WHERE {clause}", args
         ).fetchall() if len(r["subject"] or "") >= FACT_SUBJECT_MIN_LEN}
         for s in subjects:
             if s in q:
@@ -330,7 +334,7 @@ def _fact_subject_hit(query: str) -> bool:
         conn.close()
 
 
-def detect_domains(query: str) -> tuple[list[str], list[str]]:
+def detect_domains(query: str, user_id: str | None = None) -> tuple[list[str], list[str]]:
     """查询 → (目标域, 目标文档名)。
 
     返回的文档名非空时进一步收窄到具体某本书——问《寂静杀戮》的角色不该
@@ -367,7 +371,7 @@ def detect_domains(query: str) -> tuple[list[str], list[str]]:
     # 的小说角色，设定存在 facts 表（8 条三元组，每次必注入），知识库里
     # 一个块都没有。知识库没内容时检索只会返回噪声，不如明确跳过。
     # 用 SKIP_SEARCH 哨兵与"判不出域"区分开：后者要走全域，前者不该检索。
-    if _fact_subject_hit(q):
+    if _fact_subject_hit(q, user_id=user_id):
         return [SKIP_SEARCH], []
 
     # 小说通用词（没点明具体书）

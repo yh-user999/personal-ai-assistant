@@ -43,6 +43,7 @@ class CollectorSettings(BaseSettings):
 
     # 缓存位置（断网落盘队列 + 浏览器/git 增量游标）
     cache_dir: str = "./cache"
+    cache_retry_interval: float = 60.0  # 运行期间重放 pending 文件的间隔秒数
 
     @property
     def cache_path(self) -> Path:

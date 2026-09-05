@@ -2,7 +2,7 @@
 
 个人智能助手 —— Windows 本地 + 服务器混合部署，桌面悬浮机器人形态，实现「记忆 → 分析 → 学习」闭环的个人工作助手。
 
-> 状态：六课带教全部完成 · 进阶课 9/10（第 6 课 CI / 第 7 课仪表盘待做）· **742 个测试全绿** · QQ 接入已上线 · 全自动运行中
+> 状态：六课带教全部完成 · 进阶课 9/10（第 6 课 CI / 第 7 课仪表盘待做）· **服务端隔离回归 1004 passed / 2 skipped** · **QQ 图片专项 5 passed** · **桌面图片专项 6 passed** · QQ 接入已上线 · 图片识别一期已接入
 
 ## 能力总览
 
@@ -17,6 +17,7 @@
 | **感知** | 行为实时注入（当前窗口/git 提交/近 1h 活跃）、三通道采集（前台窗口/浏览器历史/git）、心跳健康 |
 | **学习** | 关切追踪（在意什么）、风格学习（认可的回复形式）、多轮上下文（8 轮原文 + 摘要续接） |
 | **RAG** | 文档知识库：切块 → 向量化 → 混合检索（RRF）→ 带引用回答；Hit@k/MRR 评测体系 |
+| **图片识别** | 桌面端选图/剪贴板粘贴/图片-only；QQ 私聊支持主人与访客图片、群聊静默；Web/API 走 `/api/chat/vision` multipart；原始图片不落库 |
 | **实体检索** | 小说专名索引 + 五层检索：枚举式提问（"有哪些命丛"）走专名精确匹配而非向量（类名检索精度仅 15.9%，专名接近 100%），注入自带完整度报告 |
 | **小说写作** | 设定冲突检查 + 续写辅助 + 写作台账（6.25）；**章节分析二期**：`分析章节：<正文>` 零 LLM 残留检测（AI 元话语/章节尾标记）+ 字数对照 + 1 次 LLM 逻辑/时间线/动机/称谓/设定五维问题清单（带引句与建议）+ 节奏超载评估；`章节存档：第X章 <摘要>` 零 LLM 入库；写第 N 章自动注入前情提要 + 未回收伏笔；生成档长回复自动提炼章节存档（被动抓取，无需打命令） |
 | **产出** | 对话式文档生成（"写文档"命令）、简历优化（专家 prompt + .docx 导出）、个性化问候 |
@@ -31,23 +32,34 @@
 │ ② collector/ 行为采集器（窗口 8s / 浏览器 10min / git 15min）│
 │    脱敏 → 攒批 → 幂等推送 → 心跳（5min）                    │
 │ ③ desktop/   桌面悬浮机器人（PySide6）                       │
-│    双击聊天 / 气泡面板 / 托盘 / 状态灯（在线·思考·断线）      │
+│    文本聊天 / 选图 / 剪贴板粘贴 / 图片-only / 托盘 / 状态灯   │
 └────────────────────────────────────────────────────┘
         ↕ 私有加密专线（公网只暴露 SSH 22）
 ┌─ 云服务器 ──────────────────────────────────────────┐
 │ ① server/    FastAPI 单进程（uvicorn）                      │
 │    聊天编排 + 记忆闭环 + 知识库 + 行为统计 + 反思生成        │
 │    SQLite（WAL）+ sqlite-vec（cosine KNN）                  │
-│    LLM：OpenCode Go（deepseek-v4-flash）· Embedding：智谱   │
+│    普通聊天：deepseek-v4-flash                             │
+│    图片识别：deepseek-v4-flash-vision-exp · Embedding：智谱 │
+│    /api/chat（JSON）· /api/chat/vision（multipart）          │
+└────────────────────────────────────────────────────┘
+
+┌─ QQ 通道 ───────────────────────────────────────────┐
+│ NapCat → AstrBot 插件 → /api/chat 或 /api/chat/vision     │
+│ 私聊按 QQ 号隔离 + HMAC 身份签名；群聊 stop_event 静默     │
 └────────────────────────────────────────────────────┘
 ```
 
 **一次聊天请求的数据流**：
 
 ```
-用户消息
-  ├─ 身份守卫（改名要确认、角色扮演不进人格）
-  ├─ 命令路由（12 个命令族，按注册顺序：身份 → 确认 → 日志 → 时间 → 提醒 → …）
+用户消息（桌面端 / QQ 私聊 / Web/API）
+  ├─ 图片入口（如有附件）
+  │   ├─ 接收 multipart：image + message + request_id（可选 user_id）
+  │   ├─ 边界校验 JPEG/PNG/WebP、MIME 与 ≤10MB；服务端不抓取图片 URL
+  │   ├─ QQ 额外校验 QQ_API_TOKEN + QQ_IDENTITY_SECRET HMAC；群聊在插件层静默
+  │   └─ 组装多模态消息，跳过零 LLM 命令，使用视觉模型
+  ├─ 无图片时走身份守卫与命令路由（按注册顺序：身份 → 确认 → 日志 → 时间 → 提醒 → …）
   │   命中即回，零 LLM
   └─ 未命中 → LLM 主路径
        ├─ 检索：记忆（向量+BM25 混合 → 弱命中深挖兜底 → 一跳共现扩散）
@@ -55,8 +67,9 @@
        ├─ 注入：稳定档案区（facts/画像/教训/风格/关切/术语/目标/未解决）
        │        动态上下文区（10 轮原文 + 更早摘要 + 记忆 + 知识库
        │                      + 行为 + 情绪 + 自我状态）
-       ├─ LLM 生成（usage 记账：token 与缓存命中率）
+       ├─ LLM 生成（普通聊天 deepseek-v4-flash；图片识别 deepseek-v4-flash-vision-exp；usage 记账）
        └─ 写库 + 提升被引用记忆的 importance/hit_count + 后台事实提取
+          （图片只保留文本与 [图片] 标记，原始字节不落库）
 
 定时任务（10 个）
   每分钟  QQ 提醒推送（推送成功才消费，失败下轮重推）
@@ -70,6 +83,52 @@
 ```
 
 **prompt 分区的成本考量**：稳定档案区放在前部，动态上下文区放在末尾。因为 LLM 前缀缓存的命中依赖前缀不变，而缓存读取单价比输入便宜约 30 倍（实测命中率 30%~76%）。**区块顺序是成本决策，不只是可读性。**
+
+## 图片识别一期接口
+
+服务端提供 `POST /api/chat/vision`，使用 `multipart/form-data` 接收图片和文字问题；普通文本仍使用 `POST /api/chat` 的 JSON 接口。
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/chat/vision \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -F "image=@sample.png;type=image/png" \
+  -F "message=请描述图片中的内容" \
+  -F "request_id=desktop-20260905-0001" \
+  -F "user_id=10086"
+```
+
+| 字段 | 必填 | 说明 |
+|---|---:|---|
+| `image` | 是 | 图片文件；只接受 JPEG、PNG、WebP，服务端按文件头和 MIME 双重校验 |
+| `message` | 否 | 图片问题或补充说明；为空时使用默认识图指令 |
+| `request_id` | 是 | 客户端重试幂等键，不能为空，最长 128 个字符 |
+| `user_id` | 否 | 用户主体；QQ 请求必须与 HMAC 签名中的 QQ 号一致，主人/内部 token 不信任 body 覆盖身份 |
+
+单图上限由 `VISION_MAX_IMAGE_BYTES` 控制，默认 `10485760` 字节（10MB）。服务端只在请求内存中生成 data URL，不抓取远程图片 URL，也不把原始图片字节写入记忆库。
+
+鉴权规则：配置任意服务端 token 后，必须带 `Authorization: Bearer ...`；该路由仅允许 `owner`、`internal`、`qq` 角色。QQ 插件还必须使用独立的 `QQ_API_TOKEN`，并发送 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`（或 `X-Request-ID`）和 `X-QQ-Signature`；签名载荷为“QQ 号、时间戳、request_id”逐行拼接的 HMAC-SHA256，默认 300 秒内有效。
+
+幂等与错误语义：同一用户同一 `request_id` 且消息/图片 SHA-256 相同会复用成功响应；同一 ID 改了消息或图片返回 `409`，请求仍在处理时返回 `409` 并带 `Retry-After: 1`。`400` 表示缺字段、空文件或损坏文件，`401/403` 表示鉴权/身份失败，`413` 表示超过大小上限，`415` 表示格式或 MIME 不支持。视觉上游超时或调用失败返回正常 `ChatResponse` 的友好失败文案，但该失败不会缓存，客户端可用原 `request_id` 重试。
+
+### 图片相关配置
+
+```dotenv
+# 普通聊天与图片识别使用不同模型
+LLM_MODEL=deepseek-v4-flash
+VISION_LLM_MODEL=deepseek-v4-flash-vision-exp
+VISION_MAX_IMAGE_BYTES=10485760
+VISION_TIMEOUT=90
+
+# 推荐多 Key；留空时回退旧的 LLM_API_KEY
+LLM_API_KEYS=<key-1>,<key-2>
+
+# QQ 插件独立鉴权（值只放服务器 .env / AstrBot 配置，不进仓库）
+QQ_API_TOKEN=<qq-api-token>
+QQ_IDENTITY_SECRET=<shared-hmac-secret>
+QQ_IDENTITY_MAX_AGE_SECONDS=300
+```
+
+`QQ_API_TOKEN` 只证明请求来自 QQ 插件，`QQ_IDENTITY_SECRET` 才用于证明发送者 QQ 号；AstrBot 插件配置中的 `api_token`、`identity_secret` 分别填入前两项。所有 Key/token/secret 只写脱敏占位符，不要复制真实值到文档或仓库。
 
 ## 记忆系统（十通道）
 
@@ -243,10 +302,11 @@ cd personal-ai-assistant/server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp ../.env.example ../.env   # 填 LLM/Embedding Key + 生成 API_TOKEN
-sudo systemctl restart assistant   # systemd 管理（见 docs/OPS.md，首次配置一次）
+# 当前实例采用手工进程启动；systemd 新装模板见 scripts/deploy_server.sh
+nohup .venv/bin/python run.py > /tmp/assistant.log 2>&1 &
 ```
 
-`.env` 要点：`API_TOKEN`（32 字节随机）、`LLM_BASE_URL`（OpenCode Go 或 DeepSeek 官方）、`EMBEDDING_DIMENSION`（智谱 embedding-3 = 2048）。
+`.env` 要点：`API_TOKEN`（32 字节随机）、`LLM_BASE_URL`（OpenCode Go 或 DeepSeek 官方）、`LLM_MODEL`（普通聊天）、`VISION_LLM_MODEL`（图片识别）、`EMBEDDING_DIMENSION`（智谱 embedding-3 = 2048）。实际运行状态与排查命令见 [OPS](docs/OPS.md)。
 
 ### 2. 采集器（Windows）
 
@@ -291,13 +351,49 @@ cd server && git pull
 
 | 项 | 状态 |
 |----|------|
-| 单元/集成测试 | **742 个**（`cd server && .venv\Scripts\python -m pytest tests/ -q`，覆盖鉴权/执行器安全与绕过变形/命令误吞/确认层/启动器劫持/记忆/隐私脱敏/采集器可靠性/备份可恢复性/健身/情绪/自我状态/主观时间/身份守卫/共现扩散/实体索引五层检索/分域检索/纯文本输出/主动开口/token 记账/搜索/小说/QQ 推送等） |
+| 服务端隔离回归 | **1004 passed / 2 skipped**（`cd server && .venv/bin/python -m pytest tests/ -q`；视觉用例包含在此回归，未重复调用真实视觉服务） |
+| QQ 图片专项 | **5 passed**（`pytest qq/astrbot_plugin_xy/test_main.py -q`；仅使用 AstrBot/HTTP 桩） |
+| 桌面图片专项 | **6 passed**（`pytest desktop/tests/test_image_input.py -q`；对应选图、剪贴板、图片-only、multipart 与临时文件清理） |
 | 输出格式 | QQ 不渲染 Markdown，回复出口做确定性去标记转换（`plain_text.strip_markdown`）——prompt 禁令是概率性的，实测线上仍大量出现 `**加粗**` 与 `- 列表`。转换而非删除，信息不丢；写文档/简历流程不受影响 |
 | 测试隔离 | conftest 两层护栏：默认库挪出生产库 + `connect()` 上的 time-of-use 拦截器（测试期连生产库直接 RuntimeError）。曾因 14 个测试文件的隔离失效清空过真实库，见 LESSONS 6.31 |
 | 检索评测 | `benchmarks/eval_retrieval.py`：基线 MRR 0.906 → 混合 0.938 |
 | 对话回归集 | `benchmarks/chat_regression.py`：10 题固定问题集（身份/记忆召回/防幻觉/命令/纠正/格式），报告含真实 token 用量与成本；`--dry-run` 跑临时库零污染。一次约 0.09 元 |
 | 踩坑沉淀 | 20+ 个真实问题，每个配"根因+修复+教训"（LESSONS.md） |
 | 依赖 | requirements 全精确锁版 |
+
+## 图片识别一期验收清单
+
+以下清单按用户入口拆分；`[x]` 仅记录已经完成的本地/隔离测试证据，不把真实视觉调用或 QQ 发消息重复作为文档验收动作。验收基准日：**2026-09-05**。
+
+### 桌面端
+
+- [ ] 通过“图片”选择 JPEG/PNG/WebP，确认附件名、清除按钮和大小提示正常。
+- [ ] 发送“图片 + 文字”和图片-only；确认图片请求直接走 multipart，不进入本地执行器。
+- [ ] 用“粘贴”或 `Ctrl+V` 粘贴剪贴板图片，发送成功、失败、取消后确认临时 PNG 已清理，原始图片不被修改。
+- [x] `pytest desktop/tests/test_image_input.py -q`：**6 passed**。
+
+### QQ
+
+- [ ] 主人私聊发送图片并带问题，确认回复来自 `/api/chat/vision`；访客私聊可识图但不能读取主人记忆或调用主人专属功能。
+- [ ] 群聊图片在任何上传前静默并 `stop_event`，不触发 API/默认 LLM。
+- [ ] 优先验证 NapCat `get_file`；失败时再验证 CDN 直连/`download_proxy` 代理兜底，并检查临时文件最终删除。
+- [ ] 验证 JPEG/PNG/WebP 的文件头、MIME、10MB 上限、错误提示，以及 `QQ_API_TOKEN` + `identity_secret` 对齐的 HMAC/request_id。
+- [x] `pytest qq/astrbot_plugin_xy/test_main.py -q`：**5 passed**。
+
+### Web/API
+
+- [ ] 先执行无副作用的 `GET /api/health` 与 `GET /api/ready`；不得把真实视觉调用放进健康检查。
+- [ ] 用 `multipart/form-data` 验证 `image`、可选 `message`、必填 `request_id` 和可选 `user_id`；确认格式、MIME、10MB 边界按预期返回。
+- [ ] 配置角色 token 后验证 `owner`/`internal`/`qq` 可访问，`collector`/`executor` 被拒绝；QQ 请求还需通过 HMAC 身份校验。
+- [ ] 用同一用户同一 `request_id` 重试确认成功响应复用；更换消息或图片返回 `409`，视觉失败不缓存并可安全重试。
+- [x] `cd server && .venv/bin/python -m pytest tests/ -q`：**1004 passed / 2 skipped**，视觉用例包含在此回归。
+
+### MCP
+
+- [ ] 明确一期边界：MCP 不承载图片上传；图片入口只验收桌面端、QQ、Web/API，MCP 只验收既有本地工具链。
+- [ ] 保持 `MCP_ENABLED=false` 时关闭；启用后只允许独立 stdio 进程，`MCP_STDIO_ROLE` 只能是 `owner`/`internal`，`MCP_STDIO_USER_ID` 不得绕过主人边界。
+- [ ] 检查 MCP stdout 只输出协议内容、普通日志走 stderr；确认读取权限、显式确认闸门和未批准的 shell/Python/删除工具仍关闭。
+- [ ] 检查 `mcp_audit_logs` 记录 user/role/tool/request_id/client_name、成功失败和耗时，参数只保存脱敏摘要，不保存图片或敏感全文。
 
 ## 文档导航
 

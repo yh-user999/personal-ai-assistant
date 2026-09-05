@@ -46,13 +46,19 @@ def parse_doc_command(msg: str) -> tuple[str, str] | None:
     return (title[:60], requirement or title)
 
 
-async def generate_and_save(title: str, requirement: str) -> dict:
-    """LLM 生成文档 → 存 documents 表 → 同步知识库。返回 {id, title, words}。
-
-    入库前统一脱敏（第 6.14 课）。
-    """
+async def generate_and_save(
+    title: str,
+    requirement: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """LLM 生成文档 → 存 documents 表 → 同步知识库。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
     from app.services.sanitize import sanitize
 
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("document_generate", uid, "request")
     content = await llm.chat(
         [
             {"role": "system", "content": DOC_PROMPT},
@@ -61,6 +67,8 @@ async def generate_and_save(title: str, requirement: str) -> dict:
         temperature=0.4,
         max_tokens=3000,
         timeout=240,  # 长文档生成档（全局 60s 会掐断长文）
+        request_id=logical_id,
+        user_id=uid,
     )
     content = sanitize(content.strip())
     if not content:

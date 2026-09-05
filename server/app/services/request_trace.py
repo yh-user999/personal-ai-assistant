@@ -27,6 +27,9 @@ def record(
 ) -> bool:
     """落一行决策轨迹（同步 SQL，毫秒级）。失败返回 False 并记日志。"""
     try:
+        from app.core.memory import normalize_user_id
+
+        uid = normalize_user_id(user_id)
         conn = connect()
         try:
             conn.execute(
@@ -35,7 +38,7 @@ def record(
                     healer, injection_bytes, search_ms)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    user_id or "",
+                    uid,
                     (query or "")[:500],
                     datetime.now(timezone.utc).isoformat(),
                     json.dumps(routing or {}, ensure_ascii=False),

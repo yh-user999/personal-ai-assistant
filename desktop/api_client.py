@@ -4,8 +4,18 @@
 不继承系统代理设置（代理连不上内网会把聊天长请求搞成 502）。
 """
 import os
+import uuid
+from pathlib import Path
 
 import httpx
+
+
+_IMAGE_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 class ApiClient:
@@ -44,14 +54,32 @@ class ApiClient:
         r.raise_for_status()
         return r.json().get("greeting", "")
 
-    def chat(self, message: str) -> str:
-        r = httpx.post(
-            f"{self.base_url}/api/chat",
-            json={"message": message},
-            headers=self._headers(),
-            timeout=60,
-            trust_env=False,
-        )
+    def chat(self, message: str, image_path: str | os.PathLike[str] | None = None, timeout: float | None = None) -> str:
+        """发送文本或图片消息；图片文件只读打开，调用方拥有其生命周期。"""
+        request_id = uuid.uuid4().hex
+        request_timeout = (90 if image_path is not None else 60) if timeout is None else timeout
+        if image_path is None:
+            r = httpx.post(
+                f"{self.base_url}/api/chat",
+                json={"message": message, "request_id": request_id},
+                headers=self._headers(),
+                timeout=request_timeout,
+                trust_env=False,
+            )
+        else:
+            path = Path(image_path)
+            media_type = _IMAGE_MEDIA_TYPES.get(path.suffix.lower())
+            if media_type is None:
+                raise ValueError("仅支持 JPEG、PNG 或 WebP 图片")
+            with path.open("rb") as image_file:
+                r = httpx.post(
+                    f"{self.base_url}/api/chat/vision",
+                    data={"message": message, "request_id": request_id},
+                    files={"image": (path.name, image_file, media_type)},
+                    headers=self._headers(),
+                    timeout=request_timeout,
+                    trust_env=False,
+                )
         r.raise_for_status()
         return r.json()["reply"]
 

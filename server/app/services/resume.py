@@ -54,8 +54,18 @@ def parse_resume_command(msg: str) -> str | None:
     return rest[:40] if rest else ""
 
 
-async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEFAULT) -> dict:
-    """生成优化简历 → 存 documents → 导出 .docx。返回 {id, title, docx}。"""
+async def optimize_resume(
+    target_job: str = "",
+    resume_doc: str = RESUME_DOC_DEFAULT,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """生成优化简历 → 存 documents → 导出 .docx。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("resume_optimize", uid, resume_doc)
     original = _get_resume_text(resume_doc)
     if not original:
         return {"error": f"知识库中未找到简历文档（{resume_doc}），请先通过知识库上传"}
@@ -70,6 +80,8 @@ async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEF
         ],
         temperature=0.4,
         max_tokens=4000,
+        request_id=logical_id,
+        user_id=uid,
     )
     content = content.strip()
     if not content:
@@ -77,7 +89,9 @@ async def optimize_resume(target_job: str = "", resume_doc: str = RESUME_DOC_DEF
 
     # 标题：目标岗位版简历
     title = "简历优化版" + (f"-{target_job}" if target_job else "")
-    result = await documents.generate_and_save(title, content)
+    result = await documents.generate_and_save(
+        title, content, user_id=uid, request_id=f"{logical_id}:document"
+    )
     if "error" in result:
         return result
 

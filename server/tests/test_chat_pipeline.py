@@ -248,6 +248,7 @@ def test_generation_retry_then_success(db_env, monkeypatch):
             if calls["n"] == 1:
                 raise RuntimeError("timeout")
             assert kwargs.get("timeout") == 240 and kwargs.get("max_tokens") == 6000
+            assert kwargs.get("model") == settings.novel_llm_model
             return "生成的长文"
 
     runtime = make_runtime(llm=_Flaky())

@@ -23,6 +23,13 @@
     "default": "",
     "restart_required": false
   },
+  "identity_secret": {
+    "description": "QQ 用户身份签名密钥",
+    "type": "string",
+    "hint": "必须与服务器 .env 的 QQ_IDENTITY_SECRET 一致；QQ_API_TOKEN 启用时用于防止伪造 user_id",
+    "default": "",
+    "restart_required": false
+  },
   "onebot_http": {
     "description": "NapCat onebot HTTP 地址（文件会话下载通道）",
     "type": "string",
@@ -53,6 +60,20 @@
     "hint": "格式：容器前缀=宿主机前缀，多对用分号分隔；与部署的挂载点一致",
     "obvious_hint": true,
     "default": "/app/.config/QQ/=/opt/napcat/qq_config/;/app/napcat/cache/=/opt/napcat/cache/;/app/napcat/config/=/opt/napcat/config/",
+    "restart_required": false
+  },
+  "vision_max_image_bytes": {
+    "description": "视觉图片大小上限（字节）",
+    "type": "int",
+    "hint": "仅接受 JPEG/PNG/WebP；默认 10485760（10MB），下载和上传前都会限制",
+    "default": 10485760,
+    "restart_required": false
+  },
+  "vision_timeout": {
+    "description": "视觉请求超时（秒）",
+    "type": "number",
+    "hint": "图片下载、NapCat 取图和 /api/chat/vision 使用独立超时；默认 90 秒",
+    "default": 90,
     "restart_required": false
   }
 }

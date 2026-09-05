@@ -32,7 +32,22 @@ def test_health():
     with TestClient(app) as client:
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+        payload = r.json()
+        assert payload == {"status": "ok", "version": app.version}
+        assert "collector_heartbeat" not in payload
+        assert "timestamp" not in payload
+        assert "app_name" not in payload
+
+
+def test_ready_reports_dependency_state():
+    with TestClient(app) as client:
+        health = client.get("/api/health")
+        ready = client.get("/api/ready")
+    assert health.status_code == 200
+    assert ready.status_code in {200, 503}
+    payload = ready.json()
+    assert payload["status"] in {"ready", "not_ready"}
+    assert {"database", "scheduler", "llm", "vector"} <= set(payload["checks"])
 
 
 def test_worklog_route():
@@ -43,13 +58,37 @@ def test_worklog_route():
         assert "已记录" in r.json()["reply"]
 
 
-def test_heartbeat_and_health():
+def test_ready_allows_keyword_fallback_when_vectors_are_unavailable(monkeypatch):
+    from app.models import database
+
+    with TestClient(app) as client:
+        # 首次 ready 会在线程池线程建立连接并探测扩展，先预热后再注入降级状态。
+        client.get("/api/ready")
+        monkeypatch.setattr(database, "_vec_state", False)
+        response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["checks"]["database"]["status"] == "ok"
+    assert payload["checks"]["vector"] == {
+        "status": "degraded",
+        "ok": False,
+        "available": False,
+        "fallback": "keyword",
+    }
+    assert payload["degraded"] == ["vector"]
+    assert payload["failures"] == []
+
+
+def test_heartbeat_does_not_expose_activity_on_health():
     with TestClient(app) as client:
         r = client.post(
             "/api/heartbeat",
             json={"client": "collector", "channels": {"window": "2025-01-01T00:00:00+00:00"}},
         )
         assert r.status_code == 200
-        hb = client.get("/api/health").json()["collector_heartbeat"]
-        assert hb["client"] == "collector"
-        assert "window" in hb["channels"]
+        payload = client.get("/api/health").json()
+        assert payload["status"] == "ok"
+        assert "collector_heartbeat" not in payload
+        assert "timestamp" not in payload

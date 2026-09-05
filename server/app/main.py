@@ -4,12 +4,13 @@ M1 里程碑：注册 chat 路由并跑通记忆检索注入。
 M2 里程碑：注册 events/stats 路由。
 M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import ClassVar
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -25,8 +26,9 @@ from app.api import (
     reports,
     stats,
 )
-from app.auth import authenticate_token
+from app.auth import authenticate_token, verify_qq_identity
 from app.config import settings
+from app.core import llm
 from app.core.scheduler import SchedulerManager
 from app.models.database import init_db
 
@@ -42,8 +44,10 @@ APP_VERSION = "0.4.1"  # 唯一版本来源：FastAPI 元数据与 /api/health �
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动：建表 + 启动定时任务
+    # 启动：建表 + 检查小说模型 + 启动定时任务
     init_db()
+    if settings.deployment_env.casefold() not in {"test", "testing"}:
+        await llm.validate_novel_model()
     app.state.collector_heartbeat = None
     app.state.scheduler = SchedulerManager()
     await app.state.scheduler.start()
@@ -59,11 +63,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     每次请求实时读 settings.api_token（测试可 monkeypatch）。
     """
 
-    PUBLIC_PATHS: ClassVar[set[str]] = {"/", "/api/health"}
+    PUBLIC_PATHS: ClassVar[set[str]] = {"/", "/api/health", "/api/ready"}
     # 最长前缀优先：保证 "/api/knowledge/ingest" 这类更具体的规则
     # 先于父前缀 "/api/knowledge" 匹配（顺序 + break 的旧写法会让
     # 具体规则永不生效，宽严设置只能靠巧合保持正确）。
     ROLE_RULES: ClassVar[tuple] = tuple(sorted((
+        ("/api/chat", {"qq", "internal", "owner"}),
         ("/api/events", {"collector", "internal", "owner"}),
         ("/api/heartbeat", {"collector", "internal", "owner"}),
         ("/api/knowledge", {"owner", "internal"}),
@@ -115,12 +120,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
             ctx = authenticate_token(token)
             if ctx is None:
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
-            request.state.auth = ctx
+            matched_rule = None
             for prefix, allowed in self.ROLE_RULES:
                 if path == prefix or path.startswith(prefix + "/"):
+                    matched_rule = (prefix, allowed)
                     if ctx.role not in allowed:
                         return JSONResponse({"detail": "forbidden"}, status_code=403)
                     break
+            if ctx.role == "qq" and (matched_rule is None or "qq" in matched_rule[1]):
+                try:
+                    user_id, request_id = verify_qq_identity(request)
+                except HTTPException as exc:
+                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+                # 认证上下文中的 subject 只能来自已验证的请求头，不能由 body 覆盖。
+                from dataclasses import replace
+
+                ctx = replace(ctx, subject=user_id)
+                request.state.qq_request_id = request_id
+            request.state.auth = ctx
         return await call_next(request)
 
 
@@ -144,10 +161,97 @@ app.include_router(novel.router, prefix="/api", tags=["novel"])
 
 
 @app.get("/api/health")
-async def health(request: Request):
-    """健康检查：服务状态 + 采集器心跳（检测采集停滞）。"""
-    hb = request.app.state.collector_heartbeat
-    return {"status": "ok", "version": APP_VERSION, "collector_heartbeat": hb}
+async def health():
+    """轻量存活探针：只返回版本和存活状态，不暴露采集活动或时间信息。"""
+    return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/api/ready")
+async def ready(request: Request):
+    """可诊断就绪检查；向量缺失时报告降级但允许关键词检索接流量。"""
+    from starlette.responses import JSONResponse
+
+    checks: dict[str, dict] = {}
+
+    def _database_check() -> dict:
+        from app.models import database
+
+        with database.db_connection() as conn:
+            required = {
+                "schema_version", "memories", "facts", "behavior_events",
+                "chat_request_dedup", "llm_usage", "novel_projects",
+                "work_log", "reminders", "mood_log", "lessons",
+                "writing_log", "fitness_log", "initiative_log",
+                "daily_summaries", "weekly_reports",
+            }
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            ).fetchall()
+            present = {row[0] for row in rows}
+            missing = sorted(required - present)
+            version_row = conn.execute(
+                "SELECT version FROM schema_version WHERE id=1"
+            ).fetchone()
+            version = int(version_row[0]) if version_row else None
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
+            ok = not missing and version == database.SCHEMA_VERSION and integrity == "ok" and not foreign_keys
+            return {
+                "status": "ok" if ok else "failed",
+                "ok": ok,
+                "schema_version": version,
+                "missing_tables": missing,
+                "integrity": integrity == "ok",
+                "foreign_keys": len(foreign_keys) == 0,
+            }
+
+    try:
+        checks["database"] = await asyncio.to_thread(_database_check)
+    except Exception as exc:  # noqa: BLE001
+        checks["database"] = {"status": "failed", "ok": False, "error": type(exc).__name__}
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    scheduler_ok = bool(
+        scheduler
+        and getattr(scheduler, "_started", False)
+        and not getattr(scheduler, "_stopped", True)
+        and getattr(getattr(scheduler, "scheduler", None), "running", False)
+    )
+    checks["scheduler"] = {"status": "ok" if scheduler_ok else "failed", "ok": scheduler_ok}
+
+    try:
+        keys = settings.llm_api_key_values
+        configured = bool(keys and str(settings.llm_model or "").strip())
+        env = settings.deployment_env.casefold()
+        llm_status = "ok" if configured else ("degraded" if env in {"test", "testing", "development", "dev"} else "failed")
+        checks["llm"] = {
+            "status": llm_status,
+            "ok": configured,
+            "configured_keys": len(keys),
+            "model_configured": bool(str(settings.llm_model or "").strip()),
+        }
+    except Exception as exc:  # noqa: BLE001
+        checks["llm"] = {"status": "failed", "ok": False, "error": type(exc).__name__}
+
+    from app.models import database
+    vector_ok = database._vec_state is True
+    checks["vector"] = {
+        "status": "ok" if vector_ok else "degraded",
+        "ok": vector_ok,
+        "available": vector_ok,
+        "fallback": "keyword" if not vector_ok else None,
+    }
+
+    failures = [name for name, result in checks.items() if result.get("status") == "failed"]
+    degraded = [name for name, result in checks.items() if result.get("status") == "degraded"]
+    payload = {
+        "status": "ready" if not failures else "not_ready",
+        "version": APP_VERSION,
+        "checks": checks,
+        "failures": failures,
+        "degraded": degraded,
+    }
+    return JSONResponse(payload, status_code=200 if not failures else 503)
 
 
 # ── Web 静态页 ────────────────────────────────────────────

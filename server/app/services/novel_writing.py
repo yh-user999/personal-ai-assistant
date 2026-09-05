@@ -96,10 +96,19 @@ def _build_authority(novel_facts: list[str], facts_text: str) -> tuple[str, int]
     return authority, count
 
 
-async def check_conflicts(text: str) -> dict:
+async def check_conflicts(
+    text: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
     """返回 {"reply": str}（已格式化，可直接当聊天回复）。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("novel_conflict_check", uid, "text")
     novel_facts = knowledge.get_novel_facts(text)
-    facts_text = memory.get_facts_injection()
+    facts_text = memory.get_facts_injection(user_id=uid)
     authority, checked_count = _build_authority(novel_facts, facts_text)
 
     system = (
@@ -115,6 +124,9 @@ async def check_conflicts(text: str) -> dict:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.2,
             max_tokens=1500,
+            model=llm.get_novel_model(),
+            request_id=logical_id,
+            user_id=uid,
         )
     except (OpenAIError, TimeoutError, RuntimeError) as e:
         return {"reply": f"😅 冲突检查暂时没跑通（LLM 调用失败：{type(e).__name__}），稍后再试"}
@@ -148,13 +160,22 @@ def parse_continue_command(msg: str) -> str | None:
     return None
 
 
-async def continue_story(text: str) -> str:
-    """注入设定 + 前情提要 + 剧情背景，续写 300~500 字。失败给友好提示。"""
+async def continue_story(
+    text: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> str:
+    """注入设定 + 前情提要 + 剧情背景，续写 300~500 字。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("novel_continue", uid, "text")
     novel_facts = knowledge.get_novel_facts(text)
     hits = await knowledge.search_knowledge(text, top_k=3)
     hits = knowledge.expand_chunks(hits, radius=1, max_chars=2000)
     background = knowledge.format_knowledge_injection(hits) or "（未检索到相关剧情背景）"
-    facts_text = memory.get_facts_injection()
+    facts_text = memory.get_facts_injection(user_id=uid)
 
     authority, _ = _build_authority(novel_facts, facts_text)
     # 二期：前情提要（章节存档非空才出现）——写第 N 段时知道前面各章写了什么
@@ -177,6 +198,9 @@ async def continue_story(text: str) -> str:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.8,
             max_tokens=1200,
+            model=llm.get_novel_model(),
+            request_id=logical_id,
+            user_id=uid,
         )
     except (OpenAIError, TimeoutError, RuntimeError) as e:
         return f"😅 续写暂时没跑通（LLM 调用失败：{type(e).__name__}），稍后再试"
@@ -196,12 +220,19 @@ def parse_writing_log(msg: str) -> tuple[str | None, int] | None:
     return (m.group(1), words)
 
 
-def add_writing_log(chapter: str | None, words: int) -> int:
+def add_writing_log(
+    chapter: str | None,
+    words: int,
+    user_id: str | None = None,
+) -> int:
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO writing_log (chapter, words, created_at) VALUES (?, ?, ?)",
-            (chapter, words, datetime.now(TZ).astimezone(ZoneInfo("UTC")).isoformat()),
+            "INSERT INTO writing_log (user_id, chapter, words, created_at) VALUES (?, ?, ?, ?)",
+            (uid, chapter, words, datetime.now(TZ).astimezone(ZoneInfo("UTC")).isoformat()),
         )
         conn.commit()
         return cur.lastrowid
@@ -209,12 +240,18 @@ def add_writing_log(chapter: str | None, words: int) -> int:
         conn.close()
 
 
-def writing_summary() -> str:
+def writing_summary(user_id: str | None = None) -> str:
     """`写作进度` 汇总：累计/近7天/今日 + 连续天数 + 最近记录。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT chapter, words, created_at FROM writing_log ORDER BY id DESC LIMIT 100"
+            f"SELECT chapter, words, created_at FROM writing_log WHERE {clause} "
+            "ORDER BY id DESC LIMIT 100",
+            args,
         ).fetchall()
     finally:
         conn.close()

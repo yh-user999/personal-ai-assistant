@@ -29,8 +29,15 @@ CONSOLIDATION_PROMPT = """你是记忆整合系统，只输出 JSON。
 """
 
 
-async def _consolidate_user(uid: str, since: str) -> int:
+async def _consolidate_user(
+    uid: str,
+    since: str,
+    request_id: str | None = None,
+) -> int:
     """整合单个用户窗口内的未整合消息（v0.4 多人隔离版）。"""
+    from app.services.llm_usage import logical_request_id
+
+    logical_id = request_id or logical_request_id("consolidation", uid, since[:19])
     conn = connect()
     try:
         rows = conn.execute(
@@ -48,6 +55,8 @@ async def _consolidate_user(uid: str, since: str) -> int:
     result = await llm.chat_json(
         "你是记忆整合系统，只输出 JSON。",
         CONSOLIDATION_PROMPT.replace("{conversation}", conversation),
+        request_id=logical_id,
+        user_id=uid,
     )
     summary = result.get("summary", "")
     topics = result.get("topics", [])
@@ -92,7 +101,10 @@ async def _consolidate_user(uid: str, since: str) -> int:
         conn.close()
 
 
-async def consolidate_recent(hours: int = 2) -> dict:
+async def consolidate_recent(
+    hours: int = 2,
+    request_id: str | None = None,
+) -> dict:
     """整合最近 hours 小时内、尚未整合的用户消息（按用户逐个隔离整合）。"""
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     conn = connect()
@@ -106,5 +118,10 @@ async def consolidate_recent(hours: int = 2) -> dict:
     users = [r["user_id"] for r in rows if r["user_id"]]
     total = 0
     for uid in users:
-        total += await _consolidate_user(uid, since)
+        child_request_id = (
+            f"{request_id}:{uid}"[:160]
+            if request_id
+            else None
+        )
+        total += await _consolidate_user(uid, since, request_id=child_request_id)
     return {"messages": total}

@@ -66,70 +66,46 @@ async def send_private(text: str) -> bool:
 
 
 async def push_reminders() -> int:
-    """推送所有到期提醒给主人 QQ，返回成功推送条数。未配置通道返回 0。
-
-    qq_admin_id 配置成非数字会在启动期 fail-fast（见 config 校验），
-    这里不再每分钟吞 ValueError。
-    """
+    """推送所有到期提醒给主人 QQ，返回被成功消费的提醒条数。"""
     if not (settings.qq_push_url and settings.qq_admin_id):
         return 0
-    items = reminders.due_reminders()
+    from app.core.memory import owner_user_id
+
+    owner = owner_user_id()
+    items = reminders.claim_due_reminders(user_id=owner)
     if not items:
         return 0
-    headers = (
-        {"Authorization": f"Bearer {settings.qq_push_token}"}
-        if settings.qq_push_token
-        else {}
-    )
-    client = _get_client()
 
-    # NapCat 长期掉线恢复后的积压防轰炸：超 24h 的老项合并成一条摘要推送
-    fresh = [it for it in items if not it.get("stale")]
-    stale = [it for it in items if it.get("stale")]
+    token = items[0].get("sending_token") or ""
+    stale = [item for item in items if item.get("stale")]
+    fresh = [item for item in items if not item.get("stale")]
+    consumed = 0
+
+    # 长期掉线后的积压只发一条摘要；摘要成功后直接消费同一 claim token，
+    # 不再把 stale 项加入逐条发送列表，避免摘要后再次轰炸。
     if stale:
-        digest = "\n".join(f"· {it['content']}" for it in stale)
-        try:
-            r = await client.post(
-                f"{settings.qq_push_url.rstrip('/')}/send_private_msg",
-                json={
-                    "user_id": int(settings.qq_admin_id),
-                    "message": f"📋 {len(stale)} 条过期提醒（摘要合并）：\n{digest}\n（已超 24 小时，如仍需要请重新设置）",
-                },
-                headers=headers,
-            )
-            if r.status_code == 200 and r.json().get("status") == "ok":
-                fresh.extend(stale)  # 摘要送达即消费，不再逐条轰炸
-            else:
-                logger.warning("积压提醒摘要推送失败: HTTP %s", r.status_code)
-        except (httpx.HTTPError, ValueError, TypeError) as e:
-            logger.warning("积压提醒摘要推送异常: %s", e)
+        digest = "\n".join(f"· {item['content']}" for item in stale)
+        summary = (
+            f"📋 {len(stale)} 条过期提醒（摘要合并）：\n{digest}\n"
+            "（已超 24 小时，如仍需要请重新设置）"
+        )
+        if await send_private(summary):
+            stale_ids = [item["id"] for item in stale]
+            await asyncio.to_thread(reminders.mark_notified, stale_ids, token, owner)
+            consumed += len(stale_ids)
+        else:
+            await asyncio.to_thread(reminders.release_claim, [item["id"] for item in stale], token, owner)
 
-    pushed_ids: list[int] = []
-    pushed_token = None
+    succeeded: list[int] = []
+    failed: list[int] = []
     for item in fresh:
-        try:
-            r = await client.post(
-                f"{settings.qq_push_url.rstrip('/')}/send_private_msg",
-                json={
-                    "user_id": int(settings.qq_admin_id),
-                    "message": f"⏰ 提醒：{item['content']}",
-                },
-                headers=headers,
-            )
-            if r.status_code == 200 and r.json().get("status") == "ok":
-                pushed_ids.append(item["id"])
-                pushed_token = item.get("sending_token") or pushed_token
-            else:
-                logger.warning(
-                    "QQ 提醒推送失败 #%s（下轮重推）: HTTP %s %s",
-                    item["id"], r.status_code, r.text[:120],
-                )
-        except (httpx.HTTPError, ValueError, TypeError) as e:
-            logger.warning("QQ 提醒推送异常 #%s（下轮重推）: %s", item["id"], e)
-    if pushed_ids:
-        # 只消费确认送达的；失败的释放 claim，下一分钟重试
-        await asyncio.to_thread(reminders.mark_notified, pushed_ids, pushed_token)
-    failed_ids = [it["id"] for it in fresh if it["id"] not in pushed_ids]
-    if failed_ids:
-        await asyncio.to_thread(reminders.release_claim, failed_ids, pushed_token)
-    return len(pushed_ids)
+        if await send_private(f"⏰ 提醒：{item['content']}"):
+            succeeded.append(item["id"])
+        else:
+            failed.append(item["id"])
+    if succeeded:
+        await asyncio.to_thread(reminders.mark_notified, succeeded, token, owner)
+        consumed += len(succeeded)
+    if failed:
+        await asyncio.to_thread(reminders.release_claim, failed, token, owner)
+    return consumed

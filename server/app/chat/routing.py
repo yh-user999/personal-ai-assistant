@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import datetime
 from typing import Any
@@ -36,6 +37,34 @@ GUEST_BLOCKED_HANDLERS = frozenset(
         "executor",
     }
 )
+
+
+def _call_with_user(
+    func,
+    *args,
+    user_id: str,
+    request_id: str | None = None,
+    **call_kwargs,
+):
+    """调用支持主体/请求参数的服务；兼容旧插件/测试替身。"""
+    try:
+        signature = inspect.signature(func)
+        parameters = signature.parameters
+    except (TypeError, ValueError):
+        kwargs = dict(call_kwargs)
+        kwargs["user_id"] = user_id
+        if request_id is not None:
+            kwargs["request_id"] = request_id
+        return func(*args, **kwargs)
+    accepts_kwargs = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+    )
+    kwargs = dict(call_kwargs)
+    if "user_id" in parameters or accepts_kwargs:
+        kwargs["user_id"] = user_id
+    if request_id is not None and ("request_id" in parameters or accepts_kwargs):
+        kwargs["request_id"] = request_id
+    return func(*args, **kwargs)
 
 
 def _coerce_context(msg: str, request: Any, ctx: ChatContext | dict | None) -> ChatContext:
@@ -113,7 +142,7 @@ async def _worklog(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
     if not (ctx.message.startswith("记录：") or ctx.message.startswith("记录:")):
         return None
     content = re.sub(r"^记录[:：]\s*", "", ctx.message)
-    runtime.services.worklog.add_log(content)
+    _call_with_user(runtime.services.worklog.add_log, content, user_id=ctx.uid)
     return ChatResponse(reply=f"已记录 ✓（{content}）", memories_used=0)
 
 
@@ -130,7 +159,7 @@ async def _reminders(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | N
     reminder_cmd = reminders.parse_reminder_cmd(msg)
     if reminder_cmd:
         content, remind_at = reminder_cmd
-        reminders.add_reminder(content, remind_at)
+        _call_with_user(reminders.add_reminder, content, remind_at, user_id=ctx.uid)
         return ChatResponse(
             reply=(
                 f"⏰ 已设置提醒：{remind_at.strftime('%m月%d日 %H:%M')} → {content}\n"
@@ -139,7 +168,7 @@ async def _reminders(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | N
             memories_used=0,
         )
     if msg.strip() in ("我的提醒", "查看提醒", "有哪些提醒", "提醒列表"):
-        pending = reminders.list_pending()
+        pending = _call_with_user(reminders.list_pending, user_id=ctx.uid)
         if not pending:
             return ChatResponse(reply="目前没有待办提醒。", memories_used=0)
         lines = "\n".join(
@@ -149,7 +178,7 @@ async def _reminders(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | N
         return ChatResponse(reply=f"⏰ 待办提醒：\n{lines}", memories_used=0)
     cancel_match = re.match(r"^(?:取消提醒|删除提醒)[：:\s]*(.+)$", msg)
     if cancel_match:
-        count = reminders.cancel_by_keyword(cancel_match.group(1))
+        count = _call_with_user(reminders.cancel_by_keyword, cancel_match.group(1), user_id=ctx.uid)
         return ChatResponse(
             reply=f"已取消 {count} 条相关提醒" if count else "没找到内容匹配的待办提醒",
             memories_used=0,
@@ -172,7 +201,13 @@ async def _documents(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | N
     if not doc_cmd:
         return None
     title, requirement = doc_cmd
-    result = await documents.generate_and_save(title, requirement)
+    result = await _call_with_user(
+        documents.generate_and_save,
+        title,
+        requirement,
+        user_id=ctx.uid,
+        request_id=ctx.request_id,
+    )
     if "error" in result:
         return ChatResponse(reply=result["error"], memories_used=0)
     return ChatResponse(
@@ -189,7 +224,12 @@ async def _resume(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None
     target = resume.parse_resume_command(ctx.message)
     if target is None:
         return None
-    result = await resume.optimize_resume(target_job=target)
+    result = await _call_with_user(
+        resume.optimize_resume,
+        target_job=target,
+        user_id=ctx.uid,
+        request_id=ctx.request_id,
+    )
     if "error" in result:
         return ChatResponse(reply=result["error"], memories_used=0)
     docx = result.get("docx", "")
@@ -229,13 +269,13 @@ async def _fitness(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
     msg = ctx.message
     weight = fitness.parse_weight(msg)
     if weight is not None:
-        fitness.add_log("weight", weight, "")
+        _call_with_user(fitness.add_log, "weight", weight, "", user_id=ctx.uid)
         return ChatResponse(reply=f"⚖️ 体重已记录：{weight} kg ✓", memories_used=0)
     if msg.strip() in fitness.PROGRESS_WORDS:
-        return ChatResponse(reply=fitness.fitness_summary(), memories_used=0)
+        return ChatResponse(reply=_call_with_user(fitness.fitness_summary, user_id=ctx.uid), memories_used=0)
     training = fitness.parse_training(msg)
     if training:
-        fitness.add_log("training", None, training)
+        _call_with_user(fitness.add_log, "training", None, training, user_id=ctx.uid)
         return ChatResponse(reply=f"🏋️ 训练已记录 ✓（{training}）", memories_used=0)
     return None
 
@@ -247,13 +287,21 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
     log_cmd = novel_writing.parse_writing_log(msg)
     if log_cmd:
         chapter, words = log_cmd
-        novel_writing.add_writing_log(chapter, words)
+        if novel is not None:
+            novel.add_writing_log(chapter, words, user_id=ctx.uid)
+        else:
+            _call_with_user(novel_writing.add_writing_log, chapter, words, user_id=ctx.uid)
         return ChatResponse(
             reply=f"📝 已记录写作：{f'第{chapter}章 ' if chapter else ''}{words} 字 ✓",
             memories_used=0,
         )
     if msg.strip() in ("写作进度", "写作统计", "写作台账", "写作记录查询"):
-        return ChatResponse(reply=novel_writing.writing_summary(), memories_used=0)
+        summary = (
+            novel.writing_summary(user_id=ctx.uid)
+            if novel is not None
+            else _call_with_user(novel_writing.writing_summary, user_id=ctx.uid)
+        )
+        return ChatResponse(reply=summary, memories_used=0)
     conflict_text = novel_writing.parse_conflict_command(msg)
     if conflict_text:
         if novel_writing.looks_like_file_path(conflict_text):
@@ -264,7 +312,20 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
                 ),
                 memories_used=0,
             )
-        result = await (novel.review_conflicts(conflict_text) if novel is not None else novel_writing.check_conflicts(conflict_text))
+        result = await (
+            novel.review_conflicts(
+                conflict_text,
+                user_id=ctx.uid,
+                request_id=ctx.request_id,
+            )
+            if novel is not None
+            else _call_with_user(
+                novel_writing.check_conflicts,
+                conflict_text,
+                user_id=ctx.uid,
+                request_id=ctx.request_id,
+            )
+        )
         return ChatResponse(reply=result.reply if hasattr(result, "reply") else result["reply"], memories_used=0)
     # 小说写作二期：章节分析（1 次 LLM）+ 章节存档（零 LLM）。
     # 顺序在冲突检查之后（"检查设定冲突："不被吞）、续写之前。
@@ -279,7 +340,12 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
                 ),
                 memories_used=0,
             )
-        result = await (novel.review_chapter(analysis_text, user_id=ctx.uid) if novel is not None else chapter_analysis.analyze_chapter(analysis_text, user_id=ctx.uid))
+        result = await _call_with_user(
+            novel.review_chapter if novel is not None else chapter_analysis.analyze_chapter,
+            analysis_text,
+            user_id=ctx.uid,
+            request_id=ctx.request_id,
+        )
         return ChatResponse(reply=result.reply if hasattr(result, "reply") else result["reply"], memories_used=0)
     archive = novel.parse_archive_command(msg) if novel is not None else chapter_analysis.parse_archive_command(msg)
     if archive:
@@ -295,7 +361,20 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
         )
     continue_text = novel_writing.parse_continue_command(msg)
     if continue_text:
-        draft = await (novel.draft_chapter(continue_text) if novel is not None else novel_writing.continue_story(continue_text))
+        draft = await (
+            novel.draft_chapter(
+                continue_text,
+                user_id=ctx.uid,
+                request_id=ctx.request_id,
+            )
+            if novel is not None
+            else _call_with_user(
+                novel_writing.continue_story,
+                continue_text,
+                user_id=ctx.uid,
+                request_id=ctx.request_id,
+            )
+        )
         reply = draft.text if hasattr(draft, "text") else draft
         return ChatResponse(reply=reply, memories_used=0)
     return None
@@ -334,11 +413,11 @@ async def _identity(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | No
             content = identity_guard.take(uid)
             if content is None:
                 return ChatResponse(reply="刚那条改名已经过期了，需要的话再说一次。", memories_used=0)
-            self_reflect.save_lesson(content, "")
+            self_reflect.save_lesson(content, "", user_id=uid)
             return ChatResponse(reply="好，记下了，以后就按这个来。", memories_used=0)
         identity_guard.clear(uid)
 
-    verdict, reply = identity_guard.check(ctx.message)
+    verdict, reply = _call_with_user(identity_guard.check, ctx.message, user_id=ctx.uid)
     if verdict == "reject":
         return ChatResponse(reply=reply, memories_used=0)
     if verdict == "confirm":
@@ -580,7 +659,9 @@ _COMMAND_HANDLERS: list[tuple[str, object]] = [
 
 
 async def dispatch(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
-    """按注册顺序执行命令，访客跳过主人专属 handler。"""
+    """按注册顺序执行命令，图片请求不进入零 LLM 快捷命令。"""
+    if ctx.image is not None:
+        return None
     for name, handler in _COMMAND_HANDLERS:
         if not ctx.is_owner and name in GUEST_BLOCKED_HANDLERS:
             continue

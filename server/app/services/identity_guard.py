@@ -71,39 +71,44 @@ def looks_like_rename(text: str) -> bool:
     return not is_question(t)
 
 
-def has_existing_name() -> bool:
-    """她是否已有名字（identity 类教训已存在）。
-
-    有名字时再改叫"改名"（要确认）；没有时是"首次命名"（不打扰）。
-    """
+def has_existing_name(user_id: str | None = None) -> bool:
+    """当前主体是否已有名字（identity 类教训已存在）。"""
+    from app.core.memory import _user_scope, normalize_user_id
     from app.models.database import connect
 
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid)
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT 1 FROM lessons WHERE kind='identity' LIMIT 1"
+            f"SELECT 1 FROM lessons WHERE kind='identity' AND {clause} LIMIT 1",
+            args,
         ).fetchone()
     finally:
         conn.close()
     return row is not None
 
 
-def current_identity_lines(limit: int = 3) -> list[str]:
-    """当前的身份类设定（确认文案里要告诉用户"现在是什么"）。"""
+def current_identity_lines(limit: int = 3, user_id: str | None = None) -> list[str]:
+    """当前主体的身份类设定（确认文案里要告诉用户"现在是什么"）。"""
+    from app.core.memory import _user_scope, normalize_user_id
     from app.models.database import connect
 
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT content FROM lessons WHERE kind='identity' ORDER BY id DESC LIMIT ?",
-            (limit,),
+            f"SELECT content FROM lessons WHERE kind='identity' AND {clause} "
+            "ORDER BY id DESC LIMIT ?",
+            (*args, limit),
         ).fetchall()
     finally:
         conn.close()
     return [r["content"] for r in rows]
 
 
-def check(text: str) -> tuple[str, str]:
+def check(text: str, user_id: str | None = None) -> tuple[str, str]:
     """身份类消息的处理决定。
 
     返回 (verdict, message)：
@@ -124,9 +129,9 @@ def check(text: str) -> tuple[str, str]:
             "这个名字我就不记啦。想换个正经的称呼随时说，"
             "或者你想调我的语气习惯也可以直接讲。"
         )
-    if not has_existing_name():
+    if not has_existing_name(user_id=user_id):
         return "allow", ""  # 首次命名：不打扰
-    current = "、".join(current_identity_lines(1)) or "现在的设定"
+    current = "、".join(current_identity_lines(1, user_id=user_id)) or "现在的设定"
     return "confirm", (
         f"要改我的名字吗？（现在是：{current}）\n"
         "这条会长期记着，回复「确认」就改，「取消」保持原样。"

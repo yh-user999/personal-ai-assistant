@@ -40,15 +40,15 @@ REFLECT_PROMPT = """你是用户画像分析师。基于本周提取的事实三
 """
 
 
-async def refresh_profile() -> dict:
-    """读取本周 facts + 现有画像 → LLM 输出更新 → 写回。
+async def refresh_profile(
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """读取指定主体本周 facts + 现有画像 → LLM 输出更新 → 写回。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
 
-    v0.4：定时画像刷新只服务主人（访客不建画像）；读本周 facts 与画像
-    均限定主人 user_id。
-    """
-    from app.core.memory import owner_user_id
-
-    uid = owner_user_id()
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -68,9 +68,12 @@ async def refresh_profile() -> dict:
     facts_text = "\n".join(f"{r['subject']} {r['predicate']} {r['object']}" for r in facts)
     profile_text = "\n".join(f"[{r['dimension']}] {r['value']} (conf={r['confidence']})" for r in existing) or "（空）"
 
+    week_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     result = await llm.chat_json(
         "你是用户画像分析师，只输出 JSON。",
         REFLECT_PROMPT.replace("{facts}", facts_text).replace("{profile}", profile_text),
+        request_id=request_id or logical_request_id("profile_refresh", uid, week_key),
+        user_id=uid,
     )
 
     now = datetime.now(timezone.utc).isoformat()

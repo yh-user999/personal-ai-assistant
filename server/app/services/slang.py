@@ -176,16 +176,24 @@ INFER_PROMPT = """用户上一条消息包含链接，随后发了一条短句�
 """
 
 
-async def infer_candidate(prev_msg: str, cur_msg: str, user_id: str | None = None) -> bool:
-    """语境推断：链接+短句 → LLM 判断黑话代称 → 存 candidate。
+async def infer_candidate(
+    prev_msg: str,
+    cur_msg: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> bool:
+    """语境推断：链接+短句 → LLM 判断黑话代称 → 存 candidate。"""
+    from app.services.llm_usage import logical_request_id
 
-    失败/非黑话静默返回 False；绝不打扰用户。scope 按身份默认（主人 shared）。
-    """
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("slang_infer", uid, "link-followup")
     try:
         result = await llm.chat_json(
             "你是黑话识别助手，只输出 JSON。",
             INFER_PROMPT.replace("{prev}", (prev_msg or "")[:300])
                        .replace("{cur}", cur_msg),
+            request_id=logical_id,
+            user_id=uid,
         )
     except OpenAIError as e:
         logger.warning("[slang] 语境推断 LLM 失败: %s", e)

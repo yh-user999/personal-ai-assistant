@@ -13,34 +13,46 @@ from datetime import datetime, timedelta, timezone
 from app.models.database import connect
 
 
-def weekly_stats(days: int = 7) -> dict:
-    """周报用的统计摘要（键值对，直接给 LLM）。"""
-    from app.core.memory import owner_user_id
+def weekly_stats(days: int = 7, user_id: str | None = None) -> dict:
+    """周报用的统计摘要（键值对，直接给 LLM），只允许主人范围。"""
+    from app.core.memory import _user_scope, is_owner_user, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    if not is_owner_user(uid):
+        return {
+            "本周对话条数": 0,
+            "本周git提交数": 0,
+            "应用时长Top5": "[]",
+            "浏览域名Top5": "[]",
+            "本周热点话题Top5": "[]",
+        }
+    clause, args = _user_scope(uid)
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     conn = connect()
     try:
         # 应用使用时长 Top5
         apps = conn.execute(
-            """SELECT name, SUM(CAST(julianday(end_ts) - julianday(start_ts) AS REAL) * 86400) AS secs
-               FROM behavior_events WHERE kind='app_usage' AND start_ts >= ?
+            f"""SELECT name, SUM(CAST(julianday(end_ts) - julianday(start_ts) AS REAL) * 86400) AS secs
+               FROM behavior_events WHERE kind='app_usage' AND start_ts >= ? AND {clause}
                GROUP BY name ORDER BY secs DESC LIMIT 5""",
-            (since,),
+            (since, *args),
         ).fetchall()
         # 浏览器域名 Top5
         browsers = conn.execute(
-            """SELECT name, COUNT(*) AS cnt FROM behavior_events
-               WHERE kind='browser' AND start_ts >= ? GROUP BY name ORDER BY cnt DESC LIMIT 5""",
-            (since,),
+            f"""SELECT name, COUNT(*) AS cnt FROM behavior_events
+               WHERE kind='browser' AND start_ts >= ? AND {clause}
+               GROUP BY name ORDER BY cnt DESC LIMIT 5""",
+            (since, *args),
         ).fetchall()
         # git 提交数
         commits = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM behavior_events WHERE kind='git_commit' AND start_ts >= ?",
-            (since,),
+            f"SELECT COUNT(*) AS cnt FROM behavior_events WHERE kind='git_commit' AND start_ts >= ? AND {clause}",
+            (since, *args),
         ).fetchone()["cnt"]
         # 对话条数（主人专属统计，v0.4 不含访客）
         msgs = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ? AND user_id IN (?, '')",
-            (since, owner_user_id()),
+            f"SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ? AND {clause}",
+            (since, *args),
         ).fetchone()["cnt"]
     finally:
         conn.close()
@@ -55,23 +67,27 @@ def weekly_stats(days: int = 7) -> dict:
         "浏览域名Top5": json.dumps(
             [{"domain": b["name"], "次数": b["cnt"]} for b in browsers], ensure_ascii=False
         ),
-        "本周热点话题Top5": json.dumps(top_topics(days=days, limit=5), ensure_ascii=False),
+        "本周热点话题Top5": json.dumps(top_topics(days=days, limit=5, user_id=uid), ensure_ascii=False),
     }
 
 
-def top_topics(days: int = 7, limit: int = 5) -> list[dict]:
-    """热点话题：近 days 天 memories.topics 出现频次 Top-N（主人专属，v0.4）。"""
+def top_topics(days: int = 7, limit: int = 5, user_id: str | None = None) -> list[dict]:
+    """热点话题：近 days 天 memories.topics 出现频次 Top-N（主人专属）。"""
     from collections import Counter
 
-    from app.core.memory import owner_user_id
+    from app.core.memory import _user_scope, is_owner_user, normalize_user_id
 
+    uid = normalize_user_id(user_id)
+    if not is_owner_user(uid):
+        return []
+    clause, args = _user_scope(uid)
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     counter: Counter = Counter()
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND user_id IN (?, '')",
-            (since, owner_user_id()),
+            f"SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND {clause}",
+            (since, *args),
         )
         for r in rows:
             try:

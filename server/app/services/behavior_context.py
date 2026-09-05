@@ -17,13 +17,21 @@ def _now() -> datetime:
     return datetime.now(TZ)
 
 
-def get_current_window() -> str | None:
+def _user_clause(user_id: str | None) -> tuple[str, tuple]:
+    from app.core.memory import _user_scope, normalize_user_id
+
+    return _user_scope(normalize_user_id(user_id), col="user_id")
+
+
+def get_current_window(user_id: str | None = None) -> str | None:
     """最新 app_usage 事件；过时（>10 分钟）返回 None 防误导。"""
+    clause, args = _user_clause(user_id)
     conn = connect()
     try:
         row = conn.execute(
-            """SELECT name, detail, start_ts, end_ts FROM behavior_events
-               WHERE kind='app_usage' ORDER BY id DESC LIMIT 1"""
+            f"""SELECT name, detail, start_ts, end_ts FROM behavior_events
+               WHERE kind='app_usage' AND {clause} ORDER BY id DESC LIMIT 1""",
+            args,
         ).fetchone()
     finally:
         conn.close()
@@ -46,19 +54,21 @@ def get_current_window() -> str | None:
     return f"{app}（{detail}）" if detail else app
 
 
-def get_today_commits() -> str | None:
+def get_today_commits(user_id: str | None = None) -> str | None:
     """今天（北京时间）的 git 提交数与最近提交信息。"""
     day_start = _now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    clause, args = _user_clause(user_id)
     conn = connect()
     try:
         n = conn.execute(
-            "SELECT COUNT(*) AS c FROM behavior_events WHERE kind='git_commit' AND start_ts >= ?",
-            (day_start,),
+            f"SELECT COUNT(*) AS c FROM behavior_events WHERE kind='git_commit' AND start_ts >= ? AND {clause}",
+            (day_start, *args),
         ).fetchone()["c"]
         last = conn.execute(
-            """SELECT name, detail FROM behavior_events
-               WHERE kind='git_commit' AND start_ts >= ? ORDER BY id DESC LIMIT 1""",
-            (day_start,),
+            f"""SELECT name, detail FROM behavior_events
+               WHERE kind='git_commit' AND start_ts >= ? AND {clause}
+               ORDER BY id DESC LIMIT 1""",
+            (day_start, *args),
         ).fetchone()
     finally:
         conn.close()
@@ -69,18 +79,19 @@ def get_today_commits() -> str | None:
     return f"今天 git 提交 {n} 次"
 
 
-def get_recent_activity(hours: int = 1) -> str | None:
+def get_recent_activity(hours: int = 1, user_id: str | None = None) -> str | None:
     """近 N 小时应用使用时长 Top3。"""
     since = (_now() - timedelta(hours=hours)).isoformat()
+    clause, args = _user_clause(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            """SELECT name,
+            f"""SELECT name,
                       SUM(CAST(julianday(end_ts)-julianday(start_ts) AS REAL)*3600) AS mins
                FROM behavior_events
-               WHERE kind='app_usage' AND start_ts >= ?
+               WHERE kind='app_usage' AND start_ts >= ? AND {clause}
                GROUP BY name ORDER BY mins DESC LIMIT 3""",
-            (since,),
+            (since, *args),
         ).fetchall()
     finally:
         conn.close()
@@ -91,13 +102,13 @@ def get_recent_activity(hours: int = 1) -> str | None:
     return f"近 {hours} 小时活跃：" + " / ".join(parts)
 
 
-def get_behavior_injection() -> str:
-    """组装行为上下文；全空返回空串（chat 端显示"暂无行为数据"）。"""
+def get_behavior_injection(user_id: str | None = None) -> str:
+    """组装当前用户行为上下文；全空返回空串。"""
     parts = []
     logger = logging.getLogger("assistant.behavior_context")
     for fn in (get_current_window, get_today_commits, get_recent_activity):
         try:
-            text = fn()
+            text = fn(user_id=user_id)
             if text:
                 parts.append(text)
         except Exception as exc:  # noqa: BLE001

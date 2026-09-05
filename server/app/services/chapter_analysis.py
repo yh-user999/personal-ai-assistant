@@ -262,11 +262,18 @@ def _parse_analysis_json(text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-async def capture_chapter_reply(chapter_no: str, reply: str, user_id: str | None = None) -> None:
-    """生成档长回复含"第X章"时的后台自动提炼：闪存 LLM 一次，失败静默。
+async def capture_chapter_reply(
+    chapter_no: str,
+    reply: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    """生成档长回复含"第X章"时的后台自动提炼：闪存 LLM 一次，失败静默。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
 
-    无需用户打命令——写作台账/goals 表全空的同款教训。
-    """
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("chapter_capture", uid, chapter_no)
     try:
         out = await llm.chat(
             [
@@ -282,6 +289,9 @@ async def capture_chapter_reply(chapter_no: str, reply: str, user_id: str | None
             ],
             temperature=0.2,
             max_tokens=400,
+            model=llm.get_novel_model(),
+            request_id=logical_id,
+            user_id=uid,
         )
         data = _parse_analysis_json(out)
         summary = str(data.get("summary", "")).strip()
@@ -439,8 +449,19 @@ def _format_analysis_reply(
     return "\n".join(lines).strip()
 
 
-async def analyze_chapter(text: str, user_id: str | None = None) -> dict:
+async def analyze_chapter(
+    text: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
     """返回 {"reply": str}；识别到章节号时自动 upsert chapter_notes。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id(
+        "chapter_analysis", uid, extract_chapter_no(text.strip()) or "chapter"
+    )
     text = text.strip()
     # ① 零 LLM 预检
     residue = detect_residue(text)
@@ -481,6 +502,9 @@ async def analyze_chapter(text: str, user_id: str | None = None) -> dict:
             [{"role": "system", "content": system}, {"role": "user", "content": "\n\n".join(user_parts)}],
             temperature=0.2,
             max_tokens=2000,
+            model=llm.get_novel_model(),
+            request_id=logical_id,
+            user_id=uid,
         )
     except (OpenAIError, TimeoutError, RuntimeError) as e:
         # LLM 挂了也要把零 LLM 预检结果带回去（这部分不依赖 LLM）。

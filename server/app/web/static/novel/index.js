@@ -21,6 +21,7 @@ let projects = [];
 let currentProject = null;
 let chapters = [];
 let jobs = [];
+let editingChapterVersion = null;
 let autoTimer = null;
 
 // ── DOM 快捷方式 ──────────────────────────────────────────
@@ -141,7 +142,7 @@ function openChapterDrawer(chapter) {
   meta.appendChild(el('span', '', '　' + fmtWords(chapter.content)));
   $('drawer-body').textContent = chapter.content || '（暂无正文）';
   const editBtn = $('drawer-edit');
-  editBtn.onclick = () => openChapterModal(chapter.chapter_no, chapter.title, chapter.content);
+  editBtn.onclick = () => openChapterModal(chapter.chapter_no, chapter.title, chapter.content, chapter.version);
   $('drawer').classList.remove('hidden');
   $('drawer-mask').classList.remove('hidden');
 }
@@ -334,11 +335,12 @@ async function createProject() {
   }
 }
 
-function openChapterModal(no, title, content) {
+function openChapterModal(no, title, content, version) {
   $('chapter-modal-title').textContent = no ? '编辑章节' : '新建章节';
   $('chapter-no').value = no || '';
   $('chapter-title').value = title || '';
   $('chapter-content').value = content || '';
+  editingChapterVersion = Number.isInteger(version) ? version : null;
   $('chapter-no').disabled = Boolean(no);
   showModal('chapter-modal');
 }
@@ -348,18 +350,27 @@ async function saveChapter() {
   const no = $('chapter-no').value.trim();
   if (!no) { toast('请填写章节号'); return; }
   try {
+    const payload = {
+      chapter_no: no,
+      title: $('chapter-title').value.trim(),
+      content: $('chapter-content').value,
+    };
+    if (editingChapterVersion != null) payload.expected_version = editingChapterVersion;
     await apiFetch('/api/novel/projects/' + currentProject.project_id + '/chapters', {
       method: 'PUT',
-      body: JSON.stringify({
-        chapter_no: no,
-        title: $('chapter-title').value.trim(),
-        content: $('chapter-content').value,
-      }),
+      body: JSON.stringify(payload),
     });
     hideModal('chapter-modal');
+    editingChapterVersion = null;
     toast('章节已保存', 'ok');
     await Promise.all([loadChapters(), loadOverview()]);
   } catch (e) {
+    if (e.status === 409) {
+      await loadChapters();
+      await loadOverview();
+      toast('章节已被其他客户端修改，已重新加载最新版本', 'err');
+      return;
+    }
     toast(e.message, 'err');
   }
 }

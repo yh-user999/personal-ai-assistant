@@ -76,6 +76,7 @@ class Chapter:
     content: str = ""
     project_id: str = ""
     status: str = "draft"
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ def chapter_payload(value: Chapter) -> dict[str, Any]:
         "content": value.content,
         "project_id": value.project_id,
         "status": value.status,
+        "version": value.version,
     }
 
 

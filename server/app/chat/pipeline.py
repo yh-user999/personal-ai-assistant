@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import uuid
 
 from openai import OpenAIError
 
@@ -20,7 +22,27 @@ from app.chat.context import (
 )
 
 
+def _novel_model(runtime: ChatRuntime) -> str | None:
+    """生成档优先使用 LLM 模块经过启动检查的小说模型。"""
+    getter = getattr(runtime.llm, "get_novel_model", None)
+    if callable(getter):
+        return getter()
+    return getattr(runtime.settings, "novel_llm_model", None) or getattr(
+        runtime.settings, "llm_model", None
+    )
+
+
+def _vision_model(runtime: ChatRuntime) -> str | None:
+    getter = getattr(runtime.llm, "get_vision_model", None)
+    if callable(getter):
+        return getter()
+    return getattr(runtime.settings, "vision_llm_model", None) or getattr(
+        runtime.settings, "llm_model", None
+    )
+
+
 async def _call_llm_with_fallback(
+    ctx: ChatContext,
     runtime: ChatRuntime,
     assembly: prompting.PromptAssembly,
 ) -> tuple[str | None, bool]:
@@ -31,13 +53,48 @@ async def _call_llm_with_fallback(
     """
     plain_text = runtime.services.plain_text
     llm = runtime.llm
+    request_id = ctx.request_id or uuid.uuid4().hex
+    llm_context = {"request_id": request_id, "user_id": ctx.uid}
+    if ctx.image is not None:
+        try:
+            timeout = getattr(runtime.settings, "vision_timeout", 90.0)
+            reply = (
+                await llm.chat(
+                    assembly.llm_messages,
+                    timeout=timeout,
+                    model=_vision_model(runtime),
+                    **llm_context,
+                )
+            ).strip()
+            if not reply:
+                try:
+                    ctx.request.state.chat_retryable_failure = True
+                except AttributeError:
+                    pass
+                return None, False
+            if plain_text.has_markdown(reply):
+                reply = plain_text.strip_markdown(reply)
+            return reply, False
+        except Exception as exc:  # noqa: BLE001
+            runtime.logger.warning("图片识别调用失败: %s", type(exc).__name__)
+            try:
+                ctx.request.state.chat_retryable_failure = True
+            except AttributeError:
+                pass
+            return None, False
     try:
         if assembly.gen_profile:
             reply = (
-                await llm.chat(assembly.gen_messages, timeout=240, max_tokens=6000)
+                await llm.chat(
+                    assembly.gen_messages,
+                    timeout=240,
+                    max_tokens=6000,
+                    model=_novel_model(runtime),
+                    **llm_context,
+                )
             ).strip()
         else:
-            reply = (await llm.chat(assembly.llm_messages)).strip()
+            reply = (await llm.chat(assembly.llm_messages, **llm_context)).strip()
         if plain_text.has_markdown(reply):
             runtime.logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
             reply = plain_text.strip_markdown(reply)
@@ -49,7 +106,13 @@ async def _call_llm_with_fallback(
         try:
             runtime.logger.info("[gen] 首次生成失败，自动重试一次")
             reply = (
-                await llm.chat(assembly.gen_messages, timeout=240, max_tokens=6000)
+                await llm.chat(
+                    assembly.gen_messages,
+                    timeout=240,
+                    max_tokens=6000,
+                    model=_novel_model(runtime),
+                    **llm_context,
+                )
             ).strip()
             if plain_text.has_markdown(reply):
                 reply = plain_text.strip_markdown(reply)
@@ -94,7 +157,11 @@ async def _record_request_trace(
 
 
 def _maybe_capture_chapter(
-    assembly: prompting.PromptAssembly, reply: str, runtime: ChatRuntime, uid: str
+    assembly: prompting.PromptAssembly,
+    reply: str,
+    runtime: ChatRuntime,
+    uid: str,
+    request_id: str | None = None,
 ) -> None:
     """生成档长回复含"第X章"→ 后台自动提炼章节存档（被动抓取）。
 
@@ -107,9 +174,21 @@ def _maybe_capture_chapter(
     chapter_no = runtime.services.chapter_analysis.extract_chapter_no(reply)
     if not chapter_no:
         return
+    capture = runtime.services.chapter_analysis.capture_chapter_reply
+    try:
+        parameters = inspect.signature(capture).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    capture_kwargs = {}
+    if request_id is not None and ("request_id" in parameters or accepts_kwargs):
+        capture_kwargs["request_id"] = request_id
     retrieval.track_background(
         runtime,
-        runtime.services.chapter_analysis.capture_chapter_reply(chapter_no, reply, uid),
+        capture(chapter_no, reply, uid, **capture_kwargs),
     )
 
 
@@ -131,7 +210,7 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
             memories_used=0,
         )
 
-    if ctx.is_owner and settings.healer_enabled:
+    if ctx.image is None and ctx.is_owner and settings.healer_enabled:
         fixed = services.index_healer.apply_correction(msg)
         if fixed is not None:
             return ChatResponse(reply=fixed, memories_used=0)
@@ -146,9 +225,13 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
     if ctx.is_owner:
         mood_name = services.mood.detect_mood_name(msg)
         if mood_name:
-            services.mood.record_mood(mood_name, msg)
+            services.mood.record_mood(mood_name, msg, user_id=ctx.uid)
         if settings.initiative_enabled:
-            services.initiative.mark_responded()
+            if ctx.uid:
+                services.initiative.mark_responded(user_id=ctx.uid)
+            else:
+                # 兼容旧测试替身；真实请求的 ChatContext 总有认证主体。
+                services.initiative.mark_responded()
 
     routed = await routing.dispatch(ctx, runtime)
     if routed is not None:
@@ -164,7 +247,9 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
         if last_user and services.slang.detect_link_followup(last_user, msg):
             retrieval.track_background(
                 runtime,
-                services.slang.infer_candidate(last_user, msg, user_id=ctx.uid),
+                services.slang.infer_candidate(
+                    last_user, msg, user_id=ctx.uid, request_id=ctx.request_id
+                ),
             )
 
     if services.unresolved.detect_resolved(msg):
@@ -177,15 +262,22 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
     assembly = prompting.assemble(ctx, runtime, bundle)
     await _record_request_trace(ctx, runtime, bundle, assembly.system)
 
+    memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
     await memory.write_message(
         "user",
-        msg,
+        memory_text,
         user_id=ctx.uid,
-        precomputed_vec=memory.take_query_vec(services.sanitize.sanitize(msg)),
+        precomputed_vec=(
+            None
+            if ctx.image is not None
+            else memory.take_query_vec(services.sanitize.sanitize(msg))
+        ),
     )
 
-    reply, generation_failed = await _call_llm_with_fallback(runtime, assembly)
+    reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
     if reply is None:
+        if ctx.image is not None:
+            return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
         return ChatResponse(
             reply=(
                 "抱歉，长文生成连续两次失败（可能是服务商超时），等两分钟再说「继续」？"
@@ -203,8 +295,10 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
 
     retrieval.track_background(
         runtime,
-        services.fact_extract.maybe_extract_facts(msg, user_id=ctx.uid),
+        services.fact_extract.maybe_extract_facts(
+            msg, user_id=ctx.uid, request_id=ctx.request_id
+        ),
     )
 
-    _maybe_capture_chapter(assembly, reply, runtime, ctx.uid)
+    _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
     return ChatResponse(reply=reply, memories_used=len(bundle.mems))

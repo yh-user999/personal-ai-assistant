@@ -13,11 +13,11 @@ from app.models.database import connect
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def _stale_concerns_text(days: int = 3) -> str:
+def _stale_concerns_text(days: int = 3, user_id: str | None = None) -> str:
     """超过 days 天未提及的关切（供小结提醒）。"""
     from app.services.concern_tracker import get_stale_concerns
 
-    stale = get_stale_concerns(days=days)
+    stale = get_stale_concerns(days=days, user_id=user_id)
     if not stale:
         return "（无）"
     return "、".join(f"{s['topic']}（{s['mention_count']} 次）" for s in stale)
@@ -47,37 +47,46 @@ content 格式要求（Markdown，共 3-5 行）：
 """
 
 
-def get_latest_daily_summary() -> dict:
-    """读取最近一份日报，不触发生成，也不调用 LLM。"""
+def get_latest_daily_summary(user_id: str | None = None) -> dict:
+    """读取指定主体最近一份日报，不触发生成，也不调用 LLM。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid)
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT date, content, created_at FROM daily_summaries "
-            "ORDER BY date DESC, id DESC LIMIT 1"
+            f"SELECT date, content, created_at FROM daily_summaries WHERE {clause} "
+            "ORDER BY date DESC, id DESC LIMIT 1",
+            args,
         ).fetchone()
     finally:
         conn.close()
     return dict(row) if row else {}
 
 
-async def run_daily_summary() -> dict:
+async def run_daily_summary(
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
     """生成今天的每日小结并存储。返回 {date, content} 或 {'skipped': True}。
 
-    v0.4：日报是主人专属——对话摘要只读主人自己的（访客数据不混入）。
+    user_id 未传时使用主人主体；后台调度器保持无参调用，HTTP/测试调用可显式指定主体。
     """
-    from app.core.memory import _user_scope, owner_user_id
+    from app.core.memory import _user_scope, normalize_user_id
 
     now = datetime.now(TZ)
     today = now.date().isoformat()
     day_start = datetime(now.year, now.month, now.day, tzinfo=TZ).isoformat()
-    owner = owner_user_id()
-    clause, uargs = _user_scope(owner)
+    uid = normalize_user_id(user_id)
+    clause, uargs = _user_scope(uid)
 
     conn = connect()
     try:
         # 已有则不重复生成
         exists = conn.execute(
-            "SELECT 1 FROM daily_summaries WHERE date=?", (today,)
+            f"SELECT 1 FROM daily_summaries WHERE date=? AND {clause}",
+            (today, *uargs),
         ).fetchone()
         if exists:
             return {"skipped": True, "reason": "今日小结已存在"}
@@ -86,17 +95,19 @@ async def run_daily_summary() -> dict:
             (day_start, *uargs),
         ).fetchall()
         logs = conn.execute(
-            "SELECT time_range, content FROM work_log WHERE date=? ORDER BY id LIMIT 20", (today,)
+            f"SELECT time_range, content FROM work_log WHERE date=? AND {clause} ORDER BY id LIMIT 20",
+            (today, *uargs),
         ).fetchall()
         # 行为统计：事件数 + 应用时长 top
         n_events = conn.execute(
-            "SELECT COUNT(*) AS c FROM behavior_events WHERE start_ts >= ?", (day_start,)
+            f"SELECT COUNT(*) AS c FROM behavior_events WHERE start_ts >= ? AND {clause}",
+            (day_start, *uargs),
         ).fetchone()["c"]
         apps = conn.execute(
-            """SELECT name, SUM(CAST(julianday(end_ts)-julianday(start_ts) AS REAL)*86400) AS secs
-               FROM behavior_events WHERE kind='app_usage' AND start_ts >= ?
+            f"""SELECT name, SUM(CAST(julianday(end_ts)-julianday(start_ts) AS REAL)*86400) AS secs
+               FROM behavior_events WHERE kind='app_usage' AND start_ts >= ? AND {clause}
                GROUP BY name ORDER BY secs DESC LIMIT 5""",
-            (day_start,),
+            (day_start, *uargs),
         ).fetchall()
     finally:
         conn.close()
@@ -112,12 +123,16 @@ async def run_daily_summary() -> dict:
     top_apps = ", ".join(f"{a['name']} {round((a['secs'] or 0) / 3600, 2)}h" for a in apps) or "无"
     stats_text = f"行为事件 {n_events} 条；应用时长 Top: {top_apps}"
 
+    from app.services.llm_usage import logical_request_id
+
     result = await llm.chat_json(
         "你是用户的私人 AI 助手，只输出 JSON。",
         DAILY_PROMPT.replace("{summaries}", summary_text)
         .replace("{stats}", stats_text)
         .replace("{logs}", log_text)
-        .replace("{stale_concerns}", _stale_concerns_text()),
+        .replace("{stale_concerns}", _stale_concerns_text(user_id=uid)),
+        request_id=request_id or logical_request_id("daily_summary", uid, today),
+        user_id=uid,
     )
     # 输出格式 { "content": "..." }；容错取 summary 字段
     content = result.get("content") or result.get("summary") or ""
@@ -127,8 +142,8 @@ async def run_daily_summary() -> dict:
     conn = connect()
     try:
         conn.execute(
-            "INSERT INTO daily_summaries (date, content, created_at) VALUES (?, ?, ?)",
-            (today, content, now.isoformat()),
+            "INSERT INTO daily_summaries (user_id, date, content, created_at) VALUES (?, ?, ?, ?)",
+            (uid, today, content, now.isoformat()),
         )
         conn.commit()
     finally:

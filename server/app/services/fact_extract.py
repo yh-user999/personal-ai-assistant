@@ -149,8 +149,17 @@ AI 回复：
 """
 
 
-async def extract_from_last_ai(last_ai: str, user_id: str | None = None) -> int:
-    """从被用户确认的 AI 设定提议里提取事实（记录指令/短肯定确认时调用）。"""
+async def extract_from_last_ai(
+    last_ai: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> int:
+    """从被用户确认的 AI 设定提议里提取事实。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("fact_extract_confirmed", uid, "last-ai")
     try:
         text = await llm.chat(
             [
@@ -159,6 +168,8 @@ async def extract_from_last_ai(last_ai: str, user_id: str | None = None) -> int:
             ],
             temperature=0,
             max_tokens=400,
+            request_id=logical_id,
+            user_id=uid,
         )
     except OpenAIError as e:
         logger.warning("AI 回复设定提取 LLM 失败: %s", e)
@@ -167,13 +178,22 @@ async def extract_from_last_ai(last_ai: str, user_id: str | None = None) -> int:
     if triples:
         logger.info("从 AI 回复提取设定 %d 条: %s", len(triples),
                     [(t["subject"], t["predicate"]) for t in triples])
-    return upsert_facts(triples, user_id=user_id)
+    return upsert_facts(triples, user_id=uid)
 
 
-async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:
-    """命中信号词则提取并写入 facts；返回写入条数（未触发返回 0）。"""
+async def maybe_extract_facts(
+    user_msg: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> int:
+    """命中信号词则提取并写入 facts；返回写入条数。"""
     if not any(s in user_msg for s in FACT_SIGNALS):
         return 0
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("fact_extract_message", uid, "message")
     try:
         text = await llm.chat(
             [
@@ -182,6 +202,8 @@ async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:
             ],
             temperature=0,
             max_tokens=400,
+            request_id=logical_id,
+            user_id=uid,
         )
     except OpenAIError as e:
         logger.warning("事实提取 LLM 调用失败: %s", e)
@@ -190,4 +212,4 @@ async def maybe_extract_facts(user_msg: str, user_id: str | None = None) -> int:
     if triples:
         logger.info("提取到持久事实 %d 条: %s", len(triples),
                     [(t["subject"], t["predicate"]) for t in triples])
-    return upsert_facts(triples, user_id=user_id)
+    return upsert_facts(triples, user_id=uid)

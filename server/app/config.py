@@ -1,8 +1,47 @@
 """配置加载：读取环境变量 / .env，集中管理所有可调参数。"""
+import re
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MAX_LLM_API_KEYS = 8
+MIN_LLM_API_KEY_LENGTH = 8
+
+
+def parse_llm_api_keys(raw: str | None, legacy: str | None = None) -> list[str]:
+    """解析多 Key 配置，并保留空项/重复项的可诊断错误。"""
+    raw = raw or ""
+    legacy = (legacy or "").strip()
+    if not raw.strip():
+        return [legacy] if legacy else []
+
+    # 逗号后允许换行，单独的换行也可分隔；连续逗号和首尾分隔符仍视为空项。
+    parts = re.split(r",\s*|\r?\n", raw)
+    keys: list[str] = []
+    seen: dict[str, int] = {}
+    for index, part in enumerate(parts, 1):
+        key = part.strip()
+        if not key:
+            raise ValueError(f"LLM_API_KEYS 第 {index} 项为空，请删除多余分隔符或填入 Key")
+        previous = seen.get(key)
+        if previous is not None:
+            raise ValueError(f"LLM_API_KEYS 第 {index} 项与第 {previous} 项重复")
+        seen[key] = index
+        keys.append(key)
+
+    if len(keys) > MAX_LLM_API_KEYS:
+        raise ValueError(f"LLM_API_KEYS 最多支持 {MAX_LLM_API_KEYS} 个 Key，当前为 {len(keys)} 个")
+    return keys
+
+
+def mask_api_key(key: str, *, index: int | None = None) -> str:
+    """生成不含原文的 Key 脱敏指纹，供日志和诊断输出使用。"""
+    import hashlib
+
+    fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    prefix = f"key[{index}]" if index is not None else "key"
+    return f"{prefix}#{fingerprint}"
 
 
 class Settings(BaseSettings):
@@ -19,10 +58,21 @@ class Settings(BaseSettings):
 
     # ── LLM（OpenAI 兼容）───────────────────────────────────
     llm_base_url: str = "https://api.deepseek.com/v1"
+    # 新配置支持逗号/换行分隔多个 Key；为空时兼容旧的 LLM_API_KEY。
+    llm_api_keys: str = ""
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
+    # 图片识别专用模型；普通聊天仍使用 LLM_MODEL。
+    vision_llm_model: str = "deepseek-v4-flash-vision-exp"
+    vision_max_image_bytes: int = 10 * 1024 * 1024
+    vision_timeout: float = 90.0
+    # 小说续写、章节分析、摘要等写作链路使用的模型。
+    novel_llm_model: str = "omen-alpha"
     llm_timeout: float = 60.0      # 单次调用超时秒数（SDK 默认 600s 太长，会挂死请求）
-    llm_max_retries: int = 2       # 网络错误自动重试次数
+    llm_max_retries: int = 2       # 应用层总重试预算（额外次数，SDK 内层重试关闭）
+    llm_retry_backoff_seconds: float = 0.5  # 临时错误切换/重试前的基础退避
+    llm_max_concurrency: int = 8  # 全局 LLM 请求并发上限
+    llm_key_cooldown_seconds: float = 30.0  # Key 临时失败后的冷却时间
 
     # ── Embedding ───────────────────────────────────────────
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
@@ -66,6 +116,9 @@ class Settings(BaseSettings):
     collector_api_token: str = ""
     executor_api_token: str = ""
     qq_api_token: str = ""
+    # QQ token 只证明请求来自插件；用户身份必须由该共享密钥签名。
+    qq_identity_secret: str = ""
+    qq_identity_max_age_seconds: int = 300
 
     # ── 采集器心跳 ──────────────────────────────────────────
     # 超过该秒数没心跳视为电脑不在线（执行器分支给 QQ 的提示文案用）
@@ -115,6 +168,16 @@ class Settings(BaseSettings):
     mcp_max_input_chars: int = 2000
 
     @property
+    def llm_api_key_values(self) -> list[str]:
+        """返回规范化后的 Key 列表；新配置为空时回退旧单 Key。"""
+        return parse_llm_api_keys(self.llm_api_keys, self.llm_api_key)
+
+    @property
+    def llm_api_key_list(self) -> list[str]:
+        """兼容更直观的属性名，实际数据源仍由 ``llm_api_key_values`` 统一解析。"""
+        return self.llm_api_key_values
+
+    @property
     def db_file(self) -> Path:
         p = Path(self.db_path)
         if not p.is_absolute():
@@ -122,9 +185,38 @@ class Settings(BaseSettings):
         return p
 
 
+def _validate_llm_config(s: Settings) -> None:
+    """校验 Key 池配置；错误信息只包含序号和长度，不回显密钥。"""
+    keys = s.llm_api_key_values
+    if s.llm_key_cooldown_seconds < 0:
+        raise ValueError("LLM_KEY_COOLDOWN_SECONDS 不能小于 0")
+    if s.llm_retry_backoff_seconds < 0:
+        raise ValueError("LLM_RETRY_BACKOFF_SECONDS 不能小于 0")
+    if s.llm_max_concurrency <= 0:
+        raise ValueError("LLM_MAX_CONCURRENCY 必须大于 0")
+    if s.vision_max_image_bytes <= 0:
+        raise ValueError("VISION_MAX_IMAGE_BYTES 必须大于 0")
+    if s.vision_timeout <= 0:
+        raise ValueError("VISION_TIMEOUT 必须大于 0")
+    if not str(s.vision_llm_model or "").strip():
+        raise ValueError("VISION_LLM_MODEL 不能为空")
+    if s.deployment_env.casefold() in {"production", "prod"}:
+        short = [
+            f"第 {index} 项（{len(key)} 字符）"
+            for index, key in enumerate(keys, 1)
+            if len(key) < MIN_LLM_API_KEY_LENGTH
+        ]
+        if short:
+            raise ValueError(
+                "生产环境 LLM Key 长度不足（最少 "
+                f"{MIN_LLM_API_KEY_LENGTH} 字符）：" + ", ".join(short)
+            )
+
+
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
+    _validate_llm_config(s)
     # 配置校验 fail-fast：qq_admin_id 配错类型（非数字）曾导致推送每分钟
     # 抛 ValueError 被吞、全灭且无告警——启动期直接报清楚
     if s.qq_push_url and not s.qq_admin_id.strip().isdigit():
@@ -139,6 +231,12 @@ def get_settings() -> Settings:
             raise ValueError(
                 "生产环境必须配置至少一个 32 字符的随机 API token，不能使用空值或模板占位符"
             )
+        if s.qq_api_token and not s.qq_identity_secret.strip():
+            raise ValueError(
+                "生产环境启用 QQ_API_TOKEN 时必须同时配置 QQ_IDENTITY_SECRET"
+            )
+    if s.qq_identity_max_age_seconds <= 0:
+        raise ValueError("QQ_IDENTITY_MAX_AGE_SECONDS 必须大于 0")
     return s
 
 

@@ -124,13 +124,27 @@ class SQLiteNovelRepository:
     def upsert_chapter(self, project_id: str, chapter_no: str, *, title: str = "", content: str | None = None, draft_content: str | None = None, status: str = "draft", expected_version: int | None = None) -> NovelDraft:
         now = _now()
         with db_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM novel_chapters WHERE project_id=? AND chapter_no=?", (project_id, chapter_no)).fetchone()
             if row:
                 if expected_version is not None and row["version"] != expected_version:
                     raise ValueError("章节版本冲突")
                 next_version = row["version"] + 1
-                conn.execute("UPDATE novel_chapters SET title=?, content=COALESCE(?,content), draft_content=COALESCE(?,draft_content), status=?, version=?, updated_at=? WHERE project_id=? AND chapter_no=?", (title, content, draft_content, status, next_version, now, project_id, chapter_no))
+                version_clause = " AND version=?" if expected_version is not None else ""
+                params = [title, content, draft_content, status, next_version, now, project_id, chapter_no]
+                if expected_version is not None:
+                    params.append(expected_version)
+                updated = conn.execute(
+                    "UPDATE novel_chapters SET title=?, content=COALESCE(?,content), "
+                    "draft_content=COALESCE(?,draft_content), status=?, version=?, updated_at=? "
+                    "WHERE project_id=? AND chapter_no=?" + version_clause,
+                    params,
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("章节版本冲突")
             else:
+                if expected_version is not None:
+                    raise ValueError("章节版本冲突")
                 next_version = 1
                 conn.execute("INSERT INTO novel_chapters(project_id,chapter_no,title,content,draft_content,status,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (project_id, chapter_no, title, content or "", draft_content or "", status, next_version, now, now))
             value = conn.execute("SELECT * FROM novel_chapters WHERE project_id=? AND chapter_no=?", (project_id, chapter_no)).fetchone()
@@ -146,7 +160,10 @@ class SQLiteNovelRepository:
         with db_connection() as conn:
             row = conn.execute("SELECT * FROM novel_chapters WHERE project_id=? AND chapter_no=?", (project_id, chapter_no)).fetchone()
         if row:
-            return Chapter(row["chapter_no"], row["title"], row["content"] or row["draft_content"], project_id, row["status"])
+            return Chapter(
+                row["chapter_no"], row["title"], row["content"] or row["draft_content"],
+                project_id, row["status"], row["version"],
+            )
         if project_id == "default":
             return LegacyNovelRepository().get_chapter(chapter_no, project_id)
         return None
@@ -157,17 +174,39 @@ class SQLiteNovelRepository:
             rows = conn.execute("SELECT * FROM novel_chapters WHERE project_id=? ORDER BY CAST(chapter_no AS INTEGER), chapter_no", (project_id,)).fetchall()
         if rows:
             # 注意第一列是 chapter_no，不是 project_id（曾误传导致章节列表全显示 UUID）
-            return [Chapter(r["chapter_no"], r["title"], r["content"] or r["draft_content"], project_id, r["status"]) for r in rows]
+            return [
+                Chapter(
+                    r["chapter_no"], r["title"], r["content"] or r["draft_content"],
+                    project_id, r["status"], r["version"],
+                )
+                for r in rows
+            ]
         return LegacyNovelRepository().list_chapters(project_id)
 
     def create_job(self, project_id: str, chapter_no: str, idempotency_key: str, prompt: str = "") -> GenerationJob:
+        """创建生成任务；同一幂等键不能跨项目或章节复用。"""
+        # 保留旧的 default 项目兼容语义，但不再允许任意 project_id 产生孤儿任务。
+        self.get_project(project_id)
         now = _now()
         with db_connection() as conn:
-            row = conn.execute("SELECT * FROM novel_generation_jobs WHERE idempotency_key=?", (idempotency_key,)).fetchone()
-            if not row:
-                job_id = str(uuid.uuid4())
-                conn.execute("INSERT INTO novel_generation_jobs(job_id,idempotency_key,project_id,chapter_no,prompt,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (job_id, idempotency_key, project_id, chapter_no, prompt, now, now))
-                row = conn.execute("SELECT * FROM novel_generation_jobs WHERE job_id=?", (job_id,)).fetchone()
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM novel_generation_jobs WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if row:
+                if row["project_id"] != project_id or row["chapter_no"] != chapter_no:
+                    raise ValueError("幂等键已用于其他项目或章节")
+                return self._job(row)
+            job_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO novel_generation_jobs(job_id,idempotency_key,project_id,chapter_no,prompt,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (job_id, idempotency_key, project_id, chapter_no, prompt, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM novel_generation_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
         return self._job(row)
 
     def recover_stale_jobs(self, *, timeout_seconds: int = 900) -> int:
@@ -291,10 +330,10 @@ class LegacyNovelRepository:
         note = chapter_analysis.get_chapter_note(chapter_no)
         if not note:
             return None
-        return Chapter(str(note["chapter"]), "", note["summary"], project_id or "default", "archived")
+        return Chapter(str(note["chapter"]), "", note["summary"], project_id or "default", "archived", 1)
 
     def list_chapters(self, project_id: str | None = None) -> list[Chapter]:
         from app.models.database import connect
         conn = connect()
         rows = conn.execute("SELECT chapter, summary FROM chapter_notes ORDER BY CAST(chapter AS INTEGER)").fetchall()
-        return [Chapter(str(r["chapter"]), "", r["summary"], project_id or "default", "archived") for r in rows]
+        return [Chapter(str(r["chapter"]), "", r["summary"], project_id or "default", "archived", 1) for r in rows]

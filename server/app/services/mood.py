@@ -46,6 +46,15 @@ STREAK_LOOKBACK = 10      # 最多回看最近多少条情绪记录
 STREAK_FRESH_HOURS = 2    # 连击时效：最近一次负面情绪超过 2 小时即过期（不跨天传染）
 
 
+def _user_scope(user_id: str | None) -> tuple[str, str, tuple]:
+    from app.core.memory import _user_scope as build_scope
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, args = build_scope(uid, col="user_id")
+    return uid, clause, args
+
+
 def detect_mood_name(msg: str) -> str | None:
     """规则命中返回情绪名；无命中返回 None。"""
     for name, patterns, _ in MOOD_PATTERNS:
@@ -63,13 +72,14 @@ def detect_mood(msg: str) -> str:
 
 # ── 第 6.27 课：情绪记忆层（A 档）──────────────────────────
 
-def record_mood(mood_name: str, msg: str) -> int:
+def record_mood(mood_name: str, msg: str, user_id: str | None = None) -> int:
     """入账一条情绪记录（UTC 存储，东八区解读）。"""
+    uid, _, _ = _user_scope(user_id)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO mood_log (mood, snippet, created_at) VALUES (?, ?, ?)",
-            (mood_name, msg.strip()[:80], _utc_now()),
+            "INSERT INTO mood_log (user_id, mood, snippet, created_at) VALUES (?, ?, ?, ?)",
+            (uid, mood_name, msg.strip()[:80], _utc_now()),
         )
         conn.commit()
         return cur.lastrowid
@@ -89,12 +99,14 @@ def _row_local(row) -> datetime:
     return dt.astimezone(TZ)
 
 
-def get_today_injection() -> str:
+def get_today_injection(user_id: str | None = None) -> str:
     """今日（东八区）情绪曲线：如 "今日情绪：烦躁×2、疲惫×1（下午）"。无记录返回空串。"""
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT mood, created_at FROM mood_log ORDER BY id DESC LIMIT 200"
+            f"SELECT mood, created_at FROM mood_log WHERE {clause} ORDER BY id DESC LIMIT 200",
+            user_args,
         ).fetchall()
     finally:
         conn.close()
@@ -120,17 +132,18 @@ def get_today_injection() -> str:
 
 # ── 第 6.27 课：反馈闭环（B 档）────────────────────────────
 
-def get_streak_injection() -> str:
+def get_streak_injection(user_id: str | None = None) -> str:
     """最近情绪连击：连续 2+ 轮负面情绪 → 降级为倾听模式指引。否则空串。
 
     连击有时效：最近一条负面记录超过 STREAK_FRESH_HOURS 即视为过期——
     昨天的烦躁不该让今天一整天都在倾听模式里。
     """
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT mood, created_at FROM mood_log ORDER BY id DESC LIMIT ?",
-            (STREAK_LOOKBACK,),
+            f"SELECT mood, created_at FROM mood_log WHERE {clause} ORDER BY id DESC LIMIT ?",
+            (*user_args, STREAK_LOOKBACK),
         ).fetchall()
     finally:
         conn.close()
@@ -159,7 +172,7 @@ def get_streak_injection() -> str:
 YESTERDAY_NEGATIVE_THRESHOLD = 2  # 昨天负面情绪达到几条才值得跟进
 
 
-def get_yesterday_followup() -> str:
+def get_yesterday_followup(user_id: str | None = None) -> str:
     """昨天情绪不佳且今天还没聊过 → 提示轻轻关心一句（问过就不再提）。
 
     情绪连击只管当轮（STREAK_FRESH_HOURS=2 后清零），但真人不是这样：
@@ -168,10 +181,12 @@ def get_yesterday_followup() -> str:
     这句关心的时机就过了（不在对话中途突然回头问昨天）。
     零 LLM、零新表。
     """
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT mood, created_at FROM mood_log ORDER BY id DESC LIMIT 200"
+            f"SELECT mood, created_at FROM mood_log WHERE {clause} ORDER BY id DESC LIMIT 200",
+            user_args,
         ).fetchall()
     finally:
         conn.close()
@@ -195,30 +210,36 @@ def get_yesterday_followup() -> str:
     )
 
 
-def get_state_injection() -> str:
+def get_state_injection(user_id: str | None = None) -> str:
     """今日曲线 + 连击降级 + 隔日跟进，合并成一条注入（无则空串）。"""
-    parts = [
-        p for p in (
+    if user_id is None:
+        providers = (
             get_today_injection(),
             get_streak_injection(),
             get_yesterday_followup(),
-        ) if p
-    ]
-    return "\n".join(parts)
+        )
+    else:
+        providers = (
+            get_today_injection(user_id=user_id),
+            get_streak_injection(user_id=user_id),
+            get_yesterday_followup(user_id=user_id),
+        )
+    return "\n".join(p for p in providers if p)
 
 
 # ── 第 6.28 课 C1：情绪周报统计 ────────────────────────────
 
-def get_weekly_stats(days: int = 7) -> dict:
+def get_weekly_stats(days: int = 7, user_id: str | None = None) -> dict:
     """近 N 天（东八区）情绪聚合：总数 / 分布 / 负面话题 top5 / 高峰时段（3 小时桶）。"""
+    _, clause, user_args = _user_scope(user_id)
     conn = connect()
     try:
         # 时间下界在 SQL 层过滤（原 LIMIT 500 在重度使用时会静默漏掉旧记录）
         cutoff_utc = (datetime.now(TZ) - timedelta(days=days)).astimezone(ZoneInfo("UTC")).isoformat()
         rows = conn.execute(
-            "SELECT mood, snippet, created_at FROM mood_log "
-            "WHERE created_at >= ? ORDER BY id DESC LIMIT 5000",
-            (cutoff_utc,),
+            f"SELECT mood, snippet, created_at FROM mood_log "
+            f"WHERE created_at >= ? AND {clause} ORDER BY id DESC LIMIT 5000",
+            (cutoff_utc, *user_args),
         ).fetchall()
     finally:
         conn.close()
@@ -244,9 +265,13 @@ def get_weekly_stats(days: int = 7) -> dict:
     }
 
 
-def weekly_report_section(days: int = 7) -> str:
+def weekly_report_section(days: int = 7, user_id: str | None = None) -> str:
     """周报"本周情绪"节（零 LLM，确定性生成；无数据返回空串）。"""
-    s = get_weekly_stats(days)
+    if user_id is None:
+        # 兼容旧 monkeypatch 替身（只接受 days 一个参数）。
+        s = get_weekly_stats(days)
+    else:
+        s = get_weekly_stats(days, user_id=user_id)
     if not s["total"]:
         return ""
     lines = [

@@ -8,6 +8,7 @@ v0.2 重构要点：
 - 新增隐私过滤：事件入队前本地脱敏（可配置）。
 """
 import asyncio
+import hashlib
 import json
 import logging
 import queue
@@ -30,16 +31,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def stable_event_id(event: dict) -> str:
+    """为采集事件生成跨重试稳定的幂等键。"""
+    payload = {str(key): event.get(key) for key in sorted(event) if key != "event_id"}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
 class EventPusher:
     def __init__(self, server_url: str, token: str = "", batch_size: int = 50,
                  flush_interval: float = 30.0, heartbeat_interval: float = 300.0,
-                 snapshot_interval: float = 30.0,
+                 snapshot_interval: float = 30.0, retry_interval: float = 60.0,
                  privacy_filter: bool = True, cache_dir: str = "./cache"):
         self.server_url = server_url.rstrip("/")
         self.token = token
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.snapshot_interval = snapshot_interval
+        self.retry_interval = max(0.1, float(retry_interval))
         self.heartbeat_interval = heartbeat_interval
         self.privacy_filter = privacy_filter
         self.cache_dir = Path(cache_dir)
@@ -59,9 +69,11 @@ class EventPusher:
     # ── 生产者侧（任意线程调用，同步）────────────────────────
 
     def add_event(self, event: dict) -> None:
-        """入队。事件在入队前完成本地脱敏。"""
+        """入队。事件在入队前完成本地脱敏并补齐稳定幂等键。"""
+        event = dict(event)
         if self.privacy_filter:
             event = sanitize_event(event)
+        event.setdefault("event_id", stable_event_id(event))
         try:
             self._queue.put_nowait(event)
         except queue.Full:
@@ -99,10 +111,19 @@ class EventPusher:
     # ── 消费侧（异步）──────────────────────────────────────
 
     async def run(self) -> None:
-        """消费循环：批量推送 + 周期性快照（防断电/强杀丢队列内存事件）。"""
-        await self._retry_cache()
+        """消费循环：批量推送、周期性快照和运行期间缓存重放。"""
+        # 启动恢复阶段允许消费 snapshot；运行期间只重放 pending 文件，
+        # 避免 snapshot 与内存队列镜像同时发送造成重复。服务器端 event_id
+        # 仍提供最后一道幂等兜底。
+        await self._retry_cache(include_snapshot=True)
         last_snapshot = time.time()
+        last_cache_retry = time.time()
         while self._running:
+            now = time.time()
+            if now - last_cache_retry >= self.retry_interval:
+                await self._retry_cache(include_snapshot=False)
+                last_cache_retry = time.time()
+
             batch = self._drain(self.batch_size)
             if not batch:
                 # 空转期间每 snapshot_interval 秒把队列镜像落盘一次：
@@ -236,15 +257,16 @@ class EventPusher:
             # 心跳失败不致命（下轮重试），但必须留痕——静默失败无法排障
             logger.warning("心跳发送失败: %s", e)
 
-    async def _retry_cache(self) -> None:
-        """启动时推送历史落盘缓存（含上次的队列快照）。"""
+    async def _retry_cache(self, *, include_snapshot: bool = True) -> None:
+        """重放历史落盘缓存；运行期间可排除内存队列快照。"""
         files = [
             f for f in sorted(self.cache_dir.glob("pending_*.jsonl"))
             if f.name != self._SNAPSHOT_NAME
         ]
-        snapshot = self.cache_dir / self._SNAPSHOT_NAME
-        if snapshot.exists():
-            files.append(snapshot)  # 快照最后重放（其内容最接近崩溃现场）
+        if include_snapshot:
+            snapshot = self.cache_dir / self._SNAPSHOT_NAME
+            if snapshot.exists():
+                files.append(snapshot)  # 快照最后重放（内容最接近崩溃现场）
         for f in files:
             events = []
             for line in f.read_text(encoding="utf-8").splitlines():

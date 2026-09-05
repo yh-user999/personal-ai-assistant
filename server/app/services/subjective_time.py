@@ -66,21 +66,30 @@ def _clean_title(text: str) -> str:
     return ""
 
 
-def get_anchors(lookback_days: int = ANCHOR_LOOKBACK_DAYS) -> dict[str, str]:
-    """{日期(YYYY-MM-DD): 锚点标题}。work_log 优先（用户亲手记的更有代表性）。"""
+def get_anchors(
+    lookback_days: int = ANCHOR_LOOKBACK_DAYS,
+    user_id: str | None = None,
+) -> dict[str, str]:
+    """{日期(YYYY-MM-DD): 锚点标题}，仅读取当前主体的日报和工作日志。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
     cutoff = (datetime.now(TZ).date() - timedelta(days=lookback_days)).isoformat()
+    uid = normalize_user_id(user_id)
+    clause, args = _user_scope(uid)
     anchors: dict[str, str] = {}
     conn = connect()
     try:
         for row in conn.execute(
-            "SELECT date, content FROM daily_summaries WHERE date >= ? ORDER BY date", (cutoff,)
+            f"SELECT date, content FROM daily_summaries WHERE date >= ? AND {clause} ORDER BY date",
+            (cutoff, *args),
         ).fetchall():
             title = _clean_title(row["content"])
             if title:
                 anchors[row["date"]] = title
         # work_log 覆盖同日的小结标题：用户手动记录的事更贴近他自己的记忆
         for row in conn.execute(
-            "SELECT date, content FROM work_log WHERE date >= ? ORDER BY id", (cutoff,)
+            f"SELECT date, content FROM work_log WHERE date >= ? AND {clause} ORDER BY id",
+            (cutoff, *args),
         ).fetchall():
             title = _clean_title(row["content"])
             if title:
@@ -143,11 +152,11 @@ def title_phrase(title: str) -> str:
     return title.strip()
 
 
-def format_injection(memories: list[dict]) -> str:
-    """记忆注入的主观时间版本。锚点一次查库、全部记忆共用。"""
+def format_injection(memories: list[dict], user_id: str | None = None) -> str:
+    """记忆注入的主观时间版本，锚点仅来自当前主体。"""
     if not memories:
         return ""
-    anchors = get_anchors()
+    anchors = get_anchors(user_id=user_id)
     today = datetime.now(TZ).date()
     parts = []
     for m in memories:

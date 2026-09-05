@@ -1,6 +1,7 @@
 """小说生成任务执行器：短任务、可重启恢复、失败可重试。"""
 from __future__ import annotations
 
+import inspect
 import logging
 
 from app.novel.domain import GenerationJobStatus
@@ -18,7 +19,25 @@ async def run_one_job(*, repository: SQLiteNovelRepository | None = None, genera
         if generator is None:
             from app.services.novel_writing import continue_story
             generator = continue_story
-        result = await generator(job.prompt)
+        from app.services.llm_usage import logical_request_id
+
+        project = repo.get_project(job.project_id)
+        user_id = project.owner_id
+        request_id = logical_request_id("novel_generation", user_id, job.job_id)
+        try:
+            parameters = inspect.signature(generator).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        kwargs = {}
+        if "user_id" in parameters or accepts_kwargs:
+            kwargs["user_id"] = user_id
+        if "request_id" in parameters or accepts_kwargs:
+            kwargs["request_id"] = request_id
+        result = await generator(job.prompt, **kwargs)
         updated = repo.update_job(
             job.job_id,
             GenerationJobStatus.AWAITING_CONFIRMATION,

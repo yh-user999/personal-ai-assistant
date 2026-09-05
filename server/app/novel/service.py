@@ -42,11 +42,15 @@ class NovelApplicationService:
     def parse_writing_log(self, message: str):
         return self.writer.parse_writing_log(message)
 
-    def add_writing_log(self, chapter: str | None, words: int):
-        return self.writer.add_writing_log(chapter, words)
+    def add_writing_log(self, chapter: str | None, words: int, *, user_id: str | None = None):
+        if not user_id:
+            return self.writer.add_writing_log(chapter, words)
+        return self.writer.add_writing_log(chapter, words, user_id=user_id)
 
-    def writing_summary(self) -> str:
-        return self.writer.writing_summary()
+    def writing_summary(self, *, user_id: str | None = None) -> str:
+        if not user_id:
+            return self.writer.writing_summary()
+        return self.writer.writing_summary(user_id=user_id)
 
     def parse_conflict_command(self, message: str):
         return self.writer.parse_conflict_command(message)
@@ -54,14 +58,30 @@ class NovelApplicationService:
     def looks_like_file_path(self, text: str) -> bool:
         return self.writer.looks_like_file_path(text)
 
-    async def review_conflicts(self, text: str):
-        return await (self.review or NovelReviewService(self.chapters, self.writer)).check_conflicts(text)
+    async def review_conflicts(
+        self,
+        text: str,
+        *,
+        user_id: str | None = None,
+        request_id: str | None = None,
+    ):
+        return await (self.review or NovelReviewService(self.chapters, self.writer)).check_conflicts(
+            text, user_id=user_id, request_id=request_id
+        )
 
     def parse_analysis_command(self, message: str):
         return self.chapters.parse_analysis_command(message)
 
-    async def review_chapter(self, text: str, *, user_id: str | None = None):
-        return await (self.review or NovelReviewService(self.chapters, self.writer)).review_chapter(text, user_id=user_id)
+    async def review_chapter(
+        self,
+        text: str,
+        *,
+        user_id: str | None = None,
+        request_id: str | None = None,
+    ):
+        return await (self.review or NovelReviewService(self.chapters, self.writer)).review_chapter(
+            text, user_id=user_id, request_id=request_id
+        )
 
     def parse_archive_command(self, message: str):
         return self.chapters.parse_archive_command(message)
@@ -72,8 +92,20 @@ class NovelApplicationService:
     def parse_continue_command(self, message: str):
         return self.writer.parse_continue_command(message)
 
-    async def draft_chapter(self, text: str, *, project_id: str | None = None):
-        return await (self.generation or NovelGenerationService(self.writer)).continue_story(text, project_id=project_id)
+    async def draft_chapter(
+        self,
+        text: str,
+        *,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        request_id: str | None = None,
+    ):
+        return await (self.generation or NovelGenerationService(self.writer)).continue_story(
+            text,
+            project_id=project_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
 
     def new_workflow(self) -> NovelWorkflow:
         return NovelWorkflow()

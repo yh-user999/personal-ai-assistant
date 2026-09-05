@@ -51,6 +51,7 @@ async def main() -> None:
         token=settings.api_token,
         privacy_filter=settings.privacy_filter,
         cache_dir=str(cache),
+        retry_interval=settings.cache_retry_interval,
     )
 
     collectors = []

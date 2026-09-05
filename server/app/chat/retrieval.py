@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import sqlite3
@@ -30,6 +31,52 @@ class TurnPreparation:
     definition_term: str | None = None
 
 
+def _detect_domains(detector, query: str, user_id: str):
+    """调用域判定器；兼容旧的单参数测试替身/外部插件。"""
+    try:
+        parameters = inspect.signature(detector).parameters.values()
+    except (TypeError, ValueError):
+        return detector(query, user_id=user_id)
+    supports_user_id = any(
+        parameter.name == "user_id" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    return detector(query, user_id=user_id) if supports_user_id else detector(query)
+
+
+def _call_with_user(func, *args, user_id: str):
+    """调用支持主体参数的注入器；兼容旧插件/测试替身。"""
+    return _call_with_context(func, *args, user_id=user_id)
+
+
+def _call_with_context(
+    func,
+    *args,
+    user_id: str | None = None,
+    request_id: str | None = None,
+):
+    """按函数签名传递主体/请求上下文，兼容旧插件/测试替身。"""
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        kwargs = {"user_id": user_id, "request_id": request_id}
+        return func(*args, **{k: v for k, v in kwargs.items() if v is not None})
+    kwargs = {}
+    if user_id is not None and (
+        "user_id" in parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        )
+    ):
+        kwargs["user_id"] = user_id
+    if request_id is not None and (
+        "request_id" in parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        )
+    ):
+        kwargs["request_id"] = request_id
+    return func(*args, **kwargs)
+
+
 _FOLLOWUP_RE = re.compile(
     r"(?:他|她|它|这|那|这个|那个|其|该|上述|前面|上次|刚才|后来|然后|接着|继续|再|还|以及|详细讲讲|展开说说|具体说说|再确认|什么意思|怎么回事|为什么呢|然后呢|后来呢)"
 )
@@ -42,6 +89,7 @@ _ANCHOR_STOPWORDS = {
     "详细", "具体", "讲讲", "说说", "继续", "接着", "谢谢", "好的", "那个", "这个", "上次",
 }
 _MAX_ANCHORS = 8
+IMAGE_SEARCH_PLACEHOLDER = "图片"
 _ANCHOR_DOMAIN_TERMS = (
     "简历", "求职", "岗位", "面试", "服务器", "部署", "运维", "数据库", "接口",
     "教程", "反代", "知识库", "检索", "向量", "embedding", "prompt", "项目", "健身", "训练", "饮食",
@@ -207,9 +255,9 @@ def prepare_turn(ctx: ChatContext, runtime: ChatRuntime) -> TurnPreparation:
         and not identity_guard.is_roleplay_or_insult(ctx.message)
     ):
         if self_reflect.classify_lesson(ctx.message) == "identity":
-            self_reflect.save_lesson(ctx.message, last_ai or "")
+            self_reflect.save_lesson(ctx.message, last_ai or "", user_id=ctx.uid)
         elif last_ai:
-            self_reflect.save_lesson(ctx.message, last_ai)
+            self_reflect.save_lesson(ctx.message, last_ai, user_id=ctx.uid)
 
     if services.few_shot.detect_positive_feedback(ctx.message) and last_ai:
         services.few_shot.save_example(last_ai, user_id=ctx.uid)
@@ -264,8 +312,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     msg = ctx.message
     history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
     known_anchors = _known_index_anchors(ctx, history)
+    # 无 caption 的图片也必须走稳定的非空检索 query，避免 embedding/FTS 空串异常。
+    query_text = msg if msg or ctx.image is None else IMAGE_SEARCH_PLACEHOLDER
     search_query, anchors, expanded = build_search_query(
-        msg, history, known_anchors=known_anchors
+        query_text, history, known_anchors=known_anchors
     )
 
     mems = await memory.search(
@@ -280,7 +330,11 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             known = {item["id"] for item in mems}
             mems = deep + [item for item in mems if item["id"] not in known]
     mems = services.cooccurrence.expand(mems, user_id=ctx.uid)
-    injections = services.subjective_time.format_injection(mems)
+    injections = _call_with_user(
+        services.subjective_time.format_injection,
+        mems,
+        user_id=ctx.uid,
+    )
 
     healed_text = ""
     knowledge_text = ""
@@ -300,7 +354,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     if ctx.is_owner:
         detect_domains = services.knowledge_domain.detect_domains
         started = time.monotonic()
-        domains, docs = detect_domains(search_query)
+        domains, docs = _detect_domains(detect_domains, search_query, ctx.uid)
+
         trace["routing"] = {"domains": domains, "docs": docs}
         if "__skip__" in domains:
             trace["path"] = "skip"
@@ -315,7 +370,13 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             try:
                 diagnosis = index_healer.diagnose(search_query, domains, docs, knowledge_hits)
                 if diagnosis is not None:
-                    healed_text, healed_chunks = await index_healer.heal(diagnosis, search_query)
+                    healed_text, healed_chunks = await _call_with_context(
+                        index_healer.heal,
+                        diagnosis,
+                        search_query,
+                        user_id=ctx.uid,
+                        request_id=ctx.request_id,
+                    )
                     if healed_text:
                         trace["_heal_words"] = list(diagnosis["words"])
                         runtime.logger.info(
@@ -331,7 +392,13 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                         if auto_book:
                             track_background(
                                 runtime,
-                                index_healer.auto_extract_task(diagnosis["words"], auto_book),
+                                _call_with_context(
+                                    index_healer.auto_extract_task,
+                                    diagnosis["words"],
+                                    auto_book,
+                                    user_id=ctx.uid,
+                                    request_id=ctx.request_id,
+                                ),
                             )
             except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
                 runtime.logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", exc)
@@ -389,13 +456,13 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             intent_label = "novel"
 
     profile = services.profile.get_profile_injection(user_id=ctx.uid)
-    lessons = services.self_reflect.get_lessons_injection() if ctx.is_owner else ""
+    lessons = services.self_reflect.get_lessons_injection(user_id=ctx.uid) if ctx.is_owner else ""
     concerns = services.concern_tracker.get_concerns_injection(user_id=ctx.uid)
     jargon = services.jargon.get_jargon_injection(msg, user_id=ctx.uid)
     style_examples = services.few_shot.get_examples_injection(user_id=ctx.uid)
     facts = memory.get_facts_injection(user_id=ctx.uid)
     behavior = (
-        services.behavior_context.get_behavior_injection()
+        services.behavior_context.get_behavior_injection(user_id=ctx.uid)
         if ctx.is_owner and settings.behavior_inject_enabled
         else ""
     )
@@ -403,12 +470,12 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     open_issues = services.unresolved.get_open_issues_injection(user_id=ctx.uid)
     slang = services.slang.get_slang_injection(msg, user_id=ctx.uid)
     mood_text = services.mood.detect_mood(msg) if ctx.is_owner else ""
-    mood_state = services.mood.get_state_injection() if ctx.is_owner else ""
+    mood_state = services.mood.get_state_injection(user_id=ctx.uid) if ctx.is_owner else ""
     self_state = services.self_state.get_self_state_injection(user_id=ctx.uid)
 
     extra_blocks: list[str] = []
     if ctx.is_owner and services.growth.detect_self_doubt(msg):
-        block = services.growth.build_injection()
+        block = services.growth.build_injection(user_id=ctx.uid)
         if block:
             extra_blocks.append(block)
     if ctx.is_owner:
@@ -426,7 +493,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     # 续写短命令「继续/接着写」不含章节字样但会进生成档，所以用 gen 判据全集。
     from app.chat.prompting import _GENERATION_INTENT
 
-    if ctx.is_owner and _GENERATION_INTENT.search(msg):
+    if ctx.image is None and ctx.is_owner and _GENERATION_INTENT.search(msg):
         generation_block = sepia.build_generation_block()
         if generation_block:
             extra_blocks.append(generation_block)

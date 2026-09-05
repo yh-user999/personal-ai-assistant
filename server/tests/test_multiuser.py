@@ -247,3 +247,103 @@ def test_normalize_user_id():
         memory.normalize_user_id("1234567890123")  # 13 位超长
     with pytest.raises(ValueError):
         memory.normalize_user_id("1.5")
+
+
+def test_user_domain_logs_reports_and_claims_are_isolated(db):
+    """工作日志、提醒、情绪、教训以及日报/周报均不跨主体读取或领取。"""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.database import connect
+    from app.services import (
+        fitness,
+        initiative,
+        mood,
+        novel_writing,
+        reminders,
+        self_reflect,
+        worklog,
+    )
+    from app.services.daily_summary import get_latest_daily_summary
+
+    owner = "owner"
+    guest = "10002"
+    now = datetime.now(timezone.utc)
+
+    worklog.add_log("主人工作内容", user_id=owner)
+    worklog.add_log("访客工作内容", user_id=guest)
+    assert "主人工作内容" in " ".join(
+        row["content"] for row in connect().execute(
+            "SELECT content FROM work_log WHERE user_id=?", (owner,)
+        ).fetchall()
+    )
+
+    owner_reminder = reminders.add_reminder("主人提醒", now - timedelta(minutes=1), user_id=owner)
+    guest_reminder = reminders.add_reminder("访客提醒", now - timedelta(minutes=1), user_id=guest)
+    assert [item["content"] for item in reminders.list_pending(user_id=owner)] == ["主人提醒"]
+    assert [item["content"] for item in reminders.list_pending(user_id=guest)] == ["访客提醒"]
+    owner_claim = reminders.claim_due_reminders(user_id=owner)
+    guest_claim = reminders.claim_due_reminders(user_id=guest)
+    assert [item["id"] for item in owner_claim] == [owner_reminder]
+    assert [item["id"] for item in guest_claim] == [guest_reminder]
+    reminders.mark_notified([owner_reminder], owner_claim[0]["sending_token"], user_id=guest)
+    conn = connect()
+    try:
+        assert conn.execute("SELECT status FROM reminders WHERE id=?", (owner_reminder,)).fetchone()[0] == "sending"
+    finally:
+        conn.close()
+    reminders.mark_notified([owner_reminder], owner_claim[0]["sending_token"], user_id=owner)
+
+    mood.record_mood("烦躁", "主人情绪", user_id=owner)
+    mood.record_mood("开心", "访客情绪", user_id=guest)
+    assert "烦躁" in mood.get_today_injection(user_id=owner)
+    assert "开心" not in mood.get_today_injection(user_id=owner)
+    assert "开心" in mood.get_today_injection(user_id=guest)
+    assert "烦躁" not in mood.get_today_injection(user_id=guest)
+
+    self_reflect.save_lesson("主人教训", user_id=owner)
+    self_reflect.save_lesson("访客教训", user_id=guest)
+    assert "主人教训" in self_reflect.get_lessons_injection(user_id=owner)
+    assert "访客教训" not in self_reflect.get_lessons_injection(user_id=owner)
+    assert "访客教训" in self_reflect.get_lessons_injection(user_id=guest)
+    assert "主人教训" not in self_reflect.get_lessons_injection(user_id=guest)
+
+    novel_writing.add_writing_log("1", 1200, user_id=owner)
+    novel_writing.add_writing_log("1", 300, user_id=guest)
+    assert "1200" in novel_writing.writing_summary(user_id=owner)
+    assert "300" in novel_writing.writing_summary(user_id=guest)
+    assert "300" not in novel_writing.writing_summary(user_id=owner)
+
+    fitness.add_log("weight", 70.0, "", user_id=owner)
+    fitness.add_log("weight", 80.0, "", user_id=guest)
+    assert "70.0" in fitness.fitness_summary(user_id=owner)
+    assert "80.0" in fitness.fitness_summary(user_id=guest)
+    assert "80.0" not in fitness.fitness_summary(user_id=owner)
+
+    initiative.log_sent("daily", "主人主动消息", user_id=owner)
+    initiative.log_sent("daily", "访客主动消息", user_id=guest)
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT content FROM initiative_log WHERE user_id=?", (owner,)
+        ).fetchone()[0] == "主人主动消息"
+        assert conn.execute(
+            "SELECT content FROM initiative_log WHERE user_id=?", (guest,)
+        ).fetchone()[0] == "访客主动消息"
+    finally:
+        conn.close()
+
+    conn = connect()
+    try:
+        conn.executemany(
+            "INSERT INTO daily_summaries(user_id, date, content, created_at) VALUES (?, ?, ?, ?)",
+            [(owner, "2026-09-05", "主人日报", now.isoformat()), (guest, "2026-09-05", "访客日报", now.isoformat())],
+        )
+        conn.executemany(
+            "INSERT INTO weekly_reports(user_id, week, content, stats, created_at) VALUES (?, ?, ?, ?, ?)",
+            [(owner, "2026-W36", "主人周报", "{}", now.isoformat()), (guest, "2026-W36", "访客周报", "{}", now.isoformat())],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert get_latest_daily_summary(user_id=owner)["content"] == "主人日报"
+    assert get_latest_daily_summary(user_id=guest)["content"] == "访客日报"

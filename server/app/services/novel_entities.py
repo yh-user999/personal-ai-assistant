@@ -441,14 +441,24 @@ EXTRACT_PROMPT = """从下面的小说片段里找出所有「{kind}」的**专�
 只输出 JSON，不要 markdown 代码块。"""
 
 
-async def extract_entities(book: str, kind: str, *, dry_run: bool = False,
-                           max_blocks: int = 40) -> dict:
-    """从命名句候选块里抽专名。
-
-    dry_run=True 只返回抽取结果不入库——先给用户过一遍再决定（LLM 会误抽，
-    比如把人名当命丛名）。确认后调 confirm_extracted 入库。
-    """
+async def extract_entities(
+    book: str,
+    kind: str,
+    *,
+    dry_run: bool = False,
+    max_blocks: int = 40,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """从命名句候选块里抽专名，并显式记录主体/请求上下文。"""
     from app.core import llm
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    base_request_id = request_id or logical_request_id(
+        "novel_entities_extract", uid, f"{book}:{kind}"
+    )
 
     blocks = find_naming_blocks(book, kind)[:max_blocks]
     # 补上枚举句所在的块：命名句模式只覆盖"逐个介绍"的写法，漏掉作者一次
@@ -491,7 +501,11 @@ async def extract_entities(book: str, kind: str, *, dry_run: bool = False,
         async with sem:
             try:
                 result = await llm.chat_json(
-                    "你是小说设定提取助手，只输出 JSON。", prompt
+                    "你是小说设定提取助手，只输出 JSON。",
+                    prompt,
+                    model=llm.get_novel_model(),
+                    request_id=f"{base_request_id}:{b['chunk_index']}"[:160],
+                    user_id=uid,
                 )
             except OpenAIError as e:
                 logger.warning("实体抽取失败 chunk#%s: %s", b["chunk_index"], e)

@@ -97,6 +97,7 @@ def test_continue_story(db, monkeypatch):
         assert any("寂静杀戮" in m["content"] for m in messages)
         assert any("Sepia 小说生成规则" in m["content"] for m in messages)
         assert any("权威设定" in m["content"] for m in messages)
+        assert kw["model"] == settings.novel_llm_model
         return "李羽握紧了刀，向门外走去。"
 
     async def fake_search(query, **kw):

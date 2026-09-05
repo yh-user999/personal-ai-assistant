@@ -97,13 +97,16 @@ def parse_reminder_cmd(msg: str) -> tuple[str, datetime] | None:
     return None
 
 
-def add_reminder(content: str, remind_at: datetime) -> int:
+def add_reminder(content: str, remind_at: datetime, user_id: str | None = None) -> int:
+    from app.core.memory import normalize_user_id
+
+    uid = normalize_user_id(user_id)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO reminders (content, remind_at, status, created_at) "
-            "VALUES (?, ?, 'pending', ?)",
-            (content, _utc_str(remind_at), _utc_str(_now())),
+            "INSERT INTO reminders (user_id, content, remind_at, status, created_at) "
+            "VALUES (?, ?, ?, 'pending', ?)",
+            (uid, content, _utc_str(remind_at), _utc_str(_now())),
         )
         conn.commit()
         return cur.lastrowid
@@ -118,12 +121,17 @@ def _db_to_local(iso: str) -> str:
     return dt.astimezone(TZ).strftime("%m月%d日 %H:%M")
 
 
-def list_pending() -> list[dict]:
+def list_pending(user_id: str | None = None) -> list[dict]:
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, content, remind_at FROM reminders WHERE status='pending' "
-            "ORDER BY remind_at ASC LIMIT 20"
+            f"SELECT id, content, remind_at FROM reminders WHERE status='pending' AND {clause} "
+            "ORDER BY remind_at ASC LIMIT 20",
+            user_args,
         ).fetchall()
     finally:
         conn.close()
@@ -137,68 +145,156 @@ def list_pending() -> list[dict]:
     ]
 
 
-def cancel_by_keyword(keyword: str) -> int:
+def cancel_by_keyword(keyword: str, user_id: str | None = None) -> int:
     """按内容片段取消，返回取消条数。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, content FROM reminders WHERE status='pending'"
+            f"SELECT id, content FROM reminders WHERE status='pending' AND {clause}",
+            user_args,
         ).fetchall()
         hit = [r for r in rows if keyword.strip() in r["content"]]
         for r in hit:
-            conn.execute("UPDATE reminders SET status='cancelled' WHERE id=?", (r["id"],))
+            conn.execute(
+                f"UPDATE reminders SET status='cancelled' WHERE id=? AND {clause}",
+                (r["id"], *user_args),
+            )
         conn.commit()
         return len(hit)
     finally:
         conn.close()
 
 
-def due_reminders(stale_hours: float = 24.0, claim_token: str | None = None) -> list[dict]:
-    """原子领取到期提醒，防多实例重复推送；返回 token 供 mark_notified 使用。"""
+def _format_due_rows(rows, stale_cutoff: str) -> list[dict]:
+    return [
+        {
+            "id": row["id"],
+            "content": row["content"],
+            "stale": bool(row["remind_at"] and row["remind_at"] < stale_cutoff),
+        }
+        for row in rows
+    ]
+
+
+def peek_due_reminders(
+    stale_hours: float = 24.0,
+    limit: int = 10,
+    user_id: str | None = None,
+) -> list[dict]:
+    """只读查看到期提醒；绝不修改 pending/sending 状态。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         now_dt = _now()
         now = _utc_str(now_dt)
         stale_cutoff = _utc_str(now_dt - timedelta(hours=stale_hours))
-        # 回收过期 sending 租约，允许重试。
-        conn.execute(
-            "UPDATE reminders SET status='pending', sending_token='', sending_at=NULL, sending_lease_expires_at=NULL "
-            "WHERE status='sending' AND sending_lease_expires_at < ?", (now,)
-        )
-        token = claim_token or secrets.token_urlsafe(24)
-        lease = _utc_str(now_dt + timedelta(minutes=5))
         rows = conn.execute(
-            "SELECT id, content, remind_at FROM reminders WHERE status='pending' AND remind_at <= ? ORDER BY remind_at ASC LIMIT 10",
-            (now,),
+            f"SELECT id, content, remind_at FROM reminders "
+            f"WHERE status='pending' AND remind_at <= ? AND {clause} "
+            "ORDER BY remind_at ASC LIMIT ?",
+            (now, *user_args, max(1, min(int(limit), 100))),
         ).fetchall()
-        result = []
-        for r in rows:
-            updated = conn.execute(
-                "UPDATE reminders SET status='sending', sending_token=?, sending_at=?, sending_lease_expires_at=? WHERE id=? AND status='pending'",
-                (token, now, lease, r["id"]),
-            )
-            if updated.rowcount:
-                result.append({"id": r["id"], "content": r["content"], "stale": bool(r["remind_at"] and r["remind_at"] < stale_cutoff), "sending_token": token})
-        conn.commit()
-        return result
+        return _format_due_rows(rows, stale_cutoff)
     finally:
         conn.close()
 
 
-def mark_notified(ids: list[int], sending_token: str | None = None) -> None:
-    """推送成功后消费；支持 token 校验并兼容旧调用方。"""
+def claim_due_reminders(
+    stale_hours: float = 24.0,
+    claim_token: str | None = None,
+    limit: int = 10,
+    user_id: str | None = None,
+) -> list[dict]:
+    """原子领取到期提醒，防多实例重复推送；返回 token 供消费/释放。"""
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        now_dt = _now()
+        now = _utc_str(now_dt)
+        stale_cutoff = _utc_str(now_dt - timedelta(hours=stale_hours))
+        # 回收过期 sending 租约，允许重试；NULL 租约不应被误回收。
+        conn.execute(
+            "UPDATE reminders SET status='pending', sending_token='', sending_at=NULL, sending_lease_expires_at=NULL "
+            f"WHERE status='sending' AND sending_lease_expires_at IS NOT NULL AND sending_lease_expires_at < ? AND {clause}",
+            (now, *user_args),
+        )
+        token = claim_token or secrets.token_urlsafe(24)
+        lease = _utc_str(now_dt + timedelta(minutes=5))
+        rows = conn.execute(
+            f"SELECT id, content, remind_at FROM reminders WHERE status='pending' AND remind_at <= ? AND {clause} "
+            "ORDER BY remind_at ASC LIMIT ?",
+            (now, *user_args, max(1, min(int(limit), 100))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            updated = conn.execute(
+                "UPDATE reminders SET status='sending', sending_token=?, sending_at=?, sending_lease_expires_at=? "
+                f"WHERE id=? AND status='pending' AND {clause}",
+                (token, now, lease, row["id"], *user_args),
+            )
+            if updated.rowcount:
+                item = _format_due_rows([row], stale_cutoff)[0]
+                item["sending_token"] = token
+                result.append(item)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def due_reminders(
+    stale_hours: float = 24.0,
+    claim_token: str | None = None,
+    user_id: str | None = None,
+) -> list[dict]:
+    """兼容旧调用方的原子领取入口。"""
+    kwargs = {"stale_hours": stale_hours, "claim_token": claim_token}
+    # 旧 monkeypatch 替身可能没有新增参数；默认主人调用保持原参数形态。
+    if user_id is not None:
+        kwargs["user_id"] = user_id
+    return claim_due_reminders(**kwargs)
+
+
+def mark_notified(
+    ids: list[int],
+    sending_token: str | None = None,
+    user_id: str | None = None,
+) -> None:
+    """推送成功后消费；提供 token 时严格限制为本次 claim。"""
     if not ids:
         return
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         placeholders = ",".join("?" * len(ids))
         params: list = [*ids]
-        predicate = f"id IN ({placeholders}) AND status IN ('sending','pending')"
+        predicate = f"id IN ({placeholders}) AND {clause}"
+        params.extend(user_args)
         if sending_token:
-            predicate += " AND (sending_token=? OR status='pending')"
+            predicate += " AND status='sending' AND sending_token=?"
             params.append(sending_token)
+        else:
+            # 兼容没有 token 的旧内部调用，但不允许覆盖已完成提醒。
+            predicate += " AND status IN ('sending','pending')"
         conn.execute(
-            f"UPDATE reminders SET status='notified', sending_token='', sending_lease_expires_at=NULL WHERE {predicate}",
+            f"UPDATE reminders SET status='notified', sending_token='', sending_at=NULL, sending_lease_expires_at=NULL WHERE {predicate}",
             params,
         )
         conn.commit()
@@ -206,15 +302,24 @@ def mark_notified(ids: list[int], sending_token: str | None = None) -> None:
         conn.close()
 
 
-def release_claim(ids: list[int], sending_token: str | None = None) -> None:
+def release_claim(
+    ids: list[int],
+    sending_token: str | None = None,
+    user_id: str | None = None,
+) -> None:
     """推送失败时释放 sending claim，下一轮可重试。"""
     if not ids:
         return
+    from app.core.memory import _user_scope, normalize_user_id
+
+    uid = normalize_user_id(user_id)
+    clause, user_args = _user_scope(uid, col="user_id")
     conn = connect()
     try:
         placeholders = ",".join("?" * len(ids))
         params: list = [*ids]
-        predicate = f"id IN ({placeholders}) AND status='sending'"
+        predicate = f"id IN ({placeholders}) AND status='sending' AND {clause}"
+        params.extend(user_args)
         if sending_token:
             predicate += " AND sending_token=?"
             params.append(sending_token)

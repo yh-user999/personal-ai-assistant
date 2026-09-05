@@ -55,14 +55,15 @@ class _ChatWorker(QThread):
     """后台线程调服务器，避免阻塞 UI。"""
     done = Signal(str, str)  # (role, text)
 
-    def __init__(self, client: ApiClient, message: str) -> None:
+    def __init__(self, client: ApiClient, message: str, image_path: str | None = None) -> None:
         super().__init__()
         self.client = client
         self.message = message
+        self.image_path = image_path
 
     def run(self) -> None:
         try:
-            reply = self.client.chat(self.message)
+            reply = self.client.chat(self.message, image_path=self.image_path)
             self.done.emit("assistant", reply)
         except Exception as e:
             self.done.emit("assistant", f"[连接失败] {e}")

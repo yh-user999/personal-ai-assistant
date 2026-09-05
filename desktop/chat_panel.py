@@ -21,7 +21,10 @@ v0.6 体验修正：
 - ✕ 按钮与 Esc 关闭；聊天中联动机器人状态灯
 """
 import html as html_lib
+import os
 import re
+import tempfile
+from pathlib import Path
 from typing import ClassVar
 
 import markdown as md_lib
@@ -37,11 +40,12 @@ from chat_workers import (
     _SearchWorker,
     retire,
 )
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QEvent, QSettings, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -52,6 +56,57 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from robot_avatar import RobotAvatar
+
+
+_ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_LOCAL_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _validate_image_path(path: str | os.PathLike[str], max_bytes: int = _LOCAL_IMAGE_MAX_BYTES) -> tuple[bool, str]:
+    """验证桌面端可读图片，不读取或修改原文件。"""
+    candidate = Path(path)
+    if candidate.suffix.lower() not in _ALLOWED_IMAGE_EXTENSIONS:
+        return False, "仅支持 JPEG、PNG 或 WebP 图片"
+    try:
+        size = candidate.stat().st_size
+        if size <= 0:
+            return False, "图片文件为空"
+        if size > max_bytes:
+            return False, f"图片超过本地大小限制（最大 {max_bytes // (1024 * 1024)} MB）"
+        with candidate.open("rb"):
+            pass
+    except OSError as exc:
+        return False, f"图片不可读：{exc}"
+    return True, ""
+
+
+def _save_clipboard_image(image: QImage) -> str:
+    """把剪贴板图片保存为进程临时 PNG，返回待清理路径。"""
+    fd, path = tempfile.mkstemp(prefix="paa-clipboard-", suffix=".png")
+    os.close(fd)
+    if image.isNull() or not image.save(path, "PNG"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise ValueError("剪贴板中没有可保存的图片")
+    return path
+
+
+class _ImageLineEdit(QLineEdit):
+    """保留单行输入框，同时捕获 Ctrl+V 的剪贴板图片。"""
+
+    imagePasted = Signal(object)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
+            clipboard = QApplication.clipboard()
+            mime = clipboard.mimeData()
+            if mime and mime.hasImage():
+                self.imagePasted.emit(clipboard.image())
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
 
 class _TextDialog(QDialog):
@@ -227,6 +282,10 @@ class ChatPanel(QWidget):
         self._api_worker = None
         self._local_worker = None   # 本地指令执行线程（脚本/文件操作可能耗时很久）
         self._pending_msg = ""      # 本地未命中时转发给服务器的原消息
+        self._pending_image_path = None
+        self._pending_image_temp = False
+        self._attachment_path = None
+        self._attachment_temp = False
         self._pinned = False
         self.ball = ball  # 悬浮机器人引用：聊天时联动状态灯/表情
         self._history_loaded = False
@@ -387,13 +446,37 @@ class ChatPanel(QWidget):
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
-        # 输入区
+        # 附件状态 + 输入区：保持单行 QLineEdit，图片可替换/清除
+        attachment_row = QHBoxLayout()
+        self._attachment_label = QLabel("未选择图片")
+        self._attachment_label.setToolTip("支持 JPEG、PNG、WebP；可从剪贴板粘贴图片")
+        self._clear_attachment_btn = QPushButton("清除")
+        self._clear_attachment_btn.setCursor(Qt.PointingHandCursor)
+        self._clear_attachment_btn.clicked.connect(self._clear_attachment)
+        self._clear_attachment_btn.setEnabled(False)
+        attachment_row.addWidget(self._attachment_label, 1)
+        attachment_row.addWidget(self._clear_attachment_btn)
+        layout.addLayout(attachment_row)
+
         row = QHBoxLayout()
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("说点什么…（记录：xxx 可记工作日志）")
+        self.input = _ImageLineEdit()
+        self.input.setPlaceholderText("说点什么…（可只发图片；记录：xxx 可记工作日志）")
         self.input.setCursor(Qt.CursorShape.IBeamCursor)  # 显式 I-beam（同气泡）
+        self.input.imagePasted.connect(self._on_clipboard_image)
         # 输入框/滚动条/问候样式统一在 _init_static_styles（主题切换可重建）
         self.input.returnPressed.connect(self._send)
+        image_btn = QPushButton("图片")
+        image_btn.setToolTip("选择 JPEG、PNG 或 WebP 图片")
+        image_btn.setCursor(Qt.PointingHandCursor)
+        image_btn.clicked.connect(self._choose_image)
+        paste_btn = QPushButton("粘贴")
+        paste_btn.setToolTip("粘贴剪贴板中的截图/图片")
+        paste_btn.setCursor(Qt.PointingHandCursor)
+        paste_btn.clicked.connect(self._paste_image)
+        self._image_btn = image_btn
+        self._paste_btn = paste_btn
+        image_btn.setProperty("quick", True)
+        paste_btn.setProperty("quick", True)
         send_btn = QPushButton("发送")
         send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.setStyleSheet(
@@ -405,6 +488,8 @@ class ChatPanel(QWidget):
         self.send_btn = send_btn
         send_btn.clicked.connect(self._send)
         row.addWidget(self.input, 1)
+        row.addWidget(image_btn)
+        row.addWidget(paste_btn)
         row.addWidget(send_btn)
         layout.addLayout(row)
 
@@ -447,18 +532,78 @@ class ChatPanel(QWidget):
             e |= Qt.Edge.BottomEdge.value
         return e
 
+    def _available_screen_geometry(self) -> QRect | None:
+        """返回当前窗口所在屏幕的可用工作区，必要时回退到主屏。"""
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return None
+        geometry = screen.availableGeometry()
+        return QRect(geometry)
+
+    def _cancel_window_interaction(self) -> None:
+        """取消进行中的缩放/移动，避免状态切换后继续改写窗口几何。"""
+        self._manual_edges = 0
+        self._manual_geo = None
+        self._manual_pos = None
+        self._moving = False
+        self._move_offset = None
+        self._size_save_timer.stop()
+
+    def _fallback_normal_geometry(self, work_area: QRect | None) -> QRect:
+        """根据已记忆尺寸构造可见的常规窗口矩形。"""
+        width = max(self.MIN_W, int(getattr(self, "_saved_w", self.W)))
+        height = max(self.MIN_H, int(getattr(self, "_saved_h", self.H)))
+        if work_area is None or not work_area.isValid():
+            return QRect(0, 0, width, height)
+        width = min(width, work_area.width())
+        height = min(height, work_area.height())
+        x = work_area.x() + max(0, (work_area.width() - width) // 2)
+        y = work_area.y() + max(0, (work_area.height() - height) // 2)
+        return QRect(x, y, width, height)
+
+    def _normal_restore_geometry(self, saved: QRect | None) -> QRect:
+        """校验并钳制还原矩形，确保常规窗口尺寸合法且仍在可见工作区。"""
+        work_area = self._available_screen_geometry()
+        if not isinstance(saved, QRect):
+            return self._fallback_normal_geometry(work_area)
+
+        candidate = QRect(saved)
+        if (
+            not candidate.isValid()
+            or candidate.width() < self.MIN_W
+            or candidate.height() < self.MIN_H
+        ):
+            return self._fallback_normal_geometry(work_area)
+        if work_area is None or not work_area.isValid():
+            return candidate
+
+        width = min(candidate.width(), work_area.width())
+        height = min(candidate.height(), work_area.height())
+        max_x = work_area.right() - width + 1
+        max_y = work_area.bottom() - height + 1
+        x = min(max(candidate.x(), work_area.x()), max_x)
+        y = min(max(candidate.y(), work_area.y()), max_y)
+        return QRect(x, y, width, height)
+
     def begin_resize(self, edges: int, event) -> None:
         """缩放起点（由 _ResizeHandle 或边缘按下触发）。"""
+        if self._maximized:
+            return
         self._manual_edges = edges
-        self._manual_geo = self.geometry()
+        self._manual_geo = QRect(self.geometry())
         self._manual_pos = event.globalPosition().toPoint()
 
     def drag_resize(self, event) -> None:
+        if self._maximized:
+            self._manual_edges = 0
+            return
         if self._manual_edges:
             self._apply_manual_resize(event.globalPosition().toPoint())
 
     def end_resize(self) -> None:
         self._manual_edges = 0
+        self._manual_geo = None
+        self._manual_pos = None
         self._save_size()
 
     def _layout_handles(self) -> None:
@@ -499,6 +644,8 @@ class ChatPanel(QWidget):
 
     def _apply_manual_resize(self, global_pos) -> None:
         """手动缩放：按按下时的几何 + 位移计算新窗口矩形（含最小尺寸钳制）。"""
+        if self._maximized:
+            return
         edges = self._manual_edges
         geo = self._manual_geo
         d = global_pos - self._manual_pos
@@ -535,6 +682,8 @@ class ChatPanel(QWidget):
                 self._moving = False
                 return True
             if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                self._moving = False
+                self._move_offset = None
                 self._toggle_maximize()
                 return True
         return super().eventFilter(obj, event)
@@ -547,14 +696,19 @@ class ChatPanel(QWidget):
         模式），改用自己算工作区矩形，零原生调用零风险。
         """
         if self._maximized:
-            self.setGeometry(self._pre_max_geo)
+            self._cancel_window_interaction()
+            restore_geo = self._normal_restore_geometry(self._pre_max_geo)
             self._maximized = False
+            self.setGeometry(restore_geo)
+            self._pre_max_geo = None
         else:
-            self._pre_max_geo = self.geometry()
+            normal_geo = QRect(self.geometry())
+            self._cancel_window_interaction()
+            self._pre_max_geo = normal_geo
             self._maximized = True
-            self.setGeometry(
-                QApplication.primaryScreen().availableGeometry()
-            )
+            work_area = self._available_screen_geometry()
+            if work_area is not None and work_area.isValid():
+                self.setGeometry(work_area)
         self._update_max_btn()
 
     def _update_max_btn(self) -> None:
@@ -605,6 +759,13 @@ class ChatPanel(QWidget):
             f"QLineEdit {{ background: {theme.token('input_bg')}; color: {theme.token('text_main')}; border: 1px solid {theme.token('border')};"
             f"border-radius: 8px; padding: 8px; }}"
             f"QLineEdit:focus {{ border: 1px solid {theme.token('accent')}; }}"
+        )
+        self._attachment_label.setStyleSheet(
+            f"QLabel {{ color: {theme.token('text_faint')}; font-size: 11px; padding: 1px 2px; }}"
+        )
+        self._clear_attachment_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {theme.token('text_faint')}; border: none; font-size: 11px; }}"
+            f"QPushButton:hover {{ color: {theme.token('text_main')}; }}"
         )
         for b in (self._pin_btn, self._max_btn_ref, self._close_btn_ref):
             size_fs = {"📌": 14, "□": 13, "✕": 15}.get(b.text(), 13)
@@ -908,25 +1069,114 @@ class ChatPanel(QWidget):
         dlg = _InfoDialog(title, text, parent=self)
         dlg.show()
 
+    # ── 图片附件 ────────────────────────────────────────────
+
+    def _set_attachment(self, path: str, temporary: bool = False) -> bool:
+        ok, reason = _validate_image_path(path)
+        if not ok:
+            self._attachment_label.setText(reason)
+            self._clear_attachment_btn.setEnabled(bool(self._attachment_path))
+            if temporary:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            return False
+        self._clear_attachment()
+        self._attachment_path = path
+        self._attachment_temp = temporary
+        self._attachment_label.setText(f"图片：{Path(path).name}")
+        self._clear_attachment_btn.setEnabled(True)
+        return True
+
+    def _clear_attachment(self) -> None:
+        path, temporary = self._attachment_path, self._attachment_temp
+        self._attachment_path = None
+        self._attachment_temp = False
+        if path and temporary:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._attachment_label.setText("未选择图片")
+        self._clear_attachment_btn.setEnabled(False)
+
+    def _choose_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择图片",
+            "",
+            "图片 (*.jpg *.jpeg *.png *.webp)",
+        )
+        if path:
+            self._set_attachment(path)
+
+    def _on_clipboard_image(self, image: QImage) -> None:
+        try:
+            path = _save_clipboard_image(image)
+        except (OSError, ValueError) as exc:
+            self._attachment_label.setText(f"剪贴板图片不可用：{exc}")
+            return
+        self._set_attachment(path, temporary=True)
+
+    def _paste_image(self) -> None:
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime and mime.hasImage():
+            self._on_clipboard_image(clipboard.image())
+        else:
+            self._attachment_label.setText("剪贴板中没有图片")
+
+    def _take_attachment(self) -> tuple[str | None, bool]:
+        path, temporary = self._attachment_path, self._attachment_temp
+        self._attachment_path = None
+        self._attachment_temp = False
+        self._attachment_label.setText("未选择图片")
+        self._clear_attachment_btn.setEnabled(False)
+        return path, temporary
+
+    @staticmethod
+    def _cleanup_temp_image(path: str | None, temporary: bool) -> None:
+        if path and temporary:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     # ── 发送与状态联动 ─────────────────────────────────────
 
     def _send(self) -> None:
         msg = self.input.text().strip()
-        if not msg or self._worker is not None or self._local_worker is not None:
+        image_path, image_temp = self._take_attachment()
+        if (not msg and not image_path) or self._worker is not None or self._local_worker is not None:
+            if image_path:
+                self._set_attachment(image_path, image_temp)
             return
         self.input.clear()
-        self._append("user", msg, "")
+        caption = msg
+        if image_path:
+            image_label = f"📷 图片：{Path(image_path).name}"
+            self._append("user", f"{image_label}\n{caption}" if caption else image_label, "")
+        else:
+            self._append("user", caption, "")
 
-        # 本地执行器优先：执行类命令在本地直行，不经过服务器
-        # （零延迟 + 文件内容不出本机 + 服务器挂机也可用）。
-        # 走后台线程：脚本最长 120s、文件搜索要扫几千个文件，
-        # 同步调用会让面板假死到操作结束。
         if self.ball:
             self.ball.set_state("thinking")
         self._show_typing()
+        self._pending_msg = msg
+        self._pending_image_path = image_path
+        self._pending_image_temp = image_temp
+
+        # 图片请求直接上传，绝不进入本地执行器；图片-only 也可发送。
+        if image_path:
+            self._worker = _ChatWorker(self.client, msg, image_path=image_path)
+            self._worker.done.connect(self._on_done)
+            self._worker.start()
+            return
+
+        # 文本请求仍保持本地执行器优先。
         self._local_worker = _LocalExecWorker(msg)
         self._local_worker.done.connect(self._on_local_done)
-        self._pending_msg = msg
         self._local_worker.start()
 
     def _on_local_done(self, handled: bool, text: str) -> None:
@@ -958,6 +1208,10 @@ class ChatPanel(QWidget):
         self._worker = None
         if worker:
             retire(worker)  # wait 收尸后销毁（防 sizedFree 堆损坏崩溃）
+        self._cleanup_temp_image(self._pending_image_path, self._pending_image_temp)
+        self._pending_image_path = None
+        self._pending_image_temp = False
+        self._pending_msg = ""
         self._remove_typing()  # 撤下"正在想"行，换上真实回复
         self._append(role, text, "")
         if self.ball:

@@ -70,7 +70,9 @@ def get_self_state_injection(user_id: str | None = None) -> str:
             (day_start, *args),
         ).fetchone()
         last_lesson = conn.execute(
-            "SELECT created_at FROM lessons ORDER BY created_at DESC LIMIT 1"
+            f"SELECT created_at FROM lessons WHERE {clause} "
+            "ORDER BY created_at DESC LIMIT 1",
+            args,
         ).fetchone() if is_owner else None
     finally:
         conn.close()

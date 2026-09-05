@@ -23,7 +23,7 @@ def test_files_exist():
 def _script_bodies(path: Path) -> str:
     import re
     text = path.read_text(encoding="utf-8")
-    return "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", text, re.S))
+    return "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", text, re.DOTALL))
 
 
 def test_no_innerhtml_in_pages():

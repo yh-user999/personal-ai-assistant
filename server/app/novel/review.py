@@ -9,10 +9,32 @@ class NovelReviewService:
         self.chapter_service = chapter_service
         self.writer_service = writer_service
 
-    async def review_chapter(self, text: str, *, user_id: str | None = None) -> ReviewReport:
-        result = await self.chapter_service.analyze_chapter(text, user_id=user_id)
+    async def review_chapter(
+        self,
+        text: str,
+        *,
+        user_id: str | None = None,
+        request_id: str | None = None,
+    ) -> ReviewReport:
+        kwargs = {}
+        if user_id:
+            kwargs["user_id"] = user_id
+        if request_id:
+            kwargs["request_id"] = request_id
+        result = await self.chapter_service.analyze_chapter(text, **kwargs)
         return ReviewReport(ok="发现" not in result["reply"], reply=result["reply"])
 
-    async def check_conflicts(self, text: str) -> ReviewReport:
-        result = await self.writer_service.check_conflicts(text)
+    async def check_conflicts(
+        self,
+        text: str,
+        *,
+        user_id: str | None = None,
+        request_id: str | None = None,
+    ) -> ReviewReport:
+        kwargs = {}
+        if user_id:
+            kwargs["user_id"] = user_id
+        if request_id:
+            kwargs["request_id"] = request_id
+        result = await self.writer_service.check_conflicts(text, **kwargs)
         return ReviewReport(ok="未发现" in result["reply"], reply=result["reply"])

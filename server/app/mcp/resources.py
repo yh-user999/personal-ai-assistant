@@ -48,8 +48,8 @@ def get_open_issues_resource() -> str:
 
 
 def get_daily_summary_resource() -> str:
-    _identity()
-    return _json({"summary": daily_summary.get_latest_daily_summary()})
+    identity = _identity()
+    return _json({"summary": daily_summary.get_latest_daily_summary(user_id=identity.uid)})
 
 
 def get_novel_projects_resource() -> str:

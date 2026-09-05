@@ -10,6 +10,7 @@ LLM 诚实地说"没有记载"，但书里其实有内容。
 3. 登记：聚合块 ≥60% 来自小说域时，把类名登记进动态词表（第二次秒答）
 二期（后台自动实体抽取）与三期（反馈修正）不在本模块。
 """
+import inspect
 import logging
 import re
 import sqlite3
@@ -153,8 +154,19 @@ SYNTH_PROMPT = """用户问题：{query}
 _ECHO_RE = re.compile(r"\[(?:小说|第)[^\]\n]{0,20}#?\d*\]")
 
 
-async def synthesize(query: str, words: list[str], chunks: list[dict]) -> str:
-    """聚合块 → LLM 提炼（一次调用，temperature 0）。失败/回显返回空串。"""
+async def synthesize(
+    query: str,
+    words: list[str],
+    chunks: list[dict],
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> str:
+    """聚合块 → LLM 提炼（一次调用，temperature 0）。"""
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    logical_id = request_id or logical_request_id("index_healer_synthesize", uid, "query")
     lines = []
     for c in chunks:
         body = (c.get("content") or "").replace("\n", " ")[:250]
@@ -171,6 +183,8 @@ async def synthesize(query: str, words: list[str], chunks: list[dict]) -> str:
             ],
             temperature=0,
             max_tokens=SYNTH_MAX_TOKENS,
+            request_id=logical_id,
+            user_id=uid,
         )
         text = (text or "").strip()
         if _ECHO_RE.search(text):
@@ -223,8 +237,13 @@ def diagnose(query: str, domains: list[str], docs: list[str],
     }
 
 
-async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
-    """兜底执行：变体重搜 → 聚合 → 提炼。返回 (注入文本, 聚合块)。"""
+async def heal(
+    diag: dict,
+    query: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> tuple[str, list[dict]]:
+    """兜底执行：变体重搜 → 聚合 → 提炼。"""
     chunks: list[dict] = []
     for w in diag["words"]:
         variants = expand_variants(w)
@@ -236,7 +255,13 @@ async def heal(diag: dict, query: str) -> tuple[str, list[dict]]:
             break
     if len(chunks) < MIN_AGGREGATE_CHUNKS:
         return "", []
-    text = await synthesize(query, diag["words"], chunks)
+    text = await synthesize(
+        query,
+        diag["words"],
+        chunks,
+        user_id=user_id,
+        request_id=request_id,
+    )
     if not text:
         return "", chunks
     note = (
@@ -364,14 +389,22 @@ def _chunk_evidence(book: str, name: str) -> int:
         conn.close()
 
 
-async def auto_extract_task(words: list[str], book: str) -> dict | None:
-    """后台自动抽取入口（chat heal 成功后触发，fire-and-forget）。
-
-    流程：预算/幂等闸 → extract_entities(dry_run) → 按块证据分置信
-    → 高置信直接入库 / 低置信进候选池 → 台账留痕。全程失败不影响主回复。
-    """
+async def auto_extract_task(
+    words: list[str],
+    book: str,
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> dict | None:
+    """后台自动抽取入口（chat heal 成功后触发，fire-and-forget）。"""
     if not words or not book:
         return None
+    from app.core.memory import normalize_user_id
+    from app.services.llm_usage import logical_request_id
+
+    uid = normalize_user_id(user_id)
+    base_request_id = request_id or logical_request_id(
+        "index_healer_auto_extract", uid, f"{book}:{words[0]}"
+    )
     kind_word = words[0]
     if not _reserve_extract_slot(kind_word):
         return {"kind": kind_word, "skipped": "budget_or_duplicate"}
@@ -379,9 +412,21 @@ async def auto_extract_task(words: list[str], book: str) -> dict | None:
     from app.services import novel_entities
 
     try:
-        payload = await novel_entities.extract_entities(
-            book, kind_word, dry_run=True, max_blocks=AUTO_MAX_BLOCKS
+        extractor = novel_entities.extract_entities
+        try:
+            parameters = inspect.signature(extractor).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
         )
+        extractor_kwargs = {"dry_run": True, "max_blocks": AUTO_MAX_BLOCKS}
+        if "user_id" in parameters or accepts_kwargs:
+            extractor_kwargs["user_id"] = uid
+        if "request_id" in parameters or accepts_kwargs:
+            extractor_kwargs["request_id"] = base_request_id
+        payload = await extractor(book, kind_word, **extractor_kwargs)
     except (OpenAIError, TimeoutError, RuntimeError, ValueError, TypeError) as e:
         _settle_extract_slot(kind_word, book, 0)
         return {"kind": kind_word, "skipped": f"extract_error: {e}"}

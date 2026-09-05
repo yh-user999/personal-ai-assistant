@@ -78,7 +78,11 @@ class ReviewRequest(BaseModel):
 
 def _repo(request: Request) -> tuple[SQLiteNovelRepository, str]:
     auth = require_roles(request, "owner", "internal")
-    user_id = auth.subject or "owner"
+    # subject 由认证上下文建立：owner/internal 固定映射到主人，不能由请求体覆盖。
+    # 若未来新增角色却忘记建立 subject，宁可明确失败也不能回退到写死的 owner。
+    user_id = str(auth.subject or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=500, detail="authenticated subject missing")
     return SQLiteNovelRepository(owner_id=user_id), user_id
 
 
@@ -191,7 +195,17 @@ def upsert_chapter(project_id: str, req: ChapterRequest, request: Request):
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id, write=True):
         raise _error(403, "project_write_forbidden", "无项目写入权限")
-    draft = repo.upsert_chapter(project_id, req.chapter_no, title=req.title, content=req.content, draft_content=req.draft_content, expected_version=req.expected_version)
+    try:
+        draft = repo.upsert_chapter(
+            project_id,
+            req.chapter_no,
+            title=req.title,
+            content=req.content,
+            draft_content=req.draft_content,
+            expected_version=req.expected_version,
+        )
+    except ValueError as exc:
+        raise _error(409, "chapter_version_conflict", str(exc)) from exc
     _audit(user_id, project_id, "chapter.write", req.chapter_no)
     return draft_payload(draft)
 
@@ -201,9 +215,15 @@ def create_job(project_id: str, req: JobRequest, request: Request):
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id, write=True):
         raise _error(403, "project_write_forbidden", "无项目写入权限")
-    job = repo.create_job(project_id, req.chapter_no, req.idempotency_key, req.prompt)
+    try:
+        job = repo.create_job(project_id, req.chapter_no, req.idempotency_key, req.prompt)
+    except ValueError as exc:
+        raise _error(409, "idempotency_conflict", str(exc)) from exc
     if req.draft_content:
-        repo.update_job(job.job_id, GenerationJobStatus.AWAITING_CONFIRMATION, draft_content=req.draft_content)
+        try:
+            repo.update_job(job.job_id, GenerationJobStatus.AWAITING_CONFIRMATION, draft_content=req.draft_content)
+        except ValueError as exc:
+            raise _error(409, "job_version_conflict", str(exc)) from exc
         job = repo.get_job(job.job_id)
     _audit(user_id, project_id, "job.create", job.job_id)
     return job_payload(job)

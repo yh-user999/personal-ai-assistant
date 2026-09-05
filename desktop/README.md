@@ -12,7 +12,8 @@
 | 图片上传 | `api_client.py` | 图片只读打开，发送 multipart 到 `/api/chat/vision`；文本保持 JSON `/api/chat` |
 | 后台线程 | `chat_workers.py` | 网络请求在 QThread 中执行，图片请求不阻塞 UI，也不进入本地执行器 |
 | 临时文件 | `chat_panel.py` | 剪贴板图片保存为临时 PNG；发送完成、失败、取消后清理，用户原图不修改 |
-| 托盘 | `tray.py` | 系统托盘：打开面板/今日概览/周报/退出 |
+| 小说工作台 | `api_client.py`、`ssh_tunnel.py` | 点击入口后自动建立/复用 SSH 隧道，再用系统默认浏览器打开 `/novel/` |
+| 托盘 | `tray.py` | 系统托盘：打开面板/小说工作台/今日概览/周报/退出 |
 
 ### 图片交互约定
 
@@ -32,9 +33,31 @@ python main.py
 环境变量：
 
 ```dotenv
+# 直连 API；如果配置了 NOVEL_TUNNEL_TARGET，小说网页会优先走本机 SSH 隧道
 SERVER_URL=http://<服务器私网地址>:8000
 API_TOKEN=<与服务端角色配置对应的 token>
+
+# 小说工作台自动 SSH 隧道（推荐使用 SSH config alias）
+NOVEL_TUNNEL_TARGET=<ssh-user>@<ssh-host>
+NOVEL_TUNNEL_LOCAL_PORT=18000
+NOVEL_TUNNEL_REMOTE_HOST=127.0.0.1
+NOVEL_TUNNEL_REMOTE_PORT=8000
+NOVEL_TUNNEL_IDENTITY_FILE=<可选私钥路径>
+# 可选完整地址；填写后覆盖自动生成的本机地址
+NOVEL_WEB_URL=
 ```
+
+### 点击小说按钮自动建立隧道
+
+桌面端的悬浮球右键菜单、聊天面板“✒ 小说”按钮和系统托盘菜单共用同一后台流程。配置 `NOVEL_TUNNEL_TARGET` 后，点击任意入口会在后台调用 Windows 自带 OpenSSH：
+
+1. 使用 `ssh -N -T -L 本机端口:远端回环地址:远端端口 目标` 建立转发；
+2. 轮询确认 `127.0.0.1:<本机端口>` 已监听后，再打开系统默认浏览器；
+3. 如果本机端口已有可用转发则直接复用，不会重复启动；机器人退出时只关闭本进程创建的隧道。
+
+首次使用前，请在 Windows 的 SSH config 或密钥中完成一次认证准备（推荐配置 `Host`、`IdentityFile` 和已知主机）。日常点击按钮不需要手动执行 `ssh -L`，也不需要把 API token 放进网页 URL；网页继续使用自身的 Token 输入框。
+
+如果未配置 `NOVEL_TUNNEL_TARGET`，且没有填写 `NOVEL_WEB_URL`，桌面端会回退到 `SERVER_URL/novel/`。模板中的 `<ssh-user>`、`<ssh-host>` 和私钥路径均为脱敏占位符，请勿替换后提交真实值。
 
 ## 打包 exe
 

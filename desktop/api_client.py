@@ -6,8 +6,10 @@
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
+from ssh_tunnel import SshTunnelConfig, SshTunnelError, get_shared_tunnel_manager
 
 
 _IMAGE_MEDIA_TYPES = {
@@ -18,10 +20,62 @@ _IMAGE_MEDIA_TYPES = {
 }
 
 
+class NovelWorkbenchError(RuntimeError):
+    """小说工作台 URL 或隧道准备失败（错误文本已脱敏）。"""
+
+
 class ApiClient:
-    def __init__(self) -> None:
+    def __init__(self, tunnel_manager=None) -> None:
         self.base_url = os.environ.get("SERVER_URL", "http://127.0.0.1:8000").rstrip("/")
         self.token = os.environ.get("API_TOKEN", "")
+        self._tunnel_manager = tunnel_manager or get_shared_tunnel_manager()
+
+    def novel_tunnel_config(self) -> SshTunnelConfig | None:
+        """读取小说工作台隧道配置；未配置目标时返回 None。"""
+        if not os.environ.get("NOVEL_TUNNEL_TARGET", "").strip():
+            return None
+        return SshTunnelConfig.from_env()
+
+    @staticmethod
+    def _validate_novel_web_url(url: str) -> str:
+        candidate = url.strip()
+        parsed = urlsplit(candidate)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise NovelWorkbenchError("NOVEL_WEB_URL 必须是完整的 http(s) 网页地址")
+        if parsed.username or parsed.password:
+            raise NovelWorkbenchError("NOVEL_WEB_URL 不支持在地址中嵌入账号信息")
+        return candidate
+
+    def novel_workbench_url(self) -> str:
+        """解析小说工作台网页地址，不启动隧道。"""
+        configured_url = os.environ.get("NOVEL_WEB_URL", "").strip()
+        if configured_url:
+            return self._validate_novel_web_url(configured_url)
+        config = self.novel_tunnel_config()
+        if config is not None:
+            return f"http://127.0.0.1:{config.local_port}/novel/"
+        return f"{self.base_url}/novel/"
+
+    def prepare_novel_workbench(self) -> str:
+        """准备小说工作台访问地址；需要时先确保共享 SSH 隧道已就绪。"""
+        configured_url = os.environ.get("NOVEL_WEB_URL", "").strip()
+        if configured_url:
+            return self._validate_novel_web_url(configured_url)
+        config = self.novel_tunnel_config()
+        if config is None:
+            return self.novel_workbench_url()
+        url = f"http://127.0.0.1:{config.local_port}/novel/"
+        try:
+            self._tunnel_manager.ensure_ready(config)
+        except SshTunnelError as exc:
+            raise NovelWorkbenchError(str(exc)) from exc
+        except Exception as exc:
+            raise NovelWorkbenchError("小说工作台隧道准备失败，请检查桌面端配置") from exc
+        return url
+
+    def close_novel_tunnel(self) -> None:
+        """关闭共享管理器创建的隧道；手动已有隧道不会被关闭。"""
+        self._tunnel_manager.close()
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}

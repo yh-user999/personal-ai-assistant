@@ -8,15 +8,16 @@
 """
 import math
 import random
+import webbrowser
 from pathlib import Path
 
 import robot_paint
 import theme
 from chat_panel import ChatPanel
-from chat_workers import _HealthWorker, retire
+from chat_workers import _HealthWorker, _NovelWorkbenchWorker, retire
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 from robot_pose import arm_angle, leg_angles
 from skins import SKIN_NAMES, current_skin, set_skin
 from theme import THEME_NAMES
@@ -68,10 +69,14 @@ class FloatingBall(QWidget):
 
         self._health_client = ApiClient()
         self._health_worker = None
+        self._novel_worker = None
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._check_health)
         self._health_timer.start(60_000)
         self._check_health()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown)
 
         # 默认位置：屏幕右下角
         screen = self.screen() or QApplication.primaryScreen()
@@ -114,6 +119,38 @@ class FloatingBall(QWidget):
         if self.state == "thinking":
             return  # 聊天中不打断状态
         self.set_state("online" if ok else "error")
+
+    # ── 小说工作台 ─────────────────────────────────────────
+
+    def open_novel_workbench(self) -> None:
+        """后台建立/复用隧道，成功后用系统默认浏览器打开工作台。"""
+        if self._novel_worker is not None:
+            return
+        self._novel_worker = _NovelWorkbenchWorker(self._health_client)
+        self._novel_worker.done.connect(self._on_novel_workbench)
+        self._novel_worker.start()
+
+    def _on_novel_workbench(self, url: str, error: str) -> None:
+        worker = self._novel_worker
+        self._novel_worker = None
+        if worker:
+            retire(worker)
+        if error:
+            QMessageBox.warning(self, "小说工作台", error)
+            return
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception:
+            opened = False
+        if not opened:
+            QMessageBox.warning(self, "小说工作台", "默认浏览器未能打开工作台页面")
+
+    def _shutdown(self) -> None:
+        """退出时只清理本进程创建的 worker/SSH 隧道。"""
+        for worker in (self._novel_worker, self._health_worker):
+            if worker is not None:
+                worker.wait(12_000)
+        self._health_client.close_novel_tunnel()
 
     # ── 动画 ───────────────────────────────────────────────
 
@@ -638,6 +675,7 @@ class FloatingBall(QWidget):
         """右键菜单：打开面板 / 换肤 / 退出。"""
         menu = QMenu(self)
         menu.addAction("打开/收起面板", self.toggle_panel)
+        menu.addAction("小说工作台", self.open_novel_workbench)
         skin_menu = menu.addMenu("换肤")
         for name, label in SKIN_NAMES.items():
             act = skin_menu.addAction(label)

@@ -194,6 +194,7 @@ class TrayIcon(QSystemTrayIcon):
 
         menu = QMenu()
         menu.addAction("打开面板", self._open_panel)
+        menu.addAction("小说工作台", self._open_novel_workbench)
         menu.addAction("显示机器人", self._show_ball)  # 图标意外消失时的恢复入口
         menu.addAction("今日概览", self._open_stats)
         menu.addSeparator()
@@ -225,6 +226,9 @@ class TrayIcon(QSystemTrayIcon):
         self.ball.show()      # 打开面板时顺带把机器人窗口找回来（防窗口意外丢失）
         self.ball.raise_()
         self.ball.open_panel()
+
+    def _open_novel_workbench(self) -> None:
+        self.ball.open_novel_workbench()
 
     def _show_ball(self) -> None:
         self.ball.show()

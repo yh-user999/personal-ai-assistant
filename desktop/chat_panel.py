@@ -24,6 +24,7 @@ import html as html_lib
 import os
 import re
 import tempfile
+import webbrowser
 from pathlib import Path
 from typing import ClassVar
 
@@ -37,6 +38,7 @@ from chat_workers import (
     _GreetingWorker,
     _HistoryWorker,
     _LocalExecWorker,
+    _NovelWorkbenchWorker,
     _SearchWorker,
     retire,
 )
@@ -49,6 +51,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTextBrowser,
@@ -280,6 +283,7 @@ class ChatPanel(QWidget):
         self._worker = None
         self._history_worker = None
         self._api_worker = None
+        self._novel_worker = None
         self._local_worker = None   # 本地指令执行线程（脚本/文件操作可能耗时很久）
         self._pending_msg = ""      # 本地未命中时转发给服务器的原消息
         self._pending_image_path = None
@@ -307,6 +311,10 @@ class ChatPanel(QWidget):
         self._init_ui()
         # 在 _init_ui 之后 resize：resizeEvent 会布局把手/气泡，需要 UI 就绪
         self.resize(self._saved_w, self._saved_h)
+        if self.ball is None:
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self._shutdown_novel_workbench)
 
     def paintEvent(self, event) -> None:
         """1/255 透明底漆：圆角外的窗角仍可命中（否则该处点击穿透）。
@@ -429,7 +437,10 @@ class ChatPanel(QWidget):
         search_btn = QPushButton("🔍 检索")
         search_btn.setToolTip("全文搜索聊天记录（第 6.26 课）")
         search_btn.clicked.connect(self._show_search)
-        for b in (stats_btn, report_btn, daily_btn, history_btn, search_btn):
+        novel_btn = QPushButton("✒ 小说")
+        novel_btn.setToolTip("打开小说工作台")
+        novel_btn.clicked.connect(self._open_novel_workbench)
+        for b in (stats_btn, report_btn, daily_btn, history_btn, search_btn, novel_btn):
             b.setProperty("quick", True)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
@@ -443,6 +454,7 @@ class ChatPanel(QWidget):
         quick_row.addWidget(daily_btn)
         quick_row.addWidget(history_btn)
         quick_row.addWidget(search_btn)
+        quick_row.addWidget(novel_btn)
         quick_row.addStretch(1)
         layout.addLayout(quick_row)
 
@@ -1045,6 +1057,37 @@ class ChatPanel(QWidget):
 
     def _show_daily(self) -> None:
         self._run_api("daily")
+
+    def _open_novel_workbench(self) -> None:
+        """优先复用悬浮球的统一流程；独立创建面板时走同一 worker。"""
+        if self.ball is not None:
+            self.ball.open_novel_workbench()
+            return
+        if self._novel_worker is not None:
+            return
+        self._novel_worker = _NovelWorkbenchWorker(self.client)
+        self._novel_worker.done.connect(self._on_novel_workbench)
+        self._novel_worker.start()
+
+    def _on_novel_workbench(self, url: str, error: str) -> None:
+        worker = self._novel_worker
+        self._novel_worker = None
+        if worker:
+            retire(worker)
+        if error:
+            QMessageBox.warning(self, "小说工作台", error)
+            return
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception:
+            opened = False
+        if not opened:
+            QMessageBox.warning(self, "小说工作台", "默认浏览器未能打开工作台页面")
+
+    def _shutdown_novel_workbench(self) -> None:
+        if self._novel_worker is not None:
+            self._novel_worker.wait(12_000)
+        self.client.close_novel_tunnel()
 
     def _run_api(self, mode: str) -> None:
         """快捷查询统一走后台线程，结果弹独立窗口（不混入聊天流）。

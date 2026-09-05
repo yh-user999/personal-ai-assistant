@@ -14,7 +14,7 @@ import html as html_lib
 
 import markdown as md_lib
 import theme
-from api_client import ApiClient
+from api_client import ApiClient, NovelWorkbenchError
 from PySide6.QtCore import QThread, Signal
 
 
@@ -172,6 +172,24 @@ class _ApiWorker(QThread):
                 self.done.emit("report", text)
         except Exception as e:
             self.done.emit(self.mode, f"[获取失败] {e}")
+
+
+class _NovelWorkbenchWorker(QThread):
+    """后台准备小说工作台 URL，避免 SSH 握手阻塞 UI。"""
+    done = Signal(str, str)  # (url, error)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.client.prepare_novel_workbench(), "")
+        except NovelWorkbenchError as exc:
+            self.done.emit("", str(exc))
+        except Exception:
+            # 不把异常 repr、目标地址、私钥路径或 token 带回 UI。
+            self.done.emit("", "小说工作台准备失败，请检查桌面端配置和 SSH 密钥")
 
 
 class _HealthWorker(QThread):

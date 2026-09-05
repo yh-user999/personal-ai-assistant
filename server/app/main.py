@@ -60,7 +60,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     PUBLIC_PATHS: ClassVar[set[str]] = {"/", "/api/health"}
-    ROLE_RULES: ClassVar[tuple] = (
+    # 最长前缀优先：保证 "/api/knowledge/ingest" 这类更具体的规则
+    # 先于父前缀 "/api/knowledge" 匹配（顺序 + break 的旧写法会让
+    # 具体规则永不生效，宽严设置只能靠巧合保持正确）。
+    ROLE_RULES: ClassVar[tuple] = tuple(sorted((
         ("/api/events", {"collector", "internal", "owner"}),
         ("/api/heartbeat", {"collector", "internal", "owner"}),
         ("/api/knowledge", {"owner", "internal"}),
@@ -79,10 +82,27 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ("/api/knowledge/ingest", {"owner", "internal"}),
         ("/api/documents/generate", {"owner", "internal"}),
         ("/api/reports/generate", {"owner", "internal"}),
-    )
+    ), key=lambda rule: len(rule[0]), reverse=True))
 
     async def dispatch(self, request, call_next):
-        if request.url.path in self.PUBLIC_PATHS:
+        path = request.url.path
+        # 归一化尾斜杠：挂载在 "/" 的 StaticFiles 会抢先 FULL 匹配
+        # /api/health/ 这类尾斜杠路径并返回 404，router 的 redirect_slashes
+        # 根本没机会生效，所以在中间件里改写 scope 提前归一。
+        if len(path) > 1 and path.endswith("/"):
+            normalized = path.rstrip("/") or "/"
+            if normalized.startswith("/api"):
+                # 原位改写 scope：BaseHTTPMiddleware 的 call_next 闭包持有
+                # 原始 request，新建 Request 不会传播到下游。
+                request.scope["path"] = normalized
+                request.scope["raw_path"] = normalized.encode()
+                path = normalized
+        # 静态资源（非 /api 路径）不走 API 鉴权：页面需要能自举加载，
+        # 凭证由页面内 Token 栏填入后才用于 API 调用。
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # 归一化尾斜杠：/api/health/ 与 /api/health 视为同一公开端点
+        if path.rstrip("/") in self.PUBLIC_PATHS:
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
@@ -97,7 +117,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
             request.state.auth = ctx
             for prefix, allowed in self.ROLE_RULES:
-                if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
+                if path == prefix or path.startswith(prefix + "/"):
                     if ctx.role not in allowed:
                         return JSONResponse({"detail": "forbidden"}, status_code=403)
                     break

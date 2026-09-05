@@ -69,3 +69,10 @@ def test_novel_http_workflow(tmp_path, monkeypatch):
         fetched = client.get(f"/api/novel/projects/{project_id}/chapters/1")
         assert fetched.status_code == 200
         assert fetched.json()["content"] == "完成稿"
+
+        listed = client.get(f"/api/novel/projects/{project_id}/chapters").json()
+        nos = [c["chapter_no"] for c in listed["chapters"]]
+        # 回归：list_chapters 曾把 project_id 误当 chapter_no 返回，
+        # 工作台章节列表整列显示成项目 UUID
+        assert "1" in nos, nos
+        assert project_id not in nos, nos

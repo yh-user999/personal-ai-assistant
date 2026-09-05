@@ -21,16 +21,22 @@ ROLE_TOKENS = {
     "qq": "qq_api_token",
 }
 
+def _safe_eq(a: str, b: str) -> bool:
+    """compare_digest 的字节版封装：str 版对非 ASCII 直接抛 TypeError，
+    曾让任意未认证请求用一个中文 token 就打成 500。"""
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def authenticate_token(token: str) -> AuthContext | None:
     token = token.strip()
-    if not token:
+    if not token or len(token) > 512:
         return None
     # 新配置优先；旧 API_TOKEN 兼容为 owner/internal。
     for role, field in ROLE_TOKENS.items():
         configured = getattr(settings, field, "")
-        if configured and secrets.compare_digest(token, configured):
+        if configured and _safe_eq(token, configured):
             return AuthContext(token, role)
-    if settings.api_token and secrets.compare_digest(token, settings.api_token):
+    if settings.api_token and _safe_eq(token, settings.api_token):
         return AuthContext(token, "owner")
     return None
 

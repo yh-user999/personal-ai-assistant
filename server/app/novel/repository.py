@@ -156,7 +156,8 @@ class SQLiteNovelRepository:
         with db_connection() as conn:
             rows = conn.execute("SELECT * FROM novel_chapters WHERE project_id=? ORDER BY CAST(chapter_no AS INTEGER), chapter_no", (project_id,)).fetchall()
         if rows:
-            return [Chapter(project_id, r["title"], r["content"] or r["draft_content"], project_id, r["status"]) for r in rows]
+            # 注意第一列是 chapter_no，不是 project_id（曾误传导致章节列表全显示 UUID）
+            return [Chapter(r["chapter_no"], r["title"], r["content"] or r["draft_content"], project_id, r["status"]) for r in rows]
         return LegacyNovelRepository().list_chapters(project_id)
 
     def create_job(self, project_id: str, chapter_no: str, idempotency_key: str, prompt: str = "") -> GenerationJob:

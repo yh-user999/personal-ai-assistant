@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小说工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/novel/novel.css">
+</head>
+<body>
+<div id="app" class="app">
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <a class="back" href="/" title="返回聊天">‹ 聊天</a>
+      <h1>📖 小说工作台</h1>
+    </div>
+    <div class="topbar-center">
+      <input id="search-input" placeholder="搜索章节全文…" autocomplete="off">
+      <button id="search-btn" class="primary">搜索</button>
+    </div>
+    <div class="topbar-right">
+      <button id="theme-btn" class="ghost" title="切换主题">🌗</button>
+      <button id="token-btn" class="ghost" title="API Token">🔑</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 侧栏：项目列表 -->
+    <aside class="side">
+      <div class="side-head">
+        <span class="side-title">项目</span>
+        <button id="new-project-btn" class="primary small">+ 新建</button>
+      </div>
+      <div id="project-list" class="project-list"></div>
+    </aside>
+
+    <!-- 工作区 -->
+    <main class="work">
+      <!-- 概览统计 -->
+      <section id="overview" class="overview"></section>
+
+      <!-- 章节区 -->
+      <section class="section">
+        <div class="section-head">
+          <h2>章节 <span id="chapter-count" class="muted"></span></h2>
+          <div class="section-actions">
+            <select id="chapter-filter">
+              <option value="">全部状态</option>
+              <option value="draft">草稿</option>
+              <option value="published">已发布</option>
+            </select>
+            <button id="new-chapter-btn" class="small">+ 新建章节</button>
+            <button id="rebuild-btn" class="small">重建索引</button>
+          </div>
+        </div>
+        <div id="chapters" class="chapters"></div>
+      </section>
+
+      <!-- 任务区 -->
+      <section class="section">
+        <div class="section-head">
+          <h2>生成任务 <span id="job-count" class="muted"></span></h2>
+          <div class="section-actions">
+            <label class="muted"><input type="checkbox" id="auto-refresh" checked> 自动刷新</label>
+            <button id="new-job-btn" class="primary small">+ 创建任务</button>
+          </div>
+        </div>
+        <div id="jobs" class="jobs"></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Token 设置弹层 -->
+<div id="token-modal" class="modal hidden">
+  <div class="modal-box card">
+    <h3>API Token</h3>
+    <p class="muted">Token 存于浏览器本地，用于访问服务端 API。</p>
+    <input id="token-input" type="password" placeholder="粘贴服务器 .env 里的 API_TOKEN" autocomplete="off">
+    <div class="modal-actions">
+      <button id="token-cancel" class="small">取消</button>
+      <button id="token-save" class="primary small">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建项目弹层 -->
+<div id="project-modal" class="modal hidden">
+  <div class="modal-box card">
+    <h3>新建小说项目</h3>
+    <label class="field"><span>书名</span><input id="project-name" maxlength="200" placeholder="如：工作仙缘"></label>
+    <label class="field"><span>拼音代号（可选）</span><input id="project-slug" maxlength="100" placeholder="如：gongzuo-xianyuan"></label>
+    <div class="modal-actions">
+      <button id="project-cancel" class="small">取消</button>
+      <button id="project-save" class="primary small">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建/编辑章节弹层 -->
+<div id="chapter-modal" class="modal hidden">
+  <div class="modal-box card">
+    <h3 id="chapter-modal-title">新建章节</h3>
+    <label class="field"><span>章节号</span><input id="chapter-no" maxlength="30" placeholder="如：5"></label>
+    <label class="field"><span>标题</span><input id="chapter-title" maxlength="200" placeholder="如：雾中来客"></label>
+    <label class="field"><span>正文</span><textarea id="chapter-content" rows="10" placeholder="章节正文或草稿…"></textarea></label>
+    <div class="modal-actions">
+      <button id="chapter-cancel" class="small">取消</button>
+      <button id="chapter-save" class="primary small">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 创建任务弹层 -->
+<div id="job-modal" class="modal hidden">
+  <div class="modal-box card">
+    <h3>创建生成任务</h3>
+    <label class="field"><span>章节号</span><input id="job-chapter" maxlength="30" placeholder="如：5"></label>
+    <label class="field"><span>写作提示</span><textarea id="job-prompt" rows="5" maxlength="20000" placeholder="告诉它写什么，例如：续写第五章，保持悬疑节奏，结尾留伏笔"></textarea></label>
+    <div class="modal-actions">
+      <button id="job-cancel" class="small">取消</button>
+      <button id="job-save" class="primary small">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 章节抽屉 -->
+<div id="drawer-mask" class="drawer-mask hidden"></div>
+<aside id="drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <h3 id="drawer-title"></h3>
+    <div class="drawer-actions">
+      <button id="drawer-edit" class="small">编辑</button>
+      <button id="drawer-close" class="ghost">✕</button>
+    </div>
+  </div>
+  <div id="drawer-meta" class="drawer-meta"></div>
+  <pre id="drawer-body" class="drawer-body"></pre>
+</aside>
+
+<script src="/app.js"></script>
+<script src="/novel/novel.js"></script>
+</body>
+</html>

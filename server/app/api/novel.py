@@ -1,6 +1,8 @@
 """小说项目与生成工作流 API。"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -164,8 +166,13 @@ def search_project_chapters(project_id: str, request: Request, q: str = Query(..
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id):
         raise _error(404, "project_not_found", "项目不存在")
-    indexed = rebuild_chapter_index(project_id)
-    return {"project_id": project_id, "query": q, "indexed": indexed, "results": search_chapters(project_id, q, limit=limit, offset=offset)}
+    # 只读搜索：不再隐式重建索引（重建由 POST /index/rebuild 显式触发）。
+    try:
+        results = search_chapters(project_id, q, limit=limit, offset=offset)
+    except sqlite3.OperationalError:
+        # FTS 查询语法错误（如裸的 NEAR/通配符）不视为服务端错误
+        results = []
+    return {"project_id": project_id, "query": q, "results": results}
 
 
 @router.get("/novel/projects/{project_id}/chapters/{chapter_no}")

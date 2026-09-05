@@ -33,8 +33,8 @@
 │ ③ desktop/   桌面悬浮机器人（PySide6）                       │
 │    双击聊天 / 气泡面板 / 托盘 / 状态灯（在线·思考·断线）      │
 └────────────────────────────────────────────────────┘
-        ↕ Tailscale 加密专线（公网只暴露 SSH 22）
-┌─ JD 服务器 ─────────────────────────────────────────┐
+        ↕ 私有加密专线（公网只暴露 SSH 22）
+┌─ 云服务器 ──────────────────────────────────────────┐
 │ ① server/    FastAPI 单进程（uvicorn）                      │
 │    聊天编排 + 记忆闭环 + 知识库 + 行为统计 + 反思生成        │
 │    SQLite（WAL）+ sqlite-vec（cosine KNN）                  │
@@ -232,13 +232,13 @@
 
 ### 前置（一次性）
 
-1. Windows 与服务器都安装 **Tailscale** 并登录同一账号（服务走加密专线，不暴露公网）
-2. 服务器 `tailscale up`，Windows `tailscale set --unattended`（开机自动连）
+1. Windows 与服务器都加入同一私有加密网络（服务走内网，不暴露公网）
+2. 配置两端开机自动连接，并确认服务器与 Windows 可通过私网地址互通
 
 ### 1. 服务器端
 
 ```bash
-git clone git@github.com:yh-user999/personal-ai-assistant.git
+git clone git@github.com:<用户名>/<仓库名>.git
 cd personal-ai-assistant/server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -251,10 +251,10 @@ sudo systemctl restart assistant   # systemd 管理（见 docs/OPS.md，首次�
 ### 2. 采集器（Windows）
 
 ```powershell
-git clone https://github.com/yh-user999/personal-ai-assistant.git
+git clone https://github.com/<用户名>/<仓库名>.git
 cd personal-ai-assistant\collector
 python -m pip install -r requirements.txt
-# .env: SERVER_URL=http://<服务器Tailscale IP>:8000 + API_TOKEN + GIT_REPOS
+# .env: SERVER_URL=http://<服务器私网IP>:8000 + API_TOKEN + GIT_REPOS
 python main.py
 # 开机自启（管理员 PowerShell）:  ..\scripts\install_autostart.ps1
 ```
@@ -273,7 +273,7 @@ python main.py
 
 ```
 记住 打开B站 = https://www.bilibili.com     # 注册网页（裸域名自动补 https）
-记住 打开微信 = D:/Program/WeChat/WeChat.exe # 注册应用（显式注册=用户授权，可出白名单）
+记住 打开示例应用 = D:/Program/YourApp/YourApp.exe # 注册应用（显式注册=用户授权，可出白名单）
 记住 在B站搜索 = https://search.bilibili.com/all?keyword={q}  # 搜索模板
 记住 用chrome打开GitHub = github.com        # 指定浏览器
 打开B站 / 在b站搜索 关键词 / 用chrome打开GitHub  # 使用（本地直行，零延迟）

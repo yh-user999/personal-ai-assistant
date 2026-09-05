@@ -127,8 +127,9 @@ def test_static_assets_do_not_require_token(monkeypatch):
         assert client.get("/").status_code == 200
         assert client.get("/index.html").status_code == 200
         assert client.get("/styles.css").status_code == 200
-        assert client.get("/novel/novel.html").status_code == 200
-        assert client.get("/novel/novel.js").status_code == 200
+        assert client.get("/novel/").status_code == 200
+        assert client.get("/novel/index.html").status_code == 200
+        assert client.get("/novel/index.js").status_code == 200
 
 
 def test_public_health_endpoint_tolerates_trailing_slash(monkeypatch):

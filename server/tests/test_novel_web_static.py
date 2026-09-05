@@ -7,15 +7,16 @@ from pathlib import Path
 
 STATIC = Path(__file__).parents[1] / "app" / "web" / "static"
 INDEX_HTML = STATIC / "index.html"
-NOVEL_HTML = STATIC / "novel" / "novel.html"
-NOVEL_JS = STATIC / "novel" / "novel.js"
+NOVEL_HTML = STATIC / "novel" / "index.html"
+NOVEL_JS = STATIC / "novel" / "index.js"
+NOVEL_CSS = STATIC / "novel" / "index.css"
 STYLES_CSS = STATIC / "styles.css"
 CHAT_JS = STATIC / "chat.js"
 APP_JS = STATIC / "app.js"
 
 
 def test_files_exist():
-    for path in (INDEX_HTML, NOVEL_HTML, NOVEL_JS, STYLES_CSS, CHAT_JS, APP_JS):
+    for path in (INDEX_HTML, NOVEL_HTML, NOVEL_JS, NOVEL_CSS, STYLES_CSS, CHAT_JS, APP_JS):
         assert path.exists(), path.name
 
 
@@ -61,9 +62,16 @@ def test_search_does_not_trigger_rebuild():
     assert "function rebuildNovelIndex" in js or "const rebuildNovelIndex" in js
 
 
+def test_novel_page_references_are_self_contained():
+    html = NOVEL_HTML.read_text(encoding="utf-8")
+    assert "/novel/index.css" in html
+    assert "/novel/index.js" in html
+    assert "/styles.css" in html and "/app.js" in html
+
+
 def test_index_page_links_to_workbench():
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert "/novel/" in html or "novel/novel.html" in html
+    assert "/novel/" in html or "novel/index.html" in html
 
 
 def test_token_not_hardcoded():

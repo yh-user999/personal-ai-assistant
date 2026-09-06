@@ -252,8 +252,19 @@ QQ_IDENTITY_MAX_AGE_SECONDS=300
 | `collector/` | 三通道采集（浏览器覆盖 Chromium 系全 profile + Firefox）、隐私脱敏、断网落盘、心跳上报与通道停滞告警、Win32 API 封装 | Python · ctypes |
 | `common/` | 跨端共享：脱敏规则（`redact.py`）、执行器文件操作与安全判据（`file_ops.py`）、快捷启动器（`launcher.py`） | Python |
 | `desktop/` | 自绘机器人（三套皮肤/呼吸/眨眼/状态灯）、气泡面板（Markdown/可缩放/最大化/尺寸记忆）、快捷启动器、本地执行器、托盘、健康检查、开机自启 | PySide6 · Qt6 |
-| `docs/` | 11 份文档（方案/参考/评审/提问/部署/踩坑/进度/运维/研究/测试 + 本文） | Markdown |
-| `scripts/` | 服务器部署、开机自启、桌面打包 | bash · PowerShell |
+| `docs/` | 21 份文档（方案/参考/评审/部署/踩坑/进度/运维/研究/测试/审查报告 + 本文） | Markdown |
+| `scripts/` | 服务器部署、开机自启、桌面打包（一次性冒烟脚本在 `scripts/archive/`） | bash · PowerShell |
+
+### Web 前端（`server/app/web/static/`）
+
+两页手写 vanilla JS（零框架、零 CDN、零构建）：`/` 聊天页（SSE 流式输出、
+历史加载、停止/重试）与 `/novel/` 小说工作台（项目/章节/生成任务/全文搜索）。
+共享 `app.js`（apiFetch/Toast/主题/弹层辅助）与 `styles.css`（设计变量/弹层/抽屉）。
+
+- **防 XSS 契约**：所有 DOM 写入走 `createElement/textContent`，禁止 `innerHTML`，
+  `tests/test_novel_web_static.py` 回归锁定。
+- **缓存升版**：静态引用带 `?v=N` 指纹，改动任何 JS/CSS 后需同步递增两个 HTML
+  里的 `?v=N`（共 4 处），否则发版后浏览器可能命中旧缓存。
 
 ### 服务端模块速查（`server/app/services/`）
 

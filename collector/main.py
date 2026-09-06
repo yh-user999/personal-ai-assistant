@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 
@@ -23,9 +24,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        # 文件日志：开机自启（pythonw 无控制台）时仍可排查
-        logging.FileHandler(
+        # 文件日志：开机自启（pythonw 无控制台）时仍可排查。
+        # 常驻守护进程日志会无限增长（曾涨到 10MB），轮转 5MB×3 封顶。
+        logging.handlers.RotatingFileHandler(
             Path(__file__).resolve().parent / "logs" / "collector.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
             encoding="utf-8",
         ),
     ],

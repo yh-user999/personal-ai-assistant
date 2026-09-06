@@ -276,10 +276,11 @@ class XiaoYuePlugin(Star):
         # trust_env=False：本机回环调用不走系统代理——宿主机若有 HTTP_PROXY
         # 且 NO_PROXY 不含 127.0.0.1，Bearer token 会流经代理（全套已踩过的坑）
         self._client = httpx.AsyncClient(timeout=300, trust_env=False)  # 长文生成档 240s，留余量
-        # QQ 文件 CDN 直连常 502（出网受限），下载兜底走代理（可配置，默认 clash）
+        # QQ 文件 CDN 直连常 502（出网受限），下载兜底走代理（download_proxy 可配）；
+        # 不配置则退化为直连——默认值不再写死本机 clash 端口 7890。
         proxy = str(self.cfg.get("download_proxy", "") or "").strip()
         self._proxy_client = httpx.AsyncClient(
-            timeout=120, trust_env=False, proxy=proxy or "http://127.0.0.1:7890"
+            timeout=120, trust_env=False, proxy=proxy or None
         )
         try:
             self._vision_timeout_seconds = max(1.0, float(self.cfg.get("vision_timeout", VISION_TIMEOUT)))

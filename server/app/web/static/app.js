@@ -1,7 +1,9 @@
-/* 共享前端工具：API 请求封装、Token、Toast、主题 */
+/* 共享前端工具：API 请求封装、Token、Toast、主题、弹层辅助 */
 'use strict';
 
 const TOKEN_KEY = 'api_token';
+
+function $(id) { return document.getElementById(id); }
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY) || '';
@@ -28,6 +30,7 @@ async function apiFetch(url, options) {
   try {
     resp = await fetch(url, opts);
   } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
     throw Object.assign(new Error('网络连接失败，请检查服务是否可达'), {kind: 'network'});
   }
   if (resp.status === 401) {
@@ -57,8 +60,12 @@ function toast(message, kind) {
   if (!box) {
     box = document.createElement('div');
     box.id = 'toast-box';
+    box.setAttribute('role', 'status');
+    box.setAttribute('aria-live', 'polite');
     document.body.appendChild(box);
   }
+  // 最多同时 4 条，防止异常轮询刷屏
+  while (box.children.length >= 4) box.removeChild(box.firstChild);
   const item = document.createElement('div');
   item.className = 'toast' + (kind ? ' ' + kind : '');
   item.textContent = message;
@@ -78,4 +85,34 @@ function toggleTheme() {
   applyTheme();
 }
 
+/* ── 弹层/抽屉辅助：Esc 关闭 + 焦点管理 ─────────────────────
+ * HTML <head> 里的内联脚本已预设 data-theme（防暗色白闪），
+ * 这里再执行一次以同步动态创建的节点。 */
 applyTheme();
+
+const _escClosers = [];
+function registerEscClose(fn) {
+  _escClosers.push(fn);
+  return () => {
+    const i = _escClosers.indexOf(fn);
+    if (i >= 0) _escClosers.splice(i, 1);
+  };
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !_escClosers.length) return;
+  e.preventDefault();
+  _escClosers[_escClosers.length - 1]();
+});
+
+const _overlayReturnFocus = {};
+function openOverlay(node, focusTarget) {
+  _overlayReturnFocus[node.id] = document.activeElement;
+  node.classList.remove('hidden');
+  if (focusTarget) focusTarget.focus();
+}
+function closeOverlay(node) {
+  node.classList.add('hidden');
+  const prev = _overlayReturnFocus[node.id];
+  if (prev && typeof prev.focus === 'function') prev.focus();
+  delete _overlayReturnFocus[node.id];
+}

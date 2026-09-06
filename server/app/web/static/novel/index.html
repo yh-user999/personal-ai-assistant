@@ -4,8 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>小说工作台</title>
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/novel/index.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📖%3C/text%3E%3C/svg%3E">
+  <!-- 主题预应用：在首帧渲染前设置 data-theme，避免暗色用户白屏闪烁 -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('ui_theme');
+        var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) { /* localStorage 不可用时走默认亮色 */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=2">
+  <link rel="stylesheet" href="/novel/index.css?v=2">
 </head>
 <body>
 <div id="app" class="app">
@@ -16,12 +27,12 @@
       <h1>📖 小说工作台</h1>
     </div>
     <div class="topbar-center">
-      <input id="search-input" placeholder="搜索章节全文…" autocomplete="off">
+      <input id="search-input" placeholder="搜索章节全文…" autocomplete="off" aria-label="搜索章节全文">
       <button id="search-btn" class="primary">搜索</button>
     </div>
     <div class="topbar-right">
-      <button id="theme-btn" class="ghost" title="切换主题">🌗</button>
-      <button id="token-btn" class="ghost" title="API Token">🔑</button>
+      <button id="theme-btn" class="ghost" title="切换主题" aria-label="切换主题">🌗</button>
+      <button id="token-btn" class="ghost" title="API Token 设置" aria-label="API Token 设置">🔑</button>
     </div>
   </header>
 
@@ -45,7 +56,7 @@
         <div class="section-head">
           <h2>章节 <span id="chapter-count" class="muted"></span></h2>
           <div class="section-actions">
-            <select id="chapter-filter">
+            <select id="chapter-filter" aria-label="按状态筛选章节">
               <option value="">全部状态</option>
               <option value="draft">草稿</option>
               <option value="published">已发布</option>
@@ -73,11 +84,11 @@
 </div>
 
 <!-- Token 设置弹层 -->
-<div id="token-modal" class="modal hidden">
+<div id="token-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="token-modal-title">
   <div class="modal-box card">
-    <h3>API Token</h3>
+    <h3 id="token-modal-title">API Token</h3>
     <p class="muted">Token 存于浏览器本地，用于访问服务端 API。</p>
-    <input id="token-input" type="password" placeholder="粘贴服务器 .env 里的 API_TOKEN" autocomplete="off">
+    <input id="token-input" type="password" placeholder="粘贴服务器 .env 里的 API_TOKEN" autocomplete="off" aria-label="API Token">
     <div class="modal-actions">
       <button id="token-cancel" class="small">取消</button>
       <button id="token-save" class="primary small">保存</button>
@@ -86,9 +97,9 @@
 </div>
 
 <!-- 新建项目弹层 -->
-<div id="project-modal" class="modal hidden">
+<div id="project-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
   <div class="modal-box card">
-    <h3>新建小说项目</h3>
+    <h3 id="project-modal-title">新建小说项目</h3>
     <label class="field"><span>书名</span><input id="project-name" maxlength="200" placeholder="如：工作仙缘"></label>
     <label class="field"><span>拼音代号（可选）</span><input id="project-slug" maxlength="100" placeholder="如：gongzuo-xianyuan"></label>
     <div class="modal-actions">
@@ -99,7 +110,7 @@
 </div>
 
 <!-- 新建/编辑章节弹层 -->
-<div id="chapter-modal" class="modal hidden">
+<div id="chapter-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="chapter-modal-title">
   <div class="modal-box card">
     <h3 id="chapter-modal-title">新建章节</h3>
     <label class="field"><span>章节号</span><input id="chapter-no" maxlength="30" placeholder="如：5"></label>
@@ -113,9 +124,9 @@
 </div>
 
 <!-- 创建任务弹层 -->
-<div id="job-modal" class="modal hidden">
+<div id="job-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="job-modal-title">
   <div class="modal-box card">
-    <h3>创建生成任务</h3>
+    <h3 id="job-modal-title">创建生成任务</h3>
     <label class="field"><span>章节号</span><input id="job-chapter" maxlength="30" placeholder="如：5"></label>
     <label class="field"><span>写作提示</span><textarea id="job-prompt" rows="5" maxlength="20000" placeholder="告诉它写什么，例如：续写第五章，保持悬疑节奏，结尾留伏笔"></textarea></label>
     <div class="modal-actions">
@@ -127,19 +138,19 @@
 
 <!-- 章节抽屉 -->
 <div id="drawer-mask" class="drawer-mask hidden"></div>
-<aside id="drawer" class="drawer hidden">
+<aside id="drawer" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
   <div class="drawer-head">
     <h3 id="drawer-title"></h3>
     <div class="drawer-actions">
       <button id="drawer-edit" class="small">编辑</button>
-      <button id="drawer-close" class="ghost">✕</button>
+      <button id="drawer-close" class="ghost" aria-label="关闭">✕</button>
     </div>
   </div>
   <div id="drawer-meta" class="drawer-meta"></div>
   <pre id="drawer-body" class="drawer-body"></pre>
 </aside>
 
-<script src="/app.js"></script>
-<script src="/novel/index.js"></script>
+<script src="/app.js?v=2"></script>
+<script src="/novel/index.js?v=2"></script>
 </body>
 </html>

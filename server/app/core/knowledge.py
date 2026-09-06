@@ -3,6 +3,7 @@
 RAG 流水线：load → chunk → embed → store → search → generate。
 本模块负责 chunk/embed/store/search 四步；generate 在 chat.py。
 """
+import asyncio
 import json
 import logging
 import sqlite3
@@ -162,6 +163,23 @@ async def ingest_document(
     return {"chunks": len(chunks), "doc": name, "domain": domain}
 
 
+def _knn_chunks(vec_json: str, k: int) -> list:
+    """vec0 KNN 查询（同步 DB 段，供 to_thread 调用）。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """SELECT c.id, c.doc_name, c.chunk_index, c.content, c.domain, v.distance
+               FROM chunk_vectors v
+               JOIN knowledge_chunks c ON c.id = v.chunk_id
+               WHERE v.embedding MATCH ? AND k = ?
+               """,
+            (vec_json, k),
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
 async def _vector_search(query: str, top_k: int = 3, *,
                          domains: list[str] | None = None,
                          docs: list[str] | None = None) -> list[dict]:
@@ -174,19 +192,7 @@ async def _vector_search(query: str, top_k: int = 3, *,
     qvec = (await embedding.embed([query]))[0]
     filtered = bool(domains or docs)
     k = min(top_k * VECTOR_FILTER_FANOUT, MAX_VECTOR_K) if filtered else top_k
-    conn = connect()
-    try:
-        cur = conn.execute(
-            """SELECT c.id, c.doc_name, c.chunk_index, c.content, c.domain, v.distance
-               FROM chunk_vectors v
-               JOIN knowledge_chunks c ON c.id = v.chunk_id
-               WHERE v.embedding MATCH ? AND k = ?
-               """,
-            (json.dumps(qvec), k),
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
+    rows = await asyncio.to_thread(_knn_chunks, json.dumps(qvec), k)
 
     if filtered:
         rows = [

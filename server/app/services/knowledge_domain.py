@@ -24,9 +24,22 @@
 """
 import logging
 import re
-import sqlite3
 
 from app.models.database import connect
+from app.services import novel_lexicon
+from app.services.novel_lexicon import (  # noqa: F401  兼容旧调用方/测试的再导出
+    invalidate_dynamic_cache,
+    novel_class_words,
+    novel_names,
+    novel_person_names,
+    register_class,
+)
+
+# 旧私有名保留别名（本模块内部 detect_domains 与外部测试仍在用）
+_novel_names = novel_names
+_novel_class_words = novel_class_words
+_novel_person_names = novel_person_names
+_dynamic_novel_classes = novel_lexicon.dynamic_novel_classes
 
 logger = logging.getLogger("assistant.kdomain")
 
@@ -74,144 +87,9 @@ _PROJECT_TERMS = re.compile(
 _RESUME_TERMS = re.compile(r"简历|求职|岗位|面试|工作经历")
 _MANUAL_TERMS = re.compile(r"教程|反代|新手|怎么装|如何配置")
 
-
-def _novel_names() -> dict[str, set[str]]:
-    """{书名: 该书的专名集合}。
-
-    书名来自 knowledge_chunks（凡是 novel 域的文档都算），不能只从
-    novel_entities 读——**没抽过实体的书会完全无法按书名定位**。
-    专名来自实体表（可能为空集）。
-    """
-    conn = connect()
-    try:
-        books = [r["doc_name"] for r in conn.execute(
-            "SELECT DISTINCT doc_name FROM knowledge_chunks WHERE domain=?",
-            (DOMAIN_NOVEL,),
-        ).fetchall()]
-        out: dict[str, set[str]] = {b: set() for b in books}
-        for r in conn.execute("SELECT book, name FROM novel_entities").fetchall():
-            out.setdefault(r["book"], set()).add(r["name"])
-    finally:
-        conn.close()
-    return out
-
-
-def _novel_class_words() -> set[str]:
-    """小说体系的类名（命丛/命图/道术…）——它们不是专名但同样能定位到小说域。
-
-    「命丛有哪些」这种问法里没有任何专名，靠专名匹配判不出域，而这恰恰是
-    污染最严重的问法（实测命中反代教程 PDF、AI 模板、名词焦虑 PDF）。
-    检索自愈一期：动态登记的词（dynamic_classes 表 domain='novel'）并入，
-    让"炼神"这类首问未覆盖、兜底后已确认的词第二次就能直接判域。
-    """
-    from app.services.novel_entities import ENTITY_KINDS
-
-    words = set(ENTITY_KINDS.keys())
-    for group in ENTITY_KINDS.values():
-        words.update(w for w in group if len(w) >= 2)
-    words.update(_dynamic_novel_classes())
-    return words
-
-
-# ── 动态类名词（检索自愈一期）──────────────────────────────
-# 缓存按表行数失效：登记新词 → 行数变 → 重建。与 _class_book_cache 同款思路。
-_dynamic_cache: dict[int, frozenset[str]] = {}
-
-
-def _dynamic_class_count() -> int:
-    conn = connect()
-    try:
-        try:
-            return conn.execute("SELECT COUNT(*) AS c FROM dynamic_classes").fetchone()["c"]
-        except sqlite3.OperationalError:
-            return 0
-    finally:
-        conn.close()
-
-
-def _dynamic_novel_classes() -> frozenset[str]:
-    count = _dynamic_class_count()
-    cached = _dynamic_cache.get(count)
-    if cached is not None:
-        return cached
-    conn = connect()
-    try:
-        try:
-            words = frozenset(
-                r["class_word"]
-                for r in conn.execute(
-                    "SELECT class_word FROM dynamic_classes WHERE domain='novel'"
-                ).fetchall()
-            )
-        except sqlite3.OperationalError:
-            words = frozenset()
-    finally:
-        conn.close()
-    _dynamic_cache.clear()
-    _dynamic_cache[count] = words
-    return words
-
-
-def register_class(class_word: str, domain: str = "", source_query: str = "") -> bool:
-    """登记体系类名（幂等）。返回 True=新登记，False=已存在。
-
-    domain='novel' 才参与域路由；不能确认领域归属时传 ''（只做登记防重复触发）。
-    """
-    from datetime import datetime, timezone
-
-    word = (class_word or "").strip()
-    if not word:
-        return False
-    conn = connect()
-    try:
-        exists = conn.execute(
-            "SELECT 1 FROM dynamic_classes WHERE class_word=?", (word,)
-        ).fetchone()
-        if exists:
-            return False
-        conn.execute(
-            """INSERT INTO dynamic_classes (class_word, domain, source_query, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (word, domain, (source_query or "")[:200],
-             datetime.now(timezone.utc).isoformat()),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    _dynamic_cache.clear()
-    return True
-
-
-def invalidate_dynamic_cache() -> None:
-    """动态词表缓存失效（登记/纠错注销后调用）。"""
-    _dynamic_cache.clear()
-
-
-
-def _novel_person_names() -> dict[str, set[str]]:
-    """{书名: 人物名集合}。人物名来自小说设定卡与别名表——实体表只抽了
-    命丛/命图/功法/势力，没有人物，而「李羽的能力是什么」全靠人物名定位。"""
-    from app.core.knowledge import NOVEL_ALIASES
-
-    conn = connect()
-    try:
-        rows = conn.execute("SELECT book, keywords FROM novel_facts").fetchall()
-    finally:
-        conn.close()
-    out: dict[str, set[str]] = {}
-    for r in rows:
-        names = {k.strip() for k in (r["keywords"] or "").replace("，", ",").split(",")
-                 if len(k.strip()) >= 2}
-        out.setdefault(r["book"], set()).update(names)
-    # 别名表里的人物名（左志诚=左擎苍）——归到所有小说域（无书归属信息）
-    alias_names = set()
-    for k, alts in NOVEL_ALIASES.items():
-        alias_names.add(k)
-        alias_names.update(alts)
-    if alias_names:
-        out.setdefault("", set()).update(n for n in alias_names if len(n) >= 2)
-    return out
-
+# 词表查询（novel_names/_novel_class_words/_novel_person_names）与动态类名账本
+# 已迁至 services/novel_lexicon.py（词表单一来源），经文件头部的再导出兼容；
+# 本模块保留域判定、体系词→书籍归属与 facts 跳过逻辑。
 
 # 体系词归属某本书的判据：该书的出现次数占全部的比例下限。
 # 「命丛」在《寂静杀戮》出现 308 块、另一本 0 块 → 独占，只搜前者。

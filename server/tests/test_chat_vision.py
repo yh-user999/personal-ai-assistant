@@ -284,7 +284,7 @@ def test_vision_endpoint_requires_nonempty_request_id(monkeypatch, tmp_path):
             files={"image": ("sample.png", _png(), "image/png")},
         )
     assert response.status_code == 400
-    assert "request_id" in response.json()["detail"]
+    assert "request_id" in response.json()["detail"]["message"]  # detail 已结构化为 {code, message}
 
 
 def test_signed_qq_request_id_must_match_multipart_form():

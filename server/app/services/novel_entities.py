@@ -37,18 +37,13 @@ from openai import OpenAIError
 
 from app.models.database import connect
 from app.common.timeutil import utc_iso as _now
+from app.services.novel_lexicon import dynamic_novel_classes
 
 logger = logging.getLogger("assistant.novel_entities")
 
-# ── 实体类型与它们的类名触发词 ──────────────────────────────
-ENTITY_KINDS: dict[str, tuple[str, ...]] = {
-    "命丛": ("命丛",),
-    "命图": ("命图",),
-    "功法": ("道术", "功法", "秘籍", "武功", "招式"),
-    # 势力的触发词不能用单字「宗」「教」——会命中"宗旨""教训""教会"这类
-    # 无关词，实测候选里混进了"孙悟空""恶意""封印"。用双字词组约束。
-    "势力": ("门派", "兵团", "宗门", "教派", "帮派", "势力", "组织"),
-}
+# 类名触发词表单一来源在 services/novel_lexicon.py；此处再导出兼容
+# index_healer 与既有测试的 `novel_entities.ENTITY_KINDS` 引用路径。
+from app.services.novel_lexicon import ENTITY_KINDS  # noqa: E402
 
 # ── 命名句模式：只有这些块需要交给 LLM 读 ────────────────────
 # 中文小说的命名句有稳定特征。用它把 308 块缩到几十块——其余 250 多块
@@ -113,9 +108,7 @@ def detect_kinds(query: str) -> list[str]:
     """
     q = query or ""
     kinds = [kind for kind, words in ENTITY_KINDS.items() if any(w in q for w in words)]
-    from app.services.knowledge_domain import _dynamic_novel_classes
-
-    for w in _dynamic_novel_classes():
+    for w in dynamic_novel_classes():
         if w in q and w not in kinds:
             kinds.append(w)
     conn = connect()

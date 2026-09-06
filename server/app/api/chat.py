@@ -11,9 +11,10 @@ import contextlib
 import json
 from types import SimpleNamespace
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.api.errors import api_error
 from app.auth import require_roles
 from app.chat.context import (
     ChatRequest,
@@ -168,7 +169,7 @@ async def _chat_impl(req: ChatRequest, request: Request) -> ChatResponse:
 async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     """聊天入口：对带 request_id 的客户端重试做单飞与结果复用。"""
     if req.image is not None:
-        raise HTTPException(status_code=400, detail="图片提问请使用 multipart /api/chat/vision")
+        raise api_error(400, "image_not_supported", "图片提问请使用 multipart /api/chat/vision")
     return await deduplicate_request(req, request, memory, _chat_impl)
 
 
@@ -182,9 +183,9 @@ async def vision_chat(
 ) -> ChatResponse:
     """图片+文字提问：先在边界读取/校验图片，再复用认证、幂等和主聊天链路。"""
     if image is None:
-        raise HTTPException(status_code=400, detail="缺少 image 图片文件")
+        raise api_error(400, "image_missing", "缺少 image 图片文件")
     if not str(request_id or "").strip():
-        raise HTTPException(status_code=400, detail="request_id 不能为空")
+        raise api_error(400, "request_id_required", "request_id 不能为空")
     validated = await vision.validate_upload(
         image,
         max_bytes=getattr(settings, "vision_max_image_bytes", vision.DEFAULT_MAX_IMAGE_BYTES),
@@ -214,7 +215,7 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
     done 携带服务端清洗后的最终全文，客户端以其覆盖累计增量。
     """
     if req.image is not None:
-        raise HTTPException(status_code=400, detail="图片提问请使用 multipart /api/chat/vision")
+        raise api_error(400, "image_not_supported", "图片提问请使用 multipart /api/chat/vision")
     ctx = build_context(req, request, memory)
     runtime = _build_runtime(request)
 

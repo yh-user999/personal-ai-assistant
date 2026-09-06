@@ -38,19 +38,10 @@ def known_anchors(ctx: McpContext) -> set[str]:
     """只在主人/内部上下文中读取知识索引词，供追问 query 扩展。"""
     if not (ctx.is_owner or ctx.role.casefold() == "internal"):
         return set()
-    anchors: set[str] = set()
     try:
-        from app.services import knowledge_domain
+        from app.services import novel_lexicon
 
-        for book, names in knowledge_domain._novel_names().items():
-            if book:
-                anchors.add(book)
-                anchors.add(book.replace("小说-", "").replace("小说－", ""))
-            anchors.update(names)
-        anchors.update(knowledge_domain._novel_class_words())
-        for names in knowledge_domain._novel_person_names().values():
-            anchors.update(names)
+        return novel_lexicon.known_index_anchors()
     except (ImportError, AttributeError, TypeError, ValueError):
         # 词表故障不影响正常原文查询，退化为无锚点检索。
         return set()
-    return anchors

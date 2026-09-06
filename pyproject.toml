@@ -1,0 +1,23 @@
+# 仓库级工具链配置：ruff / pytest 规则统一在此维护，
+# CI 与 Makefile 不再各写一份命令行参数。
+# pytest 仅配置通用行为；各端测试用显式路径运行：
+#   python -m pytest server/tests/ -q
+#   python -m pytest desktop/tests/ -q（需 PySide6）
+#   python -m pytest qq/astrbot_plugin_xy/test_main.py -q
+
+[tool.ruff]
+# 目标范围：全部 Python 代码（server/collector/desktop/common/qq/scripts）。
+# .venv 等目录由 ruff 默认排除规则覆盖。
+target-version = "py312"
+
+[tool.ruff.lint]
+# 与历史 CI 门禁一致：语法错误、未定义名称、运行时隐患、未用导入。
+# E402（import 不在顶部）：仓库大量模块依赖 sys.path 注入后导入，属既有写法；
+# E731（lambda 赋值）：既有兼容写法。
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402", "E731"]
+
+[tool.pytest.ini_options]
+# 只配通用行为，不设 testpaths（各端测试路径差异大，由调用方显式指定）。
+addopts = "-ra"
+# conftest 护栏与部分测试会打 warning，保持默认不过滤，便于暴露问题。

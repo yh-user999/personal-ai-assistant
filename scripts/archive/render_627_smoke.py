@@ -39,7 +39,6 @@ assert tray._mood_timer.interval() == 60000, "情绪轮询间隔应为 60 秒"
 print(f"托盘情绪轮询: 间隔 {tray._mood_timer.interval() // 1000}s ✓")
 
 # ② caring 状态切换 + 主色变化断言（三皮肤各渲一张）
-from PySide6.QtGui import QColor  # noqa: E402
 
 for skin in SKIN_NAMES:
     set_skin(skin)

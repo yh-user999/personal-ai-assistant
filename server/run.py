@@ -2,7 +2,6 @@
 
 用法: python run.py  （读取 ../.env，监听 $HOST:$PORT，默认 0.0.0.0:8000）
 """
-import os
 import sys
 from pathlib import Path
 

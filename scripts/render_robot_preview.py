@@ -53,7 +53,8 @@ def main() -> None:
     skins = [args.skin] if args.skin else list(SKIN_NAMES)
 
     OUT.mkdir(parents=True, exist_ok=True)
-    app = QApplication([])
+    # QApplication 实例须在整个渲染期间存活，保持引用防 GC。
+    _ = QApplication([])
     ball = FloatingBall()
 
     for skin in skins:

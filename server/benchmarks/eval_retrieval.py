@@ -12,7 +12,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import knowledge  # noqa: E402
-from app.models.database import connect  # noqa: E402
 
 # ── 测试集：问题 → 正确答案块应包含的关键词 ────────────────
 TEST_SET = [

@@ -9,7 +9,6 @@
 - 按 .gitignore 排除产物/密钥/缓存
 - 文件头标注语言，AI 可正确解析代码块
 """
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path

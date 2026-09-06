@@ -200,9 +200,11 @@ def test_maximize_uses_current_screen_and_clamps_restore_geometry() -> None:
     panel._toggle_maximize()
     assert panel.geometry() == secondary
 
-    panel._pre_max_geo = QRect(3100, 900, 500, 300)
+    # 逃逸到屏幕右下角之外的还原矩形；尺寸必须 ≥ MIN_W/MIN_H（360/460），
+    # 否则会走 fallback 分支而非钳制分支。
+    panel._pre_max_geo = QRect(3100, 900, 500, 500)
     panel._toggle_maximize()
 
     restored = panel.geometry()
-    assert restored == QRect(2700, 740, 500, 300)
+    assert restored == QRect(2700, 540, 500, 500)
     assert _inside(secondary, restored)

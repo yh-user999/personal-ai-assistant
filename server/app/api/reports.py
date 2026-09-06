@@ -1,9 +1,11 @@
 """周报接口：查询历史周报 / 手动触发生成。"""
+import asyncio
+
 from fastapi import APIRouter, Request
 
 from app.auth import require_roles
-from app.core.memory import _user_scope, owner_user_id
-from app.models.database import connect
+from app.core.memory import owner_user_id
+from app.models import repo
 
 router = APIRouter()
 
@@ -16,35 +18,16 @@ def _subject(request: Request) -> str:
 @router.get("/reports")
 async def list_reports(request: Request) -> dict:
     uid = _subject(request)
-    clause, args = _user_scope(uid)
-    conn = connect()
-    try:
-        rows = conn.execute(
-            f"SELECT week, created_at FROM weekly_reports WHERE {clause} "
-            "ORDER BY week DESC, id DESC LIMIT 20",
-            args,
-        ).fetchall()
-    finally:
-        conn.close()
-    return {"reports": [dict(r) for r in rows]}
+    return {"reports": await asyncio.to_thread(repo.list_weekly_reports, uid)}
 
 
 @router.get("/reports/{week}")
 async def get_report(week: str, request: Request) -> dict:
     uid = _subject(request)
-    clause, args = _user_scope(uid)
-    conn = connect()
-    try:
-        row = conn.execute(
-            f"SELECT week, content, stats, created_at FROM weekly_reports "
-            f"WHERE week=? AND {clause}",
-            (week, *args),
-        ).fetchone()
-    finally:
-        conn.close()
+    row = await asyncio.to_thread(repo.get_weekly_report, uid, week)
     if not row:
         return {"error": "not found"}
-    return dict(row)
+    return row
 
 
 @router.post("/reports/generate")
@@ -61,16 +44,7 @@ async def generate_now(request: Request) -> dict:
 async def latest_daily(request: Request) -> dict:
     """最新每日小结（桌面托盘检查用）。"""
     uid = _subject(request)
-    clause, args = _user_scope(uid)
-    conn = connect()
-    try:
-        row = conn.execute(
-            f"SELECT date, content, created_at FROM daily_summaries WHERE {clause} "
-            "ORDER BY date DESC, id DESC LIMIT 1",
-            args,
-        ).fetchone()
-    finally:
-        conn.close()
+    row = await asyncio.to_thread(repo.latest_daily_summary, uid)
     if not row:
         return {"exists": False}
-    return {"exists": True, **dict(row)}
+    return {"exists": True, **row}

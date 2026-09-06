@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_roles
 from app.core.memory import owner_user_id
-from app.models.database import connect
+from app.models import repo
 
 router = APIRouter()
 
@@ -60,43 +60,35 @@ class EventBatch(BaseModel):
     events: list[BehaviorEvent] = Field(default_factory=list, max_length=100)
 
 
-def _insert_events_sync(user_id: str, events: list) -> int:
-    """批量落库（同步 DB 段，供 to_thread 调用）：脱敏 + 幂等 INSERT。
+def _prepare_event_rows(user_id: str, events: list) -> list[dict]:
+    """批量脱敏 + 计算幂等 event_id（纯 CPU，供 to_thread 调用）。
 
     幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次
     （采集器换机器/丢游标后会补推历史，服务器必须能消化重复）。
     """
     from app.services.sanitize import sanitize
 
-    conn = connect()
-    inserted = 0
-    try:
-        for e in events:
-            name = sanitize(e.name[:200])
-            detail = sanitize(e.detail[:200])
-            end_ts = e.end_ts[:64]
-            start_ts = e.start_ts[:64]
-            meta = _normalize_meta(e.meta)
-            event_id = (e.event_id or "").strip() or _stable_event_id(
-                kind=e.kind,
-                name=name,
-                detail=detail,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                meta=meta,
-            )
-            cur = conn.execute(
-                """INSERT INTO behavior_events
-                   (user_id, event_id, kind, name, detail, start_ts, end_ts, meta)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT DO NOTHING""",
-                (user_id, event_id, e.kind, name, detail, start_ts, end_ts, meta),
-            )
-            inserted += max(0, cur.rowcount)
-        conn.commit()
-    finally:
-        conn.close()
-    return inserted
+    rows = []
+    for e in events:
+        name = sanitize(e.name[:200])
+        detail = sanitize(e.detail[:200])
+        end_ts = e.end_ts[:64]
+        start_ts = e.start_ts[:64]
+        meta = _normalize_meta(e.meta)
+        event_id = (e.event_id or "").strip() or _stable_event_id(
+            kind=e.kind,
+            name=name,
+            detail=detail,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            meta=meta,
+        )
+        rows.append({
+            "user_id": user_id, "event_id": event_id, "kind": e.kind,
+            "name": name, "detail": detail, "start_ts": start_ts,
+            "end_ts": end_ts, "meta": meta,
+        })
+    return rows
 
 
 @router.post("/events")
@@ -110,7 +102,11 @@ async def receive_events(batch: EventBatch, request: Request) -> dict:
     鉴权：由全局 AuthMiddleware 统一处理。
     脱敏：入库前统一过 sanitize（窗口标题里的公网 IP 打码，第 6.14 课）。
     """
-    inserted = await asyncio.to_thread(_insert_events_sync, user_id, batch.events)
+    async def _persist() -> int:
+        rows = await asyncio.to_thread(_prepare_event_rows, user_id, batch.events)
+        return await asyncio.to_thread(repo.insert_behavior_events, rows)
+
+    inserted = await _persist()
     return {"received": len(batch.events), "inserted": inserted}
 
 

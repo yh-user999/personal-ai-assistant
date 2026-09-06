@@ -62,10 +62,11 @@
           if (resp.status === 401) throw Object.assign(new Error('未授权：请先填写 API Token'), {kind: 'unauthorized'});
           if (resp.status === 403) throw Object.assign(new Error('没有权限执行该操作'), {kind: 'forbidden'});
           const detail = data && data.detail;
-          throw Object.assign(
-            new Error((detail && detail.message) || ('请求失败（HTTP ' + resp.status + '）')),
-            {kind: 'api', status: resp.status, detail: detail}
-          );
+          const message =
+            (detail && typeof detail === "object" && detail.message) ||
+            (typeof detail === "string" && detail) ||
+            ('请求失败（HTTP ' + resp.status + '）');
+          throw Object.assign(new Error(message), {kind: 'api', status: resp.status, detail: detail});
         }
         return data;
       }
@@ -209,18 +210,7 @@
     }
   }
 
-  // ── 统计 / 周报抽屉 ───────────────────────────────────────
-  let drawerEsc = null;
-  function openDrawer(title) {
-    $('drawer-title').textContent = title;
-    openOverlay($('drawer'), $('drawer-close'));
-    drawerEsc = registerEscClose(closeDrawer);
-  }
-  function closeDrawer() {
-    closeOverlay($('drawer'));
-    if (drawerEsc) { drawerEsc(); drawerEsc = null; }
-  }
-
+  // ── 统计 / 周报抽屉（openDrawer/closeDrawer 由 app.js 提供）──
   function drawerError(body, e) {
     clearNode(body);
     body.textContent = e.message || '加载失败';
@@ -288,35 +278,13 @@
     } catch (e) { drawerError(body, e); }
   }
 
-  // ── Token 弹层 ────────────────────────────────────────────
-  let tokenEsc = null;
-  function openTokenModal() {
-    $('token-input').value = getToken();
-    openOverlay($('token-modal'), $('token-input'));
-    tokenEsc = registerEscClose(closeTokenModal);
-  }
-  function closeTokenModal() {
-    closeOverlay($('token-modal'));
-    if (tokenEsc) { tokenEsc(); tokenEsc = null; }
-  }
-  function onSaveToken() {
-    saveToken($('token-input').value);
-    closeTokenModal();
-    toast('Token 已保存', 'ok');
-    loadHistory();
-  }
 
   // ── 事件绑定与启动 ────────────────────────────────────────
   sendBtn.addEventListener('click', () => { if (pending) { if (aborter) aborter.abort(); } else { send(); } });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-  $('theme-btn').addEventListener('click', toggleTheme);
-  $('token-btn').addEventListener('click', openTokenModal);
-  $('token-save').addEventListener('click', onSaveToken);
-  $('token-cancel').addEventListener('click', closeTokenModal);
   $('nav-stats').addEventListener('click', (e) => { e.preventDefault(); showStats(); });
   $('nav-reports').addEventListener('click', (e) => { e.preventDefault(); showReports(); });
-  $('drawer-close').addEventListener('click', closeDrawer);
-  $('drawer-mask').addEventListener('click', closeDrawer);
 
+  setTokenSavedHook(loadHistory);
   loadHistory();
 })();

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from types import SimpleNamespace
+from logging import getLogger
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,8 @@ from app.chat.context import (
     guest_rate_limited,
 )
 from app.chat.pipeline import run_chat, run_chat_stream
+from app.chat.services_registry import make_services
+from app.services import message_search, mood, vision
 from app.chat.prompting import _GENERATION_INTENT, SYSTEM_PROMPT, _untrusted_reference
 from app.chat.routing import (
     _COMMAND_HANDLERS,
@@ -38,46 +40,7 @@ from app.chat.routing import (
 )
 from app.config import settings
 from app.core import knowledge, llm, memory
-from app.models.database import connect
-from app.novel import NovelApplicationService
-from app.services import (
-    behavior_context,
-    chapter_analysis,
-    concern_tracker,
-    confirm,
-    cooccurrence,
-    documents,
-    executor,
-    fact_extract,
-    few_shot,
-    fitness,
-    goals,
-    growth,
-    identity_guard,
-    index_healer,
-    initiative,
-    intent_goals,
-    jargon,
-    knowledge_domain,
-    knowledge_hint,
-    message_search,
-    mood,
-    novel_entities,
-    novel_writing,
-    plain_text,
-    profile,
-    reminders,
-    request_trace,
-    resume,
-    sanitize,
-    self_reflect,
-    self_state,
-    slang,
-    subjective_time,
-    unresolved,
-    worklog,
-    vision,
-)
+from app.models import repo
 
 router = APIRouter()
 
@@ -99,53 +62,15 @@ _bg_tasks = set()
 
 
 def _build_runtime(request: Request | None = None) -> ChatRuntime:
-    """按当前 API 模块依赖创建运行时，确保 monkeypatch 实时生效。"""
-    services = SimpleNamespace(
-        behavior_context=behavior_context,
-        chapter_analysis=chapter_analysis,
-        cooccurrence=cooccurrence,
-        confirm=confirm,
-        concern_tracker=concern_tracker,
-        documents=documents,
-        executor=executor,
-        fact_extract=fact_extract,
-        fitness=fitness,
-        few_shot=few_shot,
-        goals=goals,
-        growth=growth,
-        identity_guard=identity_guard,
-        index_healer=index_healer,
-        initiative=initiative,
-        intent_goals=intent_goals,
-        jargon=jargon,
-        knowledge_domain=knowledge_domain,
-        knowledge_hint=knowledge_hint,
-        message_search=message_search,
-        mood=mood,
-        novel_entities=novel_entities,
-        novel_writing=novel_writing,
-        plain_text=plain_text,
-        profile=profile,
-        reminders=reminders,
-        request_trace=request_trace,
-        resume=resume,
-        sanitize=sanitize,
-        self_reflect=self_reflect,
-        self_state=self_state,
-        slang=slang,
-        subjective_time=subjective_time,
-        unresolved=unresolved,
-        worklog=worklog,
-        novel=NovelApplicationService.from_legacy(novel_writing, chapter_analysis, novel_entities),
-    )
+    """按当前 API 模块依赖创建运行时；服务清单统一在 services_registry 维护。"""
     return ChatRuntime(
         settings=settings,
         llm=llm,
         memory=memory,
         knowledge=knowledge,
-        services=services,
+        services=make_services(),
         bg_tasks=_bg_tasks,
-        logger=__import__("logging").getLogger("assistant.chat"),
+        logger=getLogger("assistant.chat"),
     )
 
 
@@ -188,7 +113,7 @@ async def vision_chat(
         raise api_error(400, "request_id_required", "request_id 不能为空")
     validated = await vision.validate_upload(
         image,
-        max_bytes=getattr(settings, "vision_max_image_bytes", vision.DEFAULT_MAX_IMAGE_BYTES),
+        max_bytes=settings.vision_max_image_bytes,
     )
     req = ChatRequest(
         message=message or "",
@@ -276,17 +201,10 @@ async def greeting() -> dict:
 async def recent_messages(limit: int = 30) -> dict:
     """最近消息：面板入口只返回主人自己的消息。"""
     limit = max(1, min(limit, 200))
-    clause, args = memory._user_scope(memory.owner_user_id())
-    conn = connect()
-    try:
-        rows = conn.execute(
-            f"SELECT id, sender, content, ts FROM memories WHERE {clause} "
-            "ORDER BY id DESC LIMIT ?",
-            (*args, limit),
-        ).fetchall()
-    finally:
-        conn.close()
-    return {"messages": [dict(row) for row in reversed(rows)]}
+    rows = await asyncio.to_thread(
+        repo.recent_memories, memory.owner_user_id(), limit
+    )
+    return {"messages": rows}
 
 
 @router.get("/messages/search")

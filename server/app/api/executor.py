@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.auth import require_roles
 from app.core import memory
+from app.models import repo
 from app.services import executor
 
 router = APIRouter()
@@ -73,18 +74,7 @@ async def pending(request: Request) -> dict:
 async def results(request: Request, since_id: int = 0) -> dict:
     require_roles(request, "executor", "internal", "owner")
     """id > since_id 的已执行指令（桌面端轮询显示执行结果）。"""
-    from app.models.database import connect
-
-    conn = connect()
-    try:
-        rows = conn.execute(
-            """SELECT id, action, target, status, result FROM executor_commands
-               WHERE id > ? AND status IN ('done', 'failed') ORDER BY id""",
-            (since_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-    return {"results": [dict(r) for r in rows]}
+    return {"results": await asyncio.to_thread(repo.executed_commands_since, since_id)}
 
 
 @router.post("/executor/result")

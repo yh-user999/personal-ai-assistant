@@ -14,6 +14,7 @@ import time
 import uuid
 import weakref
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import httpx
 from openai import (
@@ -606,6 +607,126 @@ async def chat(
             except Exception:
                 logger.debug("LLM 用量/路由记账失败", exc_info=True)
             return resp.choices[0].message.content or ""
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("LLM 请求未执行")
+
+
+async def chat_stream(
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    response_format: dict | None = None,
+    timeout: float | None = None,
+    model: str | None = None,
+    request_id: str | None = None,
+    user_id: str | None = None,
+):
+    """流式对话：逐段 yield 增量文本。
+
+    与 :func:`chat` 共用 Key 池、冷却与退避策略，但故障切换语义不同：
+
+    - 首个内容增量输出**前**失败：与 chat() 一致，切换 Key / 退避重试；
+    - 已开始输出**后**失败：直接抛出，不再切换。客户端已收到部分内容，
+      换 Key 重发会导致重复输出。
+
+    usage 依赖 ``stream_options.include_usage``（最后一个 chunk 下发），
+    部分中转服务不返回该字段，缺失时跳过记账，不影响主流程。
+    """
+    selected_model = (model or settings.llm_model or "").strip()
+    kwargs = {
+        "model": selected_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if response_format:
+        kwargs["response_format"] = response_format
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("未配置 LLM_API_KEY 或 LLM_API_KEYS，无法调用 LLM")
+    try:
+        retry_budget = max(0, int(settings.llm_max_retries))
+    except (TypeError, ValueError):
+        retry_budget = 0
+    max_attempts = retry_budget + 1
+    request_id = str(request_id or uuid.uuid4().hex)[:160]
+
+    order = _candidate_key_indices(keys)
+    last_exc: BaseException | None = None
+    async with _concurrency_semaphore():
+        for attempt in range(max_attempts):
+            key_index = order[attempt % len(order)]
+            emitted = False
+            try:
+                stream = await get_client(key_index).chat.completions.create(**kwargs)
+                usage = None
+                async for chunk in stream:
+                    chunk_usage = getattr(chunk, "usage", None)
+                    if chunk_usage is not None:
+                        usage = chunk_usage
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        # 最后一个 chunk 只携带 usage，choices 为空
+                        continue
+                    delta = choices[0].delta
+                    text = getattr(delta, "content", None) if delta is not None else None
+                    if text:
+                        emitted = True
+                        yield text
+            except Exception as exc:
+                last_exc = exc
+                retryable = is_retryable_error(exc)
+                _mark_failure(key_index, exc, cooldown=retryable)
+                if emitted or not retryable:
+                    raise
+                if attempt + 1 >= max_attempts:
+                    break
+                next_index = order[(attempt + 1) % len(order)]
+                logger.info(
+                    "LLM 流式 Key 故障切换：%s -> key[%d]，model=%s，原因=%s（第 %d/%d 次）",
+                    mask_api_key(keys[key_index], index=key_index),
+                    next_index,
+                    selected_model,
+                    _failure_reason(exc),
+                    attempt + 1,
+                    max_attempts,
+                )
+                try:
+                    backoff = max(0.0, float(settings.llm_retry_backoff_seconds))
+                except (TypeError, ValueError):
+                    backoff = 0.0
+                if backoff:
+                    await asyncio.sleep(backoff * min(2 ** attempt, 8))
+                continue
+
+            _mark_success(key_index)
+            fallback_count = attempt
+            try:
+                _record_request(
+                    key_index=key_index,
+                    model=selected_model,
+                    fallback_count=fallback_count,
+                )
+                if usage is not None:
+                    _record_usage(
+                        SimpleNamespace(usage=usage),
+                        key_index=key_index,
+                        model=selected_model,
+                        request_id=request_id,
+                        user_id=user_id,
+                        fallback_count=fallback_count,
+                    )
+            except Exception:
+                logger.debug("LLM 用量/路由记账失败", exc_info=True)
+            return
 
     if last_exc is not None:
         raise last_exc

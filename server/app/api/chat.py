@@ -7,9 +7,12 @@ retrieval 处理记忆/知识检索，prompting 负责提示词，pipeline 负�
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 from types import SimpleNamespace
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.auth import require_roles
 from app.chat.context import (
@@ -20,13 +23,12 @@ from app.chat.context import (
     _guest_events,
     _request_cache,
     _request_inflight,
-    authenticated_uid,
     build_context,
     computer_online,
     deduplicate_request,
     guest_rate_limited,
 )
-from app.chat.pipeline import run_chat
+from app.chat.pipeline import run_chat, run_chat_stream
 from app.chat.prompting import _GENERATION_INTENT, SYSTEM_PROMPT, _untrusted_reference
 from app.chat.routing import (
     _COMMAND_HANDLERS,
@@ -146,11 +148,6 @@ def _build_runtime(request: Request | None = None) -> ChatRuntime:
     )
 
 
-def _authenticated_uid(req: ChatRequest, request: Request) -> tuple[str, bool]:
-    """兼容旧 API 的认证辅助函数。"""
-    return authenticated_uid(req, request, memory)
-
-
 def _guest_rate_limited(uid: str) -> bool:
     """兼容旧 API 的访客限流辅助函数。"""
     return guest_rate_limited(uid)
@@ -199,6 +196,71 @@ async def vision_chat(
         image=ImagePayload(**validated.__dict__),
     )
     return await deduplicate_request(req, request, memory, _chat_impl)
+
+
+def _sse_frame(event: str, data: dict) -> str:
+    """编码一条 SSE 事件帧（data 为 JSON，中文不转义以减少传输体积）。"""
+    return "event: " + event + "\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n"
+
+
+@router.post("/chat/stream")
+async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingResponse:
+    """SSE 流式聊天入口，事件序列：meta → delta* → done（异常时 error）。
+
+    与 /chat 共用认证、限流与主链路；差异：
+    - 图片提问不支持流式，仍走 multipart /api/chat/vision；
+    - 不进 deduplicate_request 的结果缓存（流式响应无法整体复用），
+      request_id 仅用于链路追踪与 LLM 用量记账。
+    done 携带服务端清洗后的最终全文，客户端以其覆盖累计增量。
+    """
+    if req.image is not None:
+        raise HTTPException(status_code=400, detail="图片提问请使用 multipart /api/chat/vision")
+    ctx = build_context(req, request, memory)
+    runtime = _build_runtime(request)
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_delta(text: str) -> None:
+            await queue.put(("delta", text))
+
+        async def drive() -> None:
+            try:
+                resp = await run_chat_stream(ctx, runtime, on_delta)
+                await queue.put(("done", resp))
+            except Exception:
+                runtime.logger.exception("流式聊天链路异常")
+                await queue.put(("error", None))
+            finally:
+                await queue.put(("end", None))
+
+        task = asyncio.create_task(drive())
+        yield _sse_frame("meta", {"request_id": ctx.request_id or ""})
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "end":
+                    break
+                if kind == "delta":
+                    yield _sse_frame("delta", {"text": payload})
+                elif kind == "done":
+                    yield _sse_frame(
+                        "done",
+                        {"reply": payload.reply or "", "memories_used": payload.memories_used},
+                    )
+                elif kind == "error":
+                    yield _sse_frame("error", {"message": "生成中断，请稍后重试"})
+        finally:
+            # 客户端断开时取消后台主链路，终止未完成的 LLM 流
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/greeting")

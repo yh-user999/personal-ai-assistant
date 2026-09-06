@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from collections.abc import Awaitable, Callable
 
 from openai import OpenAIError
 
@@ -123,6 +124,72 @@ async def _call_llm_with_fallback(
             return None, True
 
 
+async def _stream_llm_with_fallback(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    assembly: prompting.PromptAssembly,
+    on_delta: Callable[[str], Awaitable[None]],
+) -> tuple[str | None, bool]:
+    """流式调用主聊天 LLM：增量经 ``on_delta`` 回调，返回 ``(全文, generation_failed)``。
+
+    与全量版一致的策略：gen_profile 长文首次失败自动重试一次。但重试仅允许
+    发生在**首个增量输出之前**——客户端已收到内容后换 Key 重发会造成重复
+    输出，此时按失败处理，由上层下发友好错误。
+
+    图片链路不走流式：调用方（/api/chat/stream）已在边界拒绝带图请求，
+    这里兜底退化为全量调用后一次性回调。
+    """
+    plain_text = runtime.services.plain_text
+    llm = runtime.llm
+    request_id = ctx.request_id or uuid.uuid4().hex
+    llm_context = {"request_id": request_id, "user_id": ctx.uid}
+
+    if ctx.image is not None:
+        reply, failed = await _call_llm_with_fallback(ctx, runtime, assembly)
+        if reply:
+            await on_delta(reply)
+        return reply, failed
+
+    messages = assembly.gen_messages if assembly.gen_profile else assembly.llm_messages
+    kwargs: dict = dict(llm_context)
+    if assembly.gen_profile:
+        kwargs.update(timeout=240, max_tokens=6000, model=_novel_model(runtime))
+
+    emitted = False
+
+    async def pump() -> str:
+        nonlocal emitted
+        parts: list[str] = []
+        async for delta in llm.chat_stream(messages, **kwargs):
+            # 先标记再回调：回调即代表内容已下发客户端
+            emitted = True
+            await on_delta(delta)
+            parts.append(delta)
+        return "".join(parts)
+
+    try:
+        reply = (await pump()).strip()
+    except (OpenAIError, TimeoutError, RuntimeError, AttributeError):
+        if not assembly.gen_profile:
+            runtime.logger.exception("LLM 流式调用失败")
+            return None, False
+        if emitted:
+            # 客户端已收到部分增量，重试会造成重复输出，只能按失败收场
+            runtime.logger.exception("[gen] 流式生成中途失败（已输出增量，不重试）")
+            return None, True
+        runtime.logger.info("[gen] 流式首次生成失败，自动重试一次")
+        try:
+            reply = (await pump()).strip()
+            runtime.logger.info("[gen] 流式重试成功，回复 %d 字", len(reply))
+        except (OpenAIError, TimeoutError, RuntimeError, AttributeError):
+            runtime.logger.exception("[gen] 流式重试仍然失败")
+            return None, True
+    if plain_text.has_markdown(reply):
+        runtime.logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
+        reply = plain_text.strip_markdown(reply)
+    return reply, False
+
+
 async def _record_request_trace(
     ctx: ChatContext,
     runtime: ChatRuntime,
@@ -194,6 +261,29 @@ def _maybe_capture_chapter(
 
 async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
     """执行一轮普通聊天，命令命中时在 LLM 前短路返回。"""
+    return await _run_chat(ctx, runtime, on_delta=None)
+
+
+async def run_chat_stream(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    on_delta: Callable[[str], Awaitable[None]],
+) -> ChatResponse:
+    """流式版聊天：增量经 ``on_delta`` 逐段回调，返回值与 run_chat 一致。
+
+    命令短路、限流、生成失败等一次性回复不会产生任何 delta，直接作为
+    返回值交给调用方下发（SSE done 事件）。
+    """
+    return await _run_chat(ctx, runtime, on_delta=on_delta)
+
+
+async def _run_chat(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    *,
+    on_delta: Callable[[str], Awaitable[None]] | None,
+) -> ChatResponse:
+    """聊天主链路共享核心：``on_delta`` 为 None 走全量调用，否则走流式。"""
     settings = runtime.settings
     memory = runtime.memory
     services = runtime.services
@@ -216,7 +306,7 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
             return ChatResponse(reply=fixed, memories_used=0)
 
     if not ctx.is_owner and guest_rate_limited(ctx.uid):
-        window_minutes = 60 // 60 + 1
+        window_minutes = 1
         return ChatResponse(
             reply=f"⏳ 聊得太快啦，歇 {window_minutes} 分钟再来吧",
             memories_used=0,
@@ -225,7 +315,8 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
     if ctx.is_owner:
         mood_name = services.mood.detect_mood_name(msg)
         if mood_name:
-            services.mood.record_mood(mood_name, msg, user_id=ctx.uid)
+            # 同步 SQLite 迁出事件循环线程（prepare_turn/assemble 同理）
+            await asyncio.to_thread(services.mood.record_mood, mood_name, msg, user_id=ctx.uid)
         if settings.initiative_enabled:
             if ctx.uid:
                 services.initiative.mark_responded(user_id=ctx.uid)
@@ -239,7 +330,7 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
     if ctx.is_owner and settings.healer_enabled:
-        history = memory.get_recent_history(4, user_id=ctx.uid)
+        history = await asyncio.to_thread(memory.get_recent_history, 4, user_id=ctx.uid)
         last_user = next(
             (item["content"] for item in reversed(history) if item["role"] == "user"),
             "",
@@ -253,13 +344,16 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
             )
 
     if services.unresolved.detect_resolved(msg):
-        services.unresolved.resolve_latest(user_id=ctx.uid)
+        await asyncio.to_thread(services.unresolved.resolve_latest, user_id=ctx.uid)
     elif services.unresolved.detect_unresolved(msg):
-        services.unresolved.add_issue(msg, user_id=ctx.uid)
+        await asyncio.to_thread(services.unresolved.add_issue, msg, user_id=ctx.uid)
 
+    # prepare_turn 保持在事件循环：它内部会调度后台任务（事实桥接），
+    # 工作线程里没有可用的 loop；其 DB 开销仅一条小 SELECT + 罕见写入。
     preparation = retrieval.prepare_turn(ctx, runtime)
     bundle = await retrieval.retrieve(ctx, runtime, preparation)
-    assembly = prompting.assemble(ctx, runtime, bundle)
+    # assemble 的注入器均为纯查询（无任务调度），可安全移入工作线程
+    assembly = await asyncio.to_thread(prompting.assemble, ctx, runtime, bundle)
     await _record_request_trace(ctx, runtime, bundle, assembly.system)
 
     memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
@@ -274,7 +368,10 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
         ),
     )
 
-    reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
+    if on_delta is None:
+        reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
+    else:
+        reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
     if reply is None:
         if ctx.image is not None:
             return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
@@ -289,9 +386,11 @@ async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
 
     await memory.write_message("assistant", reply, user_id=ctx.uid)
     if bundle.mems:
-        memory.bump_importance([item["id"] for item in bundle.mems])
+        await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
     if bundle.definition_term:
-        services.jargon.save_term(bundle.definition_term, reply, user_id=ctx.uid)
+        await asyncio.to_thread(
+            services.jargon.save_term, bundle.definition_term, reply, user_id=ctx.uid
+        )
 
     retrieval.track_background(
         runtime,

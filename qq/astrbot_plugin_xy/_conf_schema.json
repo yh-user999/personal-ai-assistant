@@ -1,8 +1,8 @@
 {
   "owner_qq": {
-    "description": "主人 QQ 号（唯一可私聊小月的账号，其余一律不理会）",
+    "description": "主人 QQ 号（用于主人权限与身份分流）",
     "type": "string",
-    "hint": "填写你的 QQ 号，如 10001。群聊消息无论谁发一律静默。",
+    "hint": "填写你的 QQ 号，如 10001。访客私聊仍可聊天；群聊消息无论谁发一律静默。",
     "obvious_hint": true,
     "default": "",
     "restart_required": false
@@ -16,17 +16,25 @@
     "restart_required": false
   },
   "api_token": {
-    "description": "小月服务 API Token",
+    "description": "小月服务 QQ 访客 API Token",
     "type": "string",
-    "hint": "与服务器 .env 的 API_TOKEN 一致，用于 Bearer 鉴权",
+    "hint": "与服务器 .env 的 QQ_API_TOKEN 一致，用于访客 Bearer 鉴权；不要填写主人 token",
+    "obvious_hint": true,
+    "default": "",
+    "restart_required": false
+  },
+  "owner_api_token": {
+    "description": "小月服务主人 API Token",
+    "type": "string",
+    "hint": "仅主人 QQ 使用；填写服务器 .env 的 OWNER_API_TOKEN（或兼容的 API_TOKEN）主人 token，不能填写 QQ_API_TOKEN",
     "obvious_hint": true,
     "default": "",
     "restart_required": false
   },
   "identity_secret": {
-    "description": "QQ 用户身份签名密钥",
+    "description": "QQ 访客身份签名密钥",
     "type": "string",
-    "hint": "必须与服务器 .env 的 QQ_IDENTITY_SECRET 一致；QQ_API_TOKEN 启用时用于防止伪造 user_id",
+    "hint": "必须与服务器 .env 的 QQ_IDENTITY_SECRET 一致；仅访客 QQ_API_TOKEN 请求使用，主人 token 不依赖此签名",
     "default": "",
     "restart_required": false
   },

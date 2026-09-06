@@ -17,6 +17,17 @@ for _p in (SERVER_ROOT, REPO_ROOT):
         sys.path.insert(0, _p)
 
 os.environ.setdefault("API_TOKEN", "")
+# 角色 token/QQ 身份密钥也必须在测试收集前显式置空；否则本机 .env 的生产配置
+# 会让“无 token 开放”与缺失签名的边界用例依赖开发机环境而非测试本身。
+for _name in (
+    "OWNER_API_TOKEN",
+    "INTERNAL_API_TOKEN",
+    "COLLECTOR_API_TOKEN",
+    "EXECUTOR_API_TOKEN",
+    "QQ_API_TOKEN",
+    "QQ_IDENTITY_SECRET",
+):
+    os.environ.setdefault(_name, "")
 os.environ.setdefault("DEPLOYMENT_ENV", "test")
 # 本地 .env 的真实 QQ_ADMIN_ID 会让 owner_user_id() 返回真实 QQ 号而不是 'owner'
 # 哨兵，多人隔离/淘汰/画像等 12 个用例随之失败。测试固定用 'owner' 语义，

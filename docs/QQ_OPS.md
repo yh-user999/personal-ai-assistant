@@ -1,6 +1,6 @@
 # QQ 接入运维手册 —— NapCat / AstrBot / 插件
 
-> 本文以 **2026-09-05** 已核对的图片识别一期实现为准。文本私聊走 `/api/chat` JSON，图片私聊走 `/api/chat/vision` multipart；本文不含真实 token、HMAC secret、QQ 号或公网地址。
+> 本文以 **2026-09-06** 已核对的 QQ 鉴权分流与图片识别实现为准。文本私聊走 `/api/chat` JSON，图片私聊走 `/api/chat/vision` multipart；本文不含真实 token、HMAC secret、QQ 号或公网地址。
 
 ## 一、架构与数据流
 
@@ -10,12 +10,13 @@
 NapCat 容器（QQ 协议端，onebot HTTP :3100）
    ↕ onebot 事件
 AstrBot 宿主（插件 astrbot_plugin_xy）
-   ├─ 文本消息 → HTTP Bearer → /api/chat（JSON）
-   └─ 图片消息 → 取回/校验图片 → /api/chat/vision（multipart）
-                                      ├─ image
-                                      ├─ message（可选）
-                                      ├─ request_id
-                                      └─ user_id（QQ 号）
+   ├─ 主人文本/图片 → 主人 Bearer → /api/chat*（owner）
+   ├─ 主人文件 → 主人 Bearer → /api/knowledge/ingest（owner）
+   └─ 访客文本/图片 → QQ Bearer + 身份 HMAC → /api/chat*（qq）
+                                             ├─ image
+                                             ├─ message（可选）
+                                             ├─ request_id
+                                             └─ user_id（QQ 号）
 小月 FastAPI 服务器（普通聊天模型 / 视觉模型分开配置）
 ```
 
@@ -60,8 +61,9 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 |---|---|
 | `owner_qq` | 主人 QQ 号（纯数字字符串）；只用于主人专属功能和 fail-closed 判断 |
 | `api_base` | 小月服务根地址，同机通常为 `http://127.0.0.1:8000` |
-| `api_token` | 入站聊天 Bearer token；拆分鉴权时应与服务器 `QQ_API_TOKEN` 一致，不要填出站 `QQ_PUSH_TOKEN` |
-| `identity_secret` | 与服务器 `QQ_IDENTITY_SECRET` 一致；用于签名 QQ 号、时间戳和 `request_id` |
+| `api_token` | QQ 访客入站 Bearer token；应与服务器 `QQ_API_TOKEN` 一致，不要填主人 token 或出站 `QQ_PUSH_TOKEN` |
+| `owner_api_token` | 主人入站 Bearer token；应与服务器 `OWNER_API_TOKEN`（或兼容的 `API_TOKEN`）一致，只给 `owner_qq` 使用，不能填 `QQ_API_TOKEN` |
+| `identity_secret` | 与服务器 `QQ_IDENTITY_SECRET` 一致；仅用于访客签名 QQ 号、时间戳和 `request_id`，主人 token 不依赖此签名 |
 | `onebot_http` | NapCat onebot HTTP 地址，图片/文件会话下载用，默认 `http://127.0.0.1:3100` |
 | `onebot_token` | NapCat onebot HTTP token |
 | `vision_timeout` | 图片取回、下载和 `/api/chat/vision` 的独立超时，默认 90 秒 |
@@ -83,7 +85,7 @@ QQ_PUSH_TOKEN=<napcat-onebot-token>
 QQ_ADMIN_ID=<owner-qq-id>
 ```
 
-QQ 插件构造的身份头包括 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`、`X-QQ-Signature`；签名载荷是 QQ 号、时间戳、`request_id` 逐行拼接后做 HMAC-SHA256。服务端还会检查时间窗口、表单 `request_id` 与签名 request_id 一致，以及 body `user_id` 与签名 QQ 号一致。
+QQ 插件为访客请求构造 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`、`X-QQ-Signature`；签名载荷是 QQ 号、时间戳、`request_id` 逐行拼接后做 HMAC-SHA256。主人请求只使用主人 Bearer token，不依赖 QQ 身份签名。服务端还会检查时间窗口、表单 `request_id` 与签名 request_id 一致，以及 body `user_id` 与签名 QQ 号一致。
 
 ## 四、图片专项排障速查
 

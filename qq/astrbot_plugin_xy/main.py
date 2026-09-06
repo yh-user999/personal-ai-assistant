@@ -1,4 +1,4 @@
-"""小月 QQ 接入插件 v1.4.2（第 8 课 + 第 9 课多人支持）。
+"""小月 QQ 接入插件 v1.4.3（第 8 课 + 第 9 课多人支持）。
 
 本插件以「小月」独立名义运行：QQ 端回复全部来自小月服务，宿主 AstrBot 的
 默认 LLM（原"小白"人格）在所有分支均被屏蔽，仅作为协议壳存在；宿主默认
@@ -11,6 +11,8 @@
   小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
 - 陌生私聊：可聊，但仅限对话；主人专属功能（执行器/提醒/文件入库等）只在主人会话生效
 - 文件入库：仅主人私聊可用（should_handle 白名单，与 v1.3 相同）
+
+v1.4.3：主人/访客鉴权分流——主人 QQ 使用服务端主人 token，访客继续使用 QQ token + HMAC。
 
 v1.4.2：去壳更名——移除"借壳小白"表述，插件以小月独立名义注册；
 宿主默认人格切换指引见 docs/QQ_OPS.md。
@@ -229,6 +231,24 @@ def can_chat(sender: str, group: str, owner_qq: str) -> bool:
     return bool(str(sender or "").strip())
 
 
+def select_api_token(
+    sender: str,
+    owner_qq: str,
+    owner_api_token: str,
+    qq_api_token: str,
+) -> tuple[str, bool]:
+    """按发送者选择服务端 token，返回 ``(token, is_owner)``。
+
+    主人必须使用 owner/internal 角色对应的主人 token；不能因为
+    ``api_token`` 存在就让主人退回 QQ 访客 token。访客则继续使用 QQ token。
+    """
+    sender = str(sender or "").strip()
+    owner_qq = str(owner_qq or "").strip()
+    if owner_qq and sender == owner_qq:
+        return str(owner_api_token or "").strip(), True
+    return str(qq_api_token or "").strip(), False
+
+
 def extract_text(path: str) -> tuple[str, str]:
     """从文件提取纯文本。返回 (文本, 错误信息)，成功时错误信息为空。
 
@@ -274,7 +294,7 @@ def safe_doc_name(name: str) -> str:
     "astrbot_plugin_xy",
     "小月接入",
     "小月 QQ 接入：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
-    "v1.4.2",
+    "v1.4.3",
 )
 class XiaoYuePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -300,13 +320,23 @@ class XiaoYuePlugin(Star):
         except (TypeError, ValueError):
             self._vision_max_image_bytes = VISION_MAX_IMAGE_BYTES
 
+    def _selected_api_token(self, sender: str) -> tuple[str, bool]:
+        """返回当前发送者应使用的 token 与主人标记。"""
+        return select_api_token(
+            sender,
+            self.cfg.get("owner_qq", ""),
+            self.cfg.get("owner_api_token", ""),
+            self.cfg.get("api_token", ""),
+        )
+
     def _api_headers(self, sender: str, request_id: str | None = None) -> dict[str, str]:
-        """构造服务端 Bearer + QQ 身份签名请求头。"""
-        token = str(self.cfg.get("api_token", "") or "").strip()
+        """构造按角色分流的 Bearer 请求头；QQ HMAC 只发给访客角色。"""
+        token, is_owner = self._selected_api_token(sender)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        secret = str(self.cfg.get("identity_secret", "") or "").strip()
-        if secret:
-            headers.update(build_qq_identity_headers(secret, sender, request_id=request_id))
+        if not is_owner:
+            secret = str(self.cfg.get("identity_secret", "") or "").strip()
+            if secret:
+                headers.update(build_qq_identity_headers(secret, sender, request_id=request_id))
         return headers
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -360,9 +390,9 @@ class XiaoYuePlugin(Star):
             return
 
         base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
-        token = str(self.cfg.get("api_token", "") or "").strip()
+        token, _ = self._selected_api_token(sender)
         if not base or not token:
-            logger.error("[xy] 插件配置缺失（api_base/api_token 为空），请到 AstrBot 控制台配置")
+            logger.error("[xy] 插件配置缺失（api_base 或当前角色 token 为空），请到 AstrBot 控制台配置")
             event.should_call_llm(True)
             return
 
@@ -635,9 +665,9 @@ class XiaoYuePlugin(Star):
             request_id = uuid.uuid4().hex
             sender = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
             base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
-            token = str(self.cfg.get("api_token", "") or "").strip()
+            token, _ = self._selected_api_token(sender)
             if not base or not token:
-                raise ImageDownloadError("插件配置缺失（api_base/api_token）")
+                raise ImageDownloadError("插件配置缺失（api_base 或当前角色 token）")
             with open(local, "rb") as image_file:
                 response = await self._client.post(
                     f"{base}/api/chat/vision",
@@ -816,9 +846,9 @@ class XiaoYuePlugin(Star):
 
             # ④ 入库（同名覆盖）
             base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
-            token = str(self.cfg.get("api_token", "") or "").strip()
+            token, _ = self._selected_api_token(sender)
             if not base or not token:
-                await event.send(MessageChain([Plain("❌ 插件配置缺失（api_base/api_token），请到 AstrBot 控制台配置")]))
+                await event.send(MessageChain([Plain("❌ 插件配置缺失（api_base 或当前角色 token），请到 AstrBot 控制台配置")]))
                 return
             request_id = uuid.uuid4().hex
             r = await self._client.post(

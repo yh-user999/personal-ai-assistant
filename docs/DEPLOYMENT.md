@@ -78,6 +78,8 @@ VISION_MAX_IMAGE_BYTES=10485760
 VISION_TIMEOUT=90
 
 # QQ 入站插件调用 /api/chat 与 /api/chat/vision
+# 主人 QQ 使用 OWNER_API_TOKEN；未配置时兼容 API_TOKEN
+OWNER_API_TOKEN=<owner-api-token>
 QQ_API_TOKEN=<qq-api-token>
 QQ_IDENTITY_SECRET=<shared-hmac-secret>
 QQ_IDENTITY_MAX_AGE_SECONDS=300
@@ -89,8 +91,9 @@ QQ_ADMIN_ID=<owner-qq-id>
 ```
 
 - `LLM_API_KEYS` 最多 8 个，服务端只在日志/诊断中记录序号或脱敏指纹，不输出原文。
-- `QQ_API_TOKEN` 只认证 AstrBot 插件；插件配置的 `api_token` 应填同一值，而不是把入站鉴权与出站 `QQ_PUSH_TOKEN` 混用。
-- `QQ_IDENTITY_SECRET` 与插件配置的 `identity_secret` 必须一致，用于签名 QQ 号、时间戳和 `request_id`；缺失或过期时服务端 fail-closed。
+- `OWNER_API_TOKEN`（未配置时兼容 `API_TOKEN`）供主人 QQ 使用；AstrBot 插件配置的 `owner_api_token` 应填同一值。
+- `QQ_API_TOKEN` 只认证访客 QQ 请求；AstrBot 插件配置的 `api_token` 应填同一值，不要把入站鉴权与出站 `QQ_PUSH_TOKEN` 混用。
+- `QQ_IDENTITY_SECRET` 与插件配置的 `identity_secret` 必须一致，仅用于访客签名 QQ 号、时间戳和 `request_id`；缺失或过期时服务端 fail-closed。
 - `QQ_ADMIN_ID` 只用于服务器定时提醒推送，必须是纯数字；本文不记录真实 QQ 号。
 
 ## `/api/chat/vision` 部署后检查
@@ -117,7 +120,7 @@ PY
 2. 手工启动后查看 `/tmp/assistant.log`，确认没有配置校验错误；不要在日志或命令历史里回显 token/secret。
 3. 核对普通模型、视觉模型、10MB 上限和 90 秒超时来自当前 `.env`；多 Key 只核对数量与脱敏指纹。
 4. 不把真实图片请求放进健康检查。若要做一次性端到端验收，应由入口验收清单单独记录，不在日常启停脚本里重复调用外部视觉服务。
-5. QQ 入口还要核对插件 `api_token` ↔ `QQ_API_TOKEN`、`identity_secret` ↔ `QQ_IDENTITY_SECRET`，以及 HMAC `request_id` 与 multipart 表单值一致。
+5. QQ 入口还要核对主人插件 `owner_api_token` ↔ `OWNER_API_TOKEN`（未配置时 ↔ `API_TOKEN`）、访客插件 `api_token` ↔ `QQ_API_TOKEN`、访客 `identity_secret` ↔ `QQ_IDENTITY_SECRET`，以及 HMAC `request_id` 与 multipart 表单值一致。
 
 ## 防火墙（三层）
 

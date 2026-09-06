@@ -122,13 +122,15 @@ VISION_TIMEOUT=90
 # 推荐多 Key；留空时回退旧的 LLM_API_KEY
 LLM_API_KEYS=<key-1>,<key-2>
 
-# QQ 插件独立鉴权（值只放服务器 .env / AstrBot 配置，不进仓库）
+# QQ 入站插件鉴权（值只放服务器 .env / AstrBot 配置，不进仓库）
+# 主人 QQ 使用 OWNER_API_TOKEN；未配置时兼容 API_TOKEN
+OWNER_API_TOKEN=<owner-api-token>
 QQ_API_TOKEN=<qq-api-token>
 QQ_IDENTITY_SECRET=<shared-hmac-secret>
 QQ_IDENTITY_MAX_AGE_SECONDS=300
 ```
 
-`QQ_API_TOKEN` 只证明请求来自 QQ 插件，`QQ_IDENTITY_SECRET` 才用于证明发送者 QQ 号；AstrBot 插件配置中的 `api_token`、`identity_secret` 分别填入前两项。所有 Key/token/secret 只写脱敏占位符，不要复制真实值到文档或仓库。
+主人 QQ 的 AstrBot 配置填 `owner_api_token`，访客配置填 `api_token`（对应 `QQ_API_TOKEN`）；访客还需将 `identity_secret` 与 `QQ_IDENTITY_SECRET` 对齐。所有 Key/token/secret 只写脱敏占位符，不要复制真实值到文档或仓库。
 
 ## 记忆系统（十通道）
 

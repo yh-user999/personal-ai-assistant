@@ -168,12 +168,56 @@ class _PostClient:
 
 def _plugin(client=None, max_bytes=10 * 1024 * 1024):
     plugin = _MOD.XiaoYuePlugin.__new__(_MOD.XiaoYuePlugin)
-    plugin.cfg = {"api_base": "http://local", "api_token": "token", "owner_qq": "123", "identity_secret": "secret"}
+    plugin.cfg = {
+        "api_base": "http://local",
+        "api_token": "qq-token",
+        "owner_api_token": "owner-token",
+        "owner_qq": "123",
+        "identity_secret": "secret",
+    }
     plugin._vision_timeout_seconds = 90
     plugin._vision_max_image_bytes = max_bytes
     plugin._client = client or _PostClient()
     plugin._proxy_client = client or _PostClient()
     return plugin
+
+
+def test_owner_and_visitor_use_separate_api_tokens_and_headers():
+    assert _MOD.select_api_token("123", "123", "owner-token", "qq-token") == (
+        "owner-token",
+        True,
+    )
+    assert _MOD.select_api_token("456", "123", "owner-token", "qq-token") == (
+        "qq-token",
+        False,
+    )
+    # 主人 token 缺失时也不能退回 QQ 访客 token。
+    assert _MOD.select_api_token("123", "123", "", "qq-token") == ("", True)
+
+    plugin = _plugin()
+    owner_headers = plugin._api_headers("123", "owner-request")
+    assert owner_headers["Authorization"] == "Bearer owner-token"
+    assert "X-QQ-User-ID" not in owner_headers
+
+    visitor_headers = plugin._api_headers("456", "visitor-request")
+    assert visitor_headers["Authorization"] == "Bearer qq-token"
+    assert visitor_headers["X-QQ-User-ID"] == "456"
+    assert visitor_headers["X-QQ-Request-ID"] == "visitor-request"
+
+
+def test_text_request_routes_owner_and_visitor_tokens():
+    client = _PostClient()
+    plugin = _plugin(client)
+
+    owner_event = _Event([], "主人消息", sender="123")
+    asyncio.run(plugin.on_message(owner_event))
+    assert client.kwargs["headers"]["Authorization"] == "Bearer owner-token"
+    assert "X-QQ-User-ID" not in client.kwargs["headers"]
+
+    visitor_event = _Event([], "访客消息", sender="456")
+    asyncio.run(plugin.on_message(visitor_event))
+    assert client.kwargs["headers"]["Authorization"] == "Bearer qq-token"
+    assert client.kwargs["headers"]["X-QQ-User-ID"] == "456"
 
 
 def test_image_identification_and_caption_cleanup():
@@ -220,11 +264,11 @@ def test_vision_multipart_fields_and_temp_cleanup(tmp_path):
     client = _PostClient()
     plugin = _plugin(client)
     comp = sys.modules["astrbot.api.message_components"].Image(file=str(source), name="photo.png")
-    event = _Event([comp], "看图 [image]", sender="123")
+    event = _Event([comp], "看图 [image]", sender="456")
     asyncio.run(plugin._handle_image(event, comp, _MOD.clean_image_caption(event.get_message_str())))
     assert event.sent
     assert client.kwargs["data"]["message"] == "看图"
-    assert client.kwargs["data"]["user_id"] == "123"
+    assert client.kwargs["data"]["user_id"] == "456"
     assert client.kwargs["data"]["request_id"]
     assert client.kwargs["files"]["image"][2] == "image/png"
     assert client.kwargs["headers"]["X-QQ-Request-ID"] == client.kwargs["data"]["request_id"]

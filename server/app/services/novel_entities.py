@@ -32,11 +32,11 @@ import asyncio
 import logging
 import re
 import sqlite3
-from datetime import datetime, timezone
 
 from openai import OpenAIError
 
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.novel_entities")
 
@@ -87,10 +87,6 @@ ENUM_INTENT = re.compile(
 
 # 定义式提问：「命丛是什么」——走原有向量路径更合适（要的是解释不是清单）
 DEFINITION_INTENT = re.compile(r"是什么意思|什么是|是啥|是什么(?![\u4e00-\u9fff])")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ── 第 0 层：意图与实体识别（零成本）────────────────────────

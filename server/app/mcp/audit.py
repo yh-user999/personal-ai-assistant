@@ -7,7 +7,6 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, TypeVar, cast
 
@@ -15,13 +14,10 @@ from app.models.database import connect
 
 from .context import from_context
 from .schemas import summarize_arguments
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.mcp.audit")
 _F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def record_tool_call(

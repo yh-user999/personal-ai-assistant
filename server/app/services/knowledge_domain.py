@@ -187,21 +187,6 @@ def invalidate_dynamic_cache() -> None:
     _dynamic_cache.clear()
 
 
-def mark_class_hit(class_word: str) -> None:
-    """动态类名被再次命中时 +1（活跃度统计/退登用）。"""
-    from datetime import datetime, timezone
-
-    conn = connect()
-    try:
-        conn.execute(
-            "UPDATE dynamic_classes SET hit_count = hit_count + 1, last_hit_at = ? "
-            "WHERE class_word = ?",
-            (datetime.now(timezone.utc).isoformat(), class_word),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
 
 def _novel_person_names() -> dict[str, set[str]]:
     """{书名: 人物名集合}。人物名来自小说设定卡与别名表——实体表只抽了

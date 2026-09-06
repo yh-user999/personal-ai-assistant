@@ -7,6 +7,7 @@ M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import replace as _dataclasses_replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -67,8 +68,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # 最长前缀优先：保证 "/api/knowledge/ingest" 这类更具体的规则
     # 先于父前缀 "/api/knowledge" 匹配（顺序 + break 的旧写法会让
     # 具体规则永不生效，宽严设置只能靠巧合保持正确）。
+    #
+    # 默认拒绝：未匹配到任何规则的 /api 路径一律 403。新增端点必须
+    # 显式登记角色，避免"忘加规则即全角色可用"的静默放开。
+    # （/api/greeting 历史上就漏在规则外——collector/executor/qq token
+    # 都能拿到主人个性化问候。）
     ROLE_RULES: ClassVar[tuple] = tuple(sorted((
         ("/api/chat", {"qq", "internal", "owner"}),
+        ("/api/greeting", {"internal", "owner"}),
         ("/api/events", {"collector", "internal", "owner"}),
         ("/api/heartbeat", {"collector", "internal", "owner"}),
         ("/api/knowledge", {"owner", "internal"}),
@@ -127,15 +134,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     if ctx.role not in allowed:
                         return JSONResponse({"detail": "forbidden"}, status_code=403)
                     break
+            if matched_rule is None:
+                # 默认拒绝：规则外的 API 路径不对任何角色开放
+                return JSONResponse({"detail": "forbidden"}, status_code=403)
             if ctx.role == "qq" and (matched_rule is None or "qq" in matched_rule[1]):
                 try:
                     user_id, request_id = verify_qq_identity(request)
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
                 # 认证上下文中的 subject 只能来自已验证的请求头，不能由 body 覆盖。
-                from dataclasses import replace
-
-                ctx = replace(ctx, subject=user_id)
+                ctx = _dataclasses_replace(ctx, subject=user_id)
                 request.state.qq_request_id = request_id
             request.state.auth = ctx
         return await call_next(request)
@@ -234,7 +242,7 @@ async def ready(request: Request):
         checks["llm"] = {"status": "failed", "ok": False, "error": type(exc).__name__}
 
     from app.models import database
-    vector_ok = database._vec_state is True
+    vector_ok = database.get_vec_state() is True
     checks["vector"] = {
         "status": "ok" if vector_ok else "degraded",
         "ok": vector_ok,

@@ -8,7 +8,6 @@ facts 停在旧状态（第11课显示"待开始"）。本服务由 scheduler �
 """
 import asyncio
 import logging
-import sqlite3
 from pathlib import Path
 
 from app.core import knowledge
@@ -95,34 +94,6 @@ async def sync_docs_to_knowledge() -> int:
         total += result.get("chunks", 0)
         logger.info("文档同步: %s → %d 块", md.name, result.get("chunks", 0))
     return total
-
-
-def purge_excluded_docs() -> int:
-    """清掉已在库里的排除文档（连同向量与 FTS 索引）。返回删除块数。"""
-    from app.models.database import connect
-
-    conn = connect()
-    try:
-        removed = 0
-        for name in KNOWLEDGE_EXCLUDE:
-            rows = conn.execute(
-                "SELECT id FROM knowledge_chunks WHERE doc_name=?", (name,)
-            ).fetchall()
-            for r in rows:
-                for tbl, col in (("chunk_vectors", "chunk_id"),
-                                 ("knowledge_fts", "chunk_id")):
-                    try:
-                        conn.execute(f"DELETE FROM {tbl} WHERE {col}=?", (r["id"],))
-                    except sqlite3.Error as exc:
-                        logger.debug("清理检索索引表 %s 失败: %s", tbl, exc)
-            cur = conn.execute("DELETE FROM knowledge_chunks WHERE doc_name=?", (name,))
-            removed += cur.rowcount
-        conn.commit()
-        if removed:
-            logger.info("清理检索污染源文档：%d 块", removed)
-        return removed
-    finally:
-        conn.close()
 
 
 async def sync_progress_to_bot() -> dict:

@@ -30,6 +30,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.intent_goals")
 
@@ -72,10 +73,6 @@ DEDUPE_PREFIX = 8
 MAX_ASK = 2
 # 追问间隔：至少隔这么多天才再问
 ASK_INTERVAL_DAYS = 2
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def detect_intents(text: str) -> list[str]:

@@ -32,8 +32,13 @@ def test_schema_version_is_recorded_and_idempotent(tmp_path, monkeypatch):
         database.reset_connections()
 
 
-def test_closed_cached_connection_is_rebuilt(tmp_path, monkeypatch):
-    """调用方关闭缓存连接后，下一次 connect() 不得复用悬空句柄。"""
+def test_closed_cached_connection_is_reused_intact(tmp_path, monkeypatch):
+    """close() 归还缓存：同线程重连复用同一连接且 Pragma 状态完好。
+
+    旧契约是"close 后必须重建"（防悬空句柄——真历史事故）。连接语义改为
+    close=归还后，被 close 的是活跃连接本身，复用即正确；悬空风险只剩
+    真关路径（换库/异常/事务中），由 test_db_connection_cache.py 覆盖。
+    """
     db_file = tmp_path / "connection-rebuild.db"
     monkeypatch.setattr("app.config.settings.db_path", str(db_file))
     database.reset_connections()
@@ -43,7 +48,7 @@ def test_closed_cached_connection_is_rebuilt(tmp_path, monkeypatch):
     first.close()
     second = database.connect()
     try:
-        assert second is not first
+        assert second is first
         assert second.execute("SELECT 1").fetchone()[0] == 1
         assert second.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:

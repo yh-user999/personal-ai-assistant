@@ -579,60 +579,41 @@ async def _invoke_handler(
     )
 
 
-async def _handle_worklog(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_worklog, first, second, ctx, runtime)
+# 14 个命令 handler 的转发样板由工厂生成：签名统一为
+# (first, second, ctx=None, runtime=None)，经 _invoke_handler 兼容新旧两种调用形态。
+def _make_handler(impl):
+    async def _handle(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
+        return await _invoke_handler(impl, first, second, ctx, runtime)
+    return _handle
 
 
-async def _handle_time(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_time, first, second, ctx, runtime)
+_handle_worklog = _make_handler(_worklog)
 
+_handle_time = _make_handler(_time)
 
-async def _handle_reminders(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_reminders, first, second, ctx, runtime)
+_handle_reminders = _make_handler(_reminders)
 
+_handle_documents = _make_handler(_documents)
 
-async def _handle_documents(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_documents, first, second, ctx, runtime)
+_handle_resume = _make_handler(_resume)
 
+_handle_goals = _make_handler(_goals)
 
-async def _handle_resume(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_resume, first, second, ctx, runtime)
+_handle_fitness = _make_handler(_fitness)
 
+_handle_novel = _make_handler(_novel)
 
-async def _handle_goals(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_goals, first, second, ctx, runtime)
+_handle_search = _make_handler(_search)
 
+_handle_identity = _make_handler(_identity)
 
-async def _handle_fitness(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_fitness, first, second, ctx, runtime)
+_handle_confirm = _make_handler(_confirm)
 
+_handle_slang = _make_handler(_slang)
 
-async def _handle_novel(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_novel, first, second, ctx, runtime)
+_handle_entity_candidates = _make_handler(_entity_candidates)
 
-
-async def _handle_search(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_search, first, second, ctx, runtime)
-
-
-async def _handle_identity(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_identity, first, second, ctx, runtime)
-
-
-async def _handle_confirm(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_confirm, first, second, ctx, runtime)
-
-
-async def _handle_slang(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_slang, first, second, ctx, runtime)
-
-
-async def _handle_entity_candidates(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_entity_candidates, first, second, ctx, runtime)
-
-
-async def _handle_executor(first: Any, second: Any, ctx: dict | ChatContext | None = None, runtime: ChatRuntime | None = None) -> ChatResponse | None:
-    return await _invoke_handler(_executor, first, second, ctx, runtime)
+_handle_executor = _make_handler(_executor)
 
 
 def _enqueue_and_reply(action: str, target: str, request: Any, runtime: ChatRuntime | None = None) -> ChatResponse:

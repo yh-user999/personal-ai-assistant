@@ -11,6 +11,7 @@ from app.models.database import db_connection
 from app.novel.domain import (
     GenerationJobStatus,
     chapter_payload,
+    chapter_summary_payload,
     draft_payload,
     job_payload,
     project_payload,
@@ -162,7 +163,9 @@ def list_chapters(project_id: str, request: Request):
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id):
         raise _error(404, "project_not_found", "项目不存在")
-    return {"chapters": [chapter_payload(c) for c in repo.list_chapters(project_id)]}
+    # 列表只发摘要（word_count/preview），正文由 GET /chapters/{no} 按需拉取，
+    # 避免长篇项目的整本正文随列表接口反复传输。
+    return {"chapters": [chapter_summary_payload(c) for c in repo.list_chapters(project_id)]}
 
 
 @router.get("/novel/projects/{project_id}/chapters/search")

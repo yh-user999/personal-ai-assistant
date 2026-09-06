@@ -8,13 +8,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.models.database import connect
+from app.common.timeutil import now_local as _now
 
 TZ = ZoneInfo("Asia/Shanghai")
 STALE_MINUTES = 10  # 窗口事件超过 10 分钟视为过时（采集器可能停了）
-
-
-def _now() -> datetime:
-    return datetime.now(TZ)
 
 
 def _user_clause(user_id: str | None) -> tuple[str, tuple]:

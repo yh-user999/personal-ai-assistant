@@ -118,6 +118,20 @@ def chapter_payload(value: Chapter) -> dict[str, Any]:
     }
 
 
+# 列表接口专用摘要载荷：不含正文。长篇项目动辄几十万字的正文如果
+# 随列表整体下发，仅为了前端展示字数/预览就得传整个项目体积。
+def chapter_summary_payload(value: Chapter) -> dict[str, Any]:
+    return {
+        "chapter_no": value.chapter_no,
+        "title": value.title,
+        "project_id": value.project_id,
+        "status": value.status,
+        "version": value.version,
+        "word_count": len(value.content or ""),
+        "preview": (value.content or "")[:40],
+    }
+
+
 def draft_payload(value: NovelDraft) -> dict[str, Any]:
     return {
         "project_id": value.project_id,

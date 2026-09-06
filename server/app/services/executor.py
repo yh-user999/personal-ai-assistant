@@ -17,16 +17,13 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 REMOTE_BLOCKED_EXTS = {
     ".bat", ".cmd", ".py", ".pyw", ".ps1", ".js", ".jse", ".vbs", ".vbe",
     ".wsf", ".wsh", ".hta", ".scr", ".jar", ".msi", ".reg",
     ".exe", ".com", ".cpl", ".pif", ".lnk", ".url",
 }
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _exec_ext(target: str) -> str:
@@ -128,13 +125,6 @@ def _valid_pair(a: str, b: str) -> bool:
 # 服务端不持有别名表（launcher.json 在 Windows 本机），只能按形态判断——
 # 超过这个长度的中文短语几乎不可能是别名，更像被误吞的聊天内容。
 MAX_ALIAS_CHARS = 6
-
-
-def looks_like_path_target(target: str) -> bool:
-    """公开版 _looks_like_path（供 chat 层判断 open 的置信度）。"""
-    return _looks_like_path((target or "").strip())
-
-
 # 真实别名的形态：中文 App 名基本是 2-4 字（微信/钉钉/网易云音乐），
 # 英文别名（VSCode/Chrome/B站）含 ASCII 字母。长中文短语才是可疑的误吞。
 _SHORT_CJK_ALIAS = 4

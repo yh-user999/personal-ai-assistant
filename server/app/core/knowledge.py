@@ -7,7 +7,6 @@ import json
 import logging
 import sqlite3
 from contextvars import ContextVar
-from datetime import datetime, timezone
 
 from openai import OpenAIError
 
@@ -16,10 +15,7 @@ from app.core import embedding
 logger = logging.getLogger("assistant.knowledge")
 from app.core.chunker import chunk_text
 from app.models.database import connect
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.common.timeutil import utc_iso as _now
 
 
 # ── 检索调参（都是实测定出来的，改前先看注释里的数据）──────────

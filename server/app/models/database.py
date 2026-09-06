@@ -1010,6 +1010,14 @@ def _execute_script(conn: sqlite3.Connection, script: str) -> None:
 
 _vec_state: bool | None = None  # 上次扩展加载结果（None=尚未打过日志），避免每次连接刷屏
 
+
+def get_vec_state() -> bool | None:
+    """sqlite-vec 扩展加载状态（True=可用，False=不可用，None=尚未尝试）。
+
+    供 /api/ready 健康检查读取，避免外部直接访问模块私有变量。
+    """
+    return _vec_state
+
 # 线程本地连接缓存：一次聊天请求会开 20+ 连接（十几个注入器各开各的），
 # 每个连接都重跑 WAL pragma + 加载 sqlite-vec 扩展，是纯开销。
 # SQLite 连接不可跨线程，threading.local 正好每线程一条长驻连接。
@@ -1020,9 +1028,26 @@ _local = threading.local()
 
 
 class _CachedConnection(sqlite3.Connection):
-    """关闭时同步清理线程本地缓存，避免留下悬空连接句柄。"""
+    """close() 语义 = 归还缓存；真正关闭走 _force_close()。
+
+    全仓 186 处 `conn.close()` 是既有写法：连接取自 connect() 缓存，用完
+    close 掉就会丢掉线程本地缓存，下一次 connect 又要重跑 WAL pragma +
+    sqlite-vec 扩展加载（一次聊天请求 20+ 连接时是纯开销）。因此缓存中的
+    连接 close 时保持打开，供同线程复用。两个例外维持旧语义：
+
+    - 有未提交事务：真关（隐式回滚）并清缓存，避免"半提交"状态泄漏给复用者；
+    - 连接已不在缓存中（换库/异常路径）：真关防句柄泄漏。
+    """
 
     def close(self) -> None:
+        if self.in_transaction:
+            self._force_close()
+            return
+        if getattr(_local, "conn", None) is self:
+            return
+        self._force_close()
+
+    def _force_close(self) -> None:
         try:
             super().close()
         finally:
@@ -1049,13 +1074,13 @@ def connect() -> sqlite3.Connection:
             _local.conn = None
         except sqlite3.OperationalError:
             try:
-                conn.close()
+                conn._force_close()
             except sqlite3.Error as exc:
                 logger.debug("关闭失效 SQLite 连接时忽略异常: %s", exc)
             _local.conn = None
     elif conn is not None:
         try:
-            conn.close()
+            conn._force_close()
         except sqlite3.Error as exc:
             logger.debug("切换 SQLite 数据库时忽略关闭异常: %s", exc)
         _local.conn = None
@@ -1085,13 +1110,13 @@ def connect() -> sqlite3.Connection:
         _vec_state = False
     except sqlite3.OperationalError as exc:
         if not _is_vec_unavailable_error(exc):
-            conn.close()
+            conn._force_close()
             raise
         if _vec_state is not False:
             logger.warning("sqlite-vec 不可用，向量检索已禁用: %s", exc)
         _vec_state = False
     except sqlite3.Error:
-        conn.close()
+        conn._force_close()
         raise
     finally:
         # load_extension 失败也必须关闭扩展加载能力，避免连接继续暴露加载入口。
@@ -1128,7 +1153,7 @@ def reset_connections() -> None:
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
-            conn.close()
+            conn._force_close()
         except sqlite3.Error:
             pass
     _local.conn = None
@@ -1211,7 +1236,7 @@ def init_db() -> None:
         logger.exception("数据库初始化/迁移失败，已回滚，启动终止")
         raise
     finally:
-        conn.close()
+        conn._force_close()
         _local.conn = None
         _local.db_path = None
 
@@ -1224,6 +1249,6 @@ def init_db() -> None:
         try:
             getattr(mod, fn_name)(conn)
         finally:
-            conn.close()
+            conn._force_close()
             _local.conn = None
             _local.db_path = None

@@ -9,6 +9,7 @@ from typing import Protocol
 
 from app.config import settings
 from app.models.database import db_connection
+from app.common.timeutil import utc_iso as _now
 from app.novel.domain import (
     Chapter,
     GenerationJob,
@@ -17,10 +18,6 @@ from app.novel.domain import (
     NovelProject,
     can_transition_job,
 )
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class NovelRepository(Protocol):

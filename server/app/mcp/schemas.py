@@ -111,7 +111,3 @@ def cap_payload(payload: Any, max_chars: int | None = None) -> Any:
             high = mid - 1
     marker["preview"] = source[:low]
     return marker
-
-
-def error_payload(message: str, *, code: str = "mcp_error") -> dict[str, str]:
-    return {"error": code, "message": message}

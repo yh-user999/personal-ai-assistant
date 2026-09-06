@@ -13,7 +13,9 @@ def get_client() -> AsyncOpenAI:
             base_url=settings.embedding_base_url,
             api_key=settings.embedding_api_key,
             timeout=settings.llm_timeout,
-            max_retries=settings.llm_max_retries,
+            # SDK 内建重试必须关闭（与 core/llm.py 同一策略）：大批量灌库时
+            # SDK 逐层重试会与调用方的分批节奏叠加成请求风暴。
+            max_retries=0,
         )
     return _client
 

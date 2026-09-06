@@ -5,16 +5,12 @@
 - 解决信号："解决了/搞定了/弄好了/做完了" → 最近 open issue 标记 resolved
 注入：open issues 每次进 prompt；问候/小结提醒数量。
 """
-from datetime import datetime, timezone
 
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 UNRESOLVED_PATTERNS = ("还没解决", "卡住了", "稍后再说", "下次再说", "没搞定", "先放着", "改天再")
 RESOLVED_PATTERNS = ("解决了", "搞定了", "弄好了", "做完了", "已解决")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def detect_unresolved(text: str) -> bool:

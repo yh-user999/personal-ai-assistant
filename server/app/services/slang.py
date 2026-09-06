@@ -18,6 +18,7 @@ from app.core import llm
 from app.core.memory import normalize_user_id, owner_user_id
 from app.models.database import connect
 from app.services.sanitize import sanitize
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.slang")
 
@@ -76,9 +77,6 @@ def detect_link_followup(prev_msg: str, cur_msg: str) -> bool:
 
 
 # ── 存储 ───────────────────────────────────────────────────
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def save_term(term: str, meaning: str, user_id: str | None = None, *,

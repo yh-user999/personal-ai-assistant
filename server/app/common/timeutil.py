@@ -20,6 +20,15 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def utc_iso() -> str:
+    """带微秒与时区标记的 UTC ISO 串（memories/facts 等模块的历史格式）。
+
+    注意与 utc_str 的区别：utc_str 无微秒无时区标记（reminders 字符串比较
+    依赖该格式），两者不可混用——存量数据按各自格式做字典序比较。
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def utc_str(dt: datetime | None = None) -> str:
     """入库格式：UTC 无微秒无时区标记（reminders 字符串比较依赖此格式）。"""
     dt = dt or now_utc()
@@ -35,18 +44,3 @@ def row_local(ts: str) -> str:
         return dt.astimezone(TZ).strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError):
         return (ts or "")[:16]
-
-
-def day_period(hour: int) -> str:
-    """小时 → 时段名（凌晨/早上/上午/中午/下午/晚上）。"""
-    if hour < 5:
-        return "凌晨"
-    if hour < 9:
-        return "早上"
-    if hour < 12:
-        return "上午"
-    if hour < 13:
-        return "中午"
-    if hour < 18:
-        return "下午"
-    return "晚上"

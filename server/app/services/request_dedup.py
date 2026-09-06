@@ -32,7 +32,8 @@ class Claim:
     response_json: str = ""
 
     @property
-    def is_owner(self) -> bool:
+    def is_claimed(self) -> bool:
+        """本调用方是否成功认领到请求（原命名 is_owner 与语义不符，已更名）。"""
         return self.state == "claimed"
 
 
@@ -125,25 +126,6 @@ def claim(
     """尝试占用请求；结果为 claimed/completed/processing/conflict。"""
     return _claim_once(user_id, request_id, request_hash, lease_seconds)
 
-
-def get_completed(user_id: str, request_id: str, request_hash: str) -> str | None:
-    """读取同主体、同 request_hash 的已完成响应。"""
-    conn = connect()
-    try:
-        row = conn.execute(
-            "SELECT request_hash, status, response_json FROM chat_request_dedup "
-            "WHERE user_id=? AND request_id=?",
-            (user_id, request_id),
-        ).fetchone()
-    except sqlite3.Error as exc:
-        if _is_missing_table(exc):
-            raise RequestDedupUnavailable from exc
-        raise
-    finally:
-        conn.close()
-    if row is None or row["request_hash"] != request_hash or row["status"] != COMPLETED:
-        return None
-    return row["response_json"] or ""
 
 
 def complete(

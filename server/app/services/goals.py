@@ -7,13 +7,9 @@
 注入：活跃目标每次进 system prompt；周报核对目标。
 """
 import re
-from datetime import datetime, timezone
 
 from app.models.database import connect
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.common.timeutil import utc_iso as _now
 
 
 def parse_goal_command(msg: str) -> tuple[str, str] | None:
@@ -150,26 +146,3 @@ def get_goals_injection(user_id: str | None = None) -> str:
         return ""
     parts = [f"- {r['title']}" + (f"（进度：{r['progress']}）" if r["progress"] else "") for r in rows]
     return "\n".join(parts)
-
-
-def get_all_goals_text(user_id: str | None = None) -> str:
-    """全部目标（周报核对用，含状态，限定当前用户）。"""
-    from app.core.memory import normalize_user_id
-
-    uid = normalize_user_id(user_id)
-    conn = connect()
-    try:
-        rows = conn.execute(
-            "SELECT title, status, progress FROM goals WHERE user_id=? ORDER BY id DESC LIMIT 10",
-            (uid,),
-        ).fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        return "（无目标记录）"
-    status_map = {"active": "进行中", "done": "已完成", "paused": "暂停"}
-    return "\n".join(
-        f"- [{status_map.get(r['status'], r['status'])}] {r['title']}"
-        + (f"（{r['progress']}）" if r["progress"] else "")
-        for r in rows
-    )

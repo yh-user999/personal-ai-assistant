@@ -10,12 +10,9 @@ import secrets
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.common.timeutil import TZ, now_local, utc_str
+from app.common.timeutil import TZ, utc_str
 from app.models.database import connect
-
-
-def _now() -> datetime:
-    return now_local()
+from app.common.timeutil import now_local as _now
 
 
 def _utc_str(dt: datetime) -> str:

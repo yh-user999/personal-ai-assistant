@@ -8,6 +8,7 @@ v0.2 采纳外部评审优化：
   对应 Generative Agents 的 recency/importance/relevance 三要素
 参考 Wave Memory：importance 随引用增长、检索评分 = 相似度 × importance × 时间衰减。
 """
+import asyncio
 import json
 import logging
 import sqlite3
@@ -20,14 +21,11 @@ from openai import OpenAIError
 
 from app.core import embedding
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.memory")
 
 INJECT_FORMAT = "[记忆] {ts}: {content}"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ── 用户标识（v0.4 多人支持）───────────────────────────────
@@ -140,6 +138,42 @@ def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]
 
 # ── 写入 ──────────────────────────────────────────────────
 
+def _write_message_sync(sender: str, content: str, uid: str) -> int | None:
+    """write_message 的同步 DB 段：精确去重 + 插入 + FTS 同步写。"""
+    conn = connect()
+    try:
+        # 精确去重：24h 内完全相同内容不重复入库
+        dup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        dup = conn.execute(
+            "SELECT id FROM memories WHERE user_id=? AND sender=? AND content=? AND ts >= ? LIMIT 1",
+            (uid, sender, content, dup_cutoff),
+        ).fetchone()
+        if dup:
+            return None
+        cur = conn.execute(
+            "INSERT INTO memories (user_id, sender, content, ts, importance) VALUES (?, ?, ?, ?, 0.9)",
+            (uid, sender, content, _now()),
+        )
+        memory_id = cur.lastrowid
+        _fts_insert(conn, memory_id, uid, content, "")  # FTS 同步写入
+        conn.commit()
+        return memory_id
+    finally:
+        conn.close()
+
+
+def _insert_vector_sync(memory_id: int, vec: list[float]) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO memory_vectors (memory_id, embedding) VALUES (?, ?)",
+            (memory_id, json.dumps(vec)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def write_message(
     sender: str,
     content: str,
@@ -162,38 +196,15 @@ async def write_message(
 
     uid = normalize_user_id(user_id)
     content = sanitize(content)
-    conn = connect()
-    try:
-        # 精确去重：24h 内完全相同内容不重复入库
-        dup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        dup = conn.execute(
-            "SELECT id FROM memories WHERE user_id=? AND sender=? AND content=? AND ts >= ? LIMIT 1",
-            (uid, sender, content, dup_cutoff),
-        ).fetchone()
-        if dup:
-            return None
-        cur = conn.execute(
-            "INSERT INTO memories (user_id, sender, content, ts, importance) VALUES (?, ?, ?, ?, 0.9)",
-            (uid, sender, content, _now()),
-        )
-        memory_id = cur.lastrowid
-        _fts_insert(conn, memory_id, uid, content, "")  # FTS 同步写入
-        conn.commit()
-    finally:
-        conn.close()
+    # 同步 SQLite 迁出事件循环线程：聊天热路径每个请求都要走这里
+    memory_id = await asyncio.to_thread(_write_message_sync, sender, content, uid)
+    if memory_id is None:
+        return None
 
     # 向量化（失败不阻塞写入）
     try:
         vec = precomputed_vec if precomputed_vec is not None else (await embedding.embed([content]))[0]
-        conn = connect()
-        try:
-            conn.execute(
-                "INSERT INTO memory_vectors (memory_id, embedding) VALUES (?, ?)",
-                (memory_id, json.dumps(vec)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        await asyncio.to_thread(_insert_vector_sync, memory_id, vec)
     except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, TypeError, ValueError) as e:
         # 降级不阻塞写入，但必须留痕——否则 embedding key 失效会静默退化数周无人知晓
         logger.warning("记忆向量化失败，该条退化为关键词检索: %s", e)
@@ -293,8 +304,6 @@ def deep_keyword_search(query: str, top_k: int = 5, user_id: str | None = None) 
     for d in hits:
         d["score"] = min(1.0, 1.0 / grams_n)  # 保守命中分（与旧实现同量级）
     return hits
-
-
 
 
 # 最近一次 search 算出的 query 向量（文本 → 向量），供 write_message 复用。

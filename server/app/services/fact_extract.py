@@ -15,6 +15,7 @@ from openai import OpenAIError
 
 from app.core import llm
 from app.models.database import connect
+from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.fact_extract")
 
@@ -100,12 +101,6 @@ def upsert_facts(triples: list[dict], user_id: str | None = None) -> int:
     finally:
         conn.close()
     return n
-
-
-def _now() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat()
 
 
 # 显式记录指令："将这些记录下来/记一下/先记录"——直接对上一条 AI 回复提取

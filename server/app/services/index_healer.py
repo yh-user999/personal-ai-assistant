@@ -283,8 +283,6 @@ def classify_aggregate_domain(chunks: list[dict]) -> str:
     )
     return "novel" if novel / len(chunks) >= NOVEL_DOMINANCE else ""
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 """检索自愈二期/三期补充：后台自动实体抽取 + 用户纠错反馈回路。
 
 二期：heal 兜底成功 → 后台自动抽取该体系词的专名实体（预算/幂等/置信三闸），
@@ -358,19 +356,6 @@ def _settle_extract_slot(kind_word: str, book: str, names_count: int) -> None:
         conn.execute(
             "UPDATE auto_extract_log SET book=?, names_count=? WHERE day_key=?",
             (book, names_count, day_key),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _log_auto_extract(kind_word: str, book: str, names_count: int) -> None:
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO auto_extract_log (kind_word, book, extracted_at, names_count) "
-            "VALUES (?, ?, ?, ?)",
-            (kind_word, book, datetime.now(timezone.utc).isoformat(), names_count),
         )
         conn.commit()
     finally:

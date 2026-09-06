@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
 
 from app.models.database import db_connection
 from app.novel.file_store import NovelFileStore
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.common.timeutil import utc_iso as _now
 
 
 def rebuild_chapter_index(project_id: str) -> int:

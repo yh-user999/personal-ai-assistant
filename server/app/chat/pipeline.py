@@ -289,11 +289,7 @@ async def _run_chat(
     services = runtime.services
     msg = ctx.message
 
-    max_chars = (
-        getattr(settings, "owner_max_msg_chars", OWNER_MAX_MSG_CHARS)
-        if ctx.is_owner
-        else getattr(settings, "guest_max_msg_chars", GUEST_MAX_MSG_CHARS)
-    )
+    max_chars = OWNER_MAX_MSG_CHARS if ctx.is_owner else GUEST_MAX_MSG_CHARS
     if len(msg) > max_chars:
         return ChatResponse(
             reply=f"消息太长啦（{len(msg)} 字，上限 {max_chars}），精简一下再发",

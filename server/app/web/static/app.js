@@ -49,7 +49,11 @@ async function apiFetch(url, options) {
   } catch (e) { /* 非 JSON 响应保持 null */ }
   if (!resp.ok) {
     const detail = data && data.detail;
-    const message = (detail && detail.message) || ('请求失败（HTTP ' + resp.status + '）');
+    // detail 兼容两种形状：结构化 {code, message}（novel/errors.py）与裸字符串（历史端点）
+    const message =
+      (detail && typeof detail === "object" && detail.message) ||
+      (typeof detail === "string" && detail) ||
+      ('请求失败（HTTP ' + resp.status + '）');
     throw Object.assign(new Error(message), {kind: 'api', status: resp.status, detail: detail});
   }
   return data;
@@ -116,3 +120,84 @@ function closeOverlay(node) {
   if (prev && typeof prev.focus === 'function') prev.focus();
   delete _overlayReturnFocus[node.id];
 }
+
+/* ── Token 弹层（两页共用）─────────────────────────────────
+ * HTML 需含 token-modal / token-input / token-save / token-cancel；
+ * onSaved 回调用于保存后的页面自举（聊天页重载历史、小说页重跑 boot）。 */
+let _tokenEsc = null;
+let _tokenOnSaved = null;
+function setTokenSavedHook(fn) {
+  /* 页面级保存回调：🔑 打开与代码触发都走它（聊天页重载历史/小说页重跑 boot）*/
+  _tokenOnSaved = fn || null;
+}
+function openTokenModal(onSaved) {
+  if (onSaved) _tokenOnSaved = onSaved;
+  $('token-input').value = getToken();
+  openOverlay($('token-modal'), $('token-input'));
+  _tokenEsc = registerEscClose(closeTokenModal);
+}
+function closeTokenModal() {
+  closeOverlay($('token-modal'));
+  if (_tokenEsc) { _tokenEsc(); _tokenEsc = null; }
+}
+function saveTokenFromModal() {
+  saveToken($('token-input').value);
+  closeTokenModal();
+  toast('Token 已保存', 'ok');
+  if (_tokenOnSaved) _tokenOnSaved();
+}
+
+/* ── 右侧抽屉（两页共用：drawer / drawer-title / drawer-close / drawer-mask）── */
+let _drawerEsc = null;
+function openDrawer(title) {
+  $('drawer-title').textContent = title;
+  openOverlay($('drawer'), $('drawer-close'));
+  _drawerEsc = registerEscClose(closeDrawer);
+}
+function closeDrawer() {
+  closeOverlay($('drawer'));
+  if (_drawerEsc) { _drawerEsc(); _drawerEsc = null; }
+}
+
+/* ── 通用错误态（加载失败的容器占位 + 重试按钮）───────────── */
+function renderBoxError(box, e, retry) {
+  while (box.firstChild) box.removeChild(box.firstChild);
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  const icon = document.createElement('div');
+  icon.className = 'icon';
+  icon.textContent = '⚠️';
+  const text = document.createElement('div');
+  text.textContent = (e && e.message) || '加载失败';
+  const btn = document.createElement('button');
+  btn.className = 'small';
+  btn.textContent = '重试';
+  btn.addEventListener('click', () => { const r = retry(); if (r && r.catch) r.catch(() => {}); });
+  empty.appendChild(icon);
+  empty.appendChild(text);
+  empty.appendChild(btn);
+  box.appendChild(empty);
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    const pad = (n) => String(n).padStart(2, '0');
+    return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  } catch (e) {
+    return '—';
+  }
+}
+
+/* 两页共用的固定事件绑定：元素存在才挂（按页面装配）*/
+(function bindShared() {
+  const on = (id, fn) => { const el = $(id); if (el) el.addEventListener('click', fn); };
+  on('token-btn', () => openTokenModal());
+  on('token-save', saveTokenFromModal);
+  on('token-cancel', closeTokenModal);
+  on('drawer-close', closeDrawer);
+  on('drawer-mask', closeDrawer);
+  on('theme-btn', toggleTheme);
+})();

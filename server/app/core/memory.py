@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from openai import OpenAIError
 
+from app.config import settings
 from app.core import embedding
 from app.models.database import connect
 from app.common.timeutil import utc_iso as _now
@@ -323,6 +324,41 @@ def take_query_vec(text: str) -> list[float] | None:
     return None
 
 
+def _knn_fetch(vec_json: str, uid: str) -> list[dict]:
+    """vec0 KNN 查询 + 用户过滤（同步 DB 段，供 to_thread 调用）。
+
+    vec0 的 KNN 是全局近邻（无用户维度），取 k=100 后在 Python 层过滤再取
+    20——避免"访客记忆离得近，把主人自己的记忆挤出 KNN 窗口"的漏检。
+    """
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """
+            SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance,
+                   m.topics, m.user_id, v.distance
+            FROM memory_vectors v
+            JOIN memories m ON m.id = v.memory_id
+            WHERE v.embedding MATCH ? AND k = ?
+            """,
+            (vec_json, 100),
+        )
+        rows: list[dict] = []
+        for r in cur.fetchall():
+            if r["user_id"] == uid or (is_owner_user(uid) and r["user_id"] == ""):
+                rows.append(dict(r))
+        return rows[:20]
+    finally:
+        conn.close()
+
+
+def _topic_boost_for(uid: str) -> dict:
+    conn = connect()
+    try:
+        return _topic_boost_map(conn, user_id=uid)
+    finally:
+        conn.close()
+
+
 async def search(
     query: str, top_k: int = 8, min_similarity: float = 0.35, user_id: str | None = None
 ) -> list[dict]:
@@ -330,9 +366,7 @@ async def search(
 
     评分 = 相似度 × importance × 时间衰减 × 主题活跃度补偿
     返回: [{"id", "sender", "content", "summary", "ts", "topics", "score"}]
-    v0.4 多人隔离：双通道都只返回 user_id 自己的记忆。vec0 的 KNN 是全局
-    近邻（无用户维度），取 k=100 后在 Python 层过滤再取 20——避免"访客记忆
-    离得近，把主人自己的记忆挤出 KNN 窗口"的漏检。
+    v0.4 多人隔离：双通道都只返回 user_id 自己的记忆。
     """
     uid = normalize_user_id(user_id)
     vec_rows: list[dict] = []
@@ -347,30 +381,13 @@ async def search(
         from app.services.sanitize import sanitize as _sanitize
 
         _last_query_vec.set((_sanitize(query), qvec))
-        conn = connect()
-        try:
-            cur = conn.execute(
-                """
-                SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance,
-                       m.topics, m.user_id, v.distance
-                FROM memory_vectors v
-                JOIN memories m ON m.id = v.memory_id
-                WHERE v.embedding MATCH ? AND k = ?
-                """,
-                (json.dumps(qvec), 100),
-            )
-            for r in cur.fetchall():
-                if r["user_id"] == uid or (is_owner_user(uid) and r["user_id"] == ""):
-                    vec_rows.append(dict(r))
-            vec_rows = vec_rows[:20]
-        finally:
-            conn.close()
+        vec_rows = await asyncio.to_thread(_knn_fetch, json.dumps(qvec), uid)
     except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, ValueError, TypeError) as e:
         # 向量检索失败退化为关键词，但留痕排障（key 失效/服务宕机不该无声无息）
         logger.warning("向量检索失败，退化为关键词检索: %s", e)
 
     # 2) BM25 通道（精确词召回，与向量并行融合）
-    bm25_rows = _bm25_memories(query, top_k=20, user_id=uid)
+    bm25_rows = await asyncio.to_thread(_bm25_memories, query, top_k=20, user_id=uid)
 
     # 3) RRF 融合（k=60）：双通道排名合并，取 top_k*2 候选
     rrf: dict[int, float] = {}
@@ -386,11 +403,7 @@ async def search(
     candidates = [by_id[cid] for cid, _ in sorted(rrf.items(), key=lambda kv: -kv[1])[: top_k * 2]]
 
     # 4) 主题活跃度补偿（限定当前用户）
-    conn = connect()
-    try:
-        freq = _topic_boost_map(conn, user_id=uid)
-    finally:
-        conn.close()
+    freq = await asyncio.to_thread(_topic_boost_for, uid)
 
     # 5) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
     #    distance 为 cosine 距离（0~2）：sim = 1 - distance；
@@ -410,7 +423,9 @@ async def search(
             age_days = (now - datetime.fromisoformat(r["ts"]).timestamp()) / 86400
         except (TypeError, ValueError, KeyError):
             age_days = 0
-        decay = 0.5 ** (age_days / 30.0)  # 30 天半衰期
+        # 半衰期接配置（IMPORTANCE_DECAY_DAYS，默认 30 天）；须 >0，配置错误时不崩检索
+        half_life = max(settings.importance_decay_days, 0.1)
+        decay = 0.5 ** (age_days / half_life)
         boost = _compute_topic_boost(r.get("topics", ""), freq)
         scored.append({**r, "score": sim * imp * decay * boost})
 

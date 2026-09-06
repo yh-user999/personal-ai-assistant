@@ -112,4 +112,4 @@ def test_stream_endpoint_rejects_image(env, stream_llm):
             },
         )
     assert resp.status_code == 400
-    assert "vision" in resp.json()["detail"]
+    assert "vision" in resp.json()["detail"]["message"]  # detail 已结构化为 {code, message}

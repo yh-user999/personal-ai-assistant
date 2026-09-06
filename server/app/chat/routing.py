@@ -281,30 +281,35 @@ async def _fitness(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
 
 
 async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
+    """小说命令族：统一走 novel 应用门面（内部桥接旧模块实现）。
+
+    services.novel 由 services_registry 组装为必选项；测试替身缺失时兜底
+    自建同构门面，保证命令路径只有这一条。
+    """
     novel = getattr(runtime.services, "novel", None)
-    novel_writing = novel.writer if novel is not None else runtime.services.novel_writing
+    if novel is None:
+        from app.novel import NovelApplicationService
+
+        novel = NovelApplicationService.from_legacy(
+            runtime.services.novel_writing,
+            runtime.services.chapter_analysis,
+            getattr(runtime.services, "novel_entities", None),
+        )
     msg = ctx.message
-    log_cmd = novel_writing.parse_writing_log(msg)
+    log_cmd = novel.parse_writing_log(msg)
     if log_cmd:
         chapter, words = log_cmd
-        if novel is not None:
-            novel.add_writing_log(chapter, words, user_id=ctx.uid)
-        else:
-            _call_with_user(novel_writing.add_writing_log, chapter, words, user_id=ctx.uid)
+        novel.add_writing_log(chapter, words, user_id=ctx.uid)
         return ChatResponse(
             reply=f"📝 已记录写作：{f'第{chapter}章 ' if chapter else ''}{words} 字 ✓",
             memories_used=0,
         )
     if msg.strip() in ("写作进度", "写作统计", "写作台账", "写作记录查询"):
-        summary = (
-            novel.writing_summary(user_id=ctx.uid)
-            if novel is not None
-            else _call_with_user(novel_writing.writing_summary, user_id=ctx.uid)
-        )
+        summary = novel.writing_summary(user_id=ctx.uid)
         return ChatResponse(reply=summary, memories_used=0)
-    conflict_text = novel_writing.parse_conflict_command(msg)
+    conflict_text = novel.parse_conflict_command(msg)
     if conflict_text:
-        if novel_writing.looks_like_file_path(conflict_text):
+        if novel.looks_like_file_path(conflict_text):
             return ChatResponse(
                 reply=(
                     "📂 目前请直接粘贴正文来检查：把新写的内容贴在「检查设定冲突：」后面"
@@ -312,27 +317,17 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
                 ),
                 memories_used=0,
             )
-        result = await (
-            novel.review_conflicts(
-                conflict_text,
-                user_id=ctx.uid,
-                request_id=ctx.request_id,
-            )
-            if novel is not None
-            else _call_with_user(
-                novel_writing.check_conflicts,
-                conflict_text,
-                user_id=ctx.uid,
-                request_id=ctx.request_id,
-            )
+        result = await novel.review_conflicts(
+            conflict_text,
+            user_id=ctx.uid,
+            request_id=ctx.request_id,
         )
         return ChatResponse(reply=result.reply if hasattr(result, "reply") else result["reply"], memories_used=0)
     # 小说写作二期：章节分析（1 次 LLM）+ 章节存档（零 LLM）。
     # 顺序在冲突检查之后（"检查设定冲突："不被吞）、续写之前。
-    chapter_analysis = novel.chapters if novel is not None else runtime.services.chapter_analysis
-    analysis_text = novel.parse_analysis_command(msg) if novel is not None else chapter_analysis.parse_analysis_command(msg)
+    analysis_text = novel.parse_analysis_command(msg)
     if analysis_text:
-        if novel_writing.looks_like_file_path(analysis_text):
+        if novel.looks_like_file_path(analysis_text):
             return ChatResponse(
                 reply=(
                     "📂 目前请直接粘贴正文来分析：把章节内容贴在「分析章节：」后面"
@@ -340,40 +335,27 @@ async def _novel(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
                 ),
                 memories_used=0,
             )
-        result = await _call_with_user(
-            novel.review_chapter if novel is not None else chapter_analysis.analyze_chapter,
+        result = await novel.review_chapter(
             analysis_text,
             user_id=ctx.uid,
             request_id=ctx.request_id,
         )
         return ChatResponse(reply=result.reply if hasattr(result, "reply") else result["reply"], memories_used=0)
-    archive = novel.parse_archive_command(msg) if novel is not None else chapter_analysis.parse_archive_command(msg)
+    archive = novel.parse_archive_command(msg)
     if archive:
         chapter, summary, threads = archive
-        if novel is not None:
-            novel.archive_chapter(chapter, summary, threads, source="manual")
-        else:
-            chapter_analysis.upsert_chapter_note(chapter, summary, threads, source="manual")
+        novel.archive_chapter(chapter, summary, threads, source="manual")
         note = f"，伏笔 {len(threads)} 条" if threads else ""
         return ChatResponse(
             reply=f"📖 第{chapter}章已存档{note}：{summary}",
             memories_used=0,
         )
-    continue_text = novel_writing.parse_continue_command(msg)
+    continue_text = novel.parse_continue_command(msg)
     if continue_text:
-        draft = await (
-            novel.draft_chapter(
-                continue_text,
-                user_id=ctx.uid,
-                request_id=ctx.request_id,
-            )
-            if novel is not None
-            else _call_with_user(
-                novel_writing.continue_story,
-                continue_text,
-                user_id=ctx.uid,
-                request_id=ctx.request_id,
-            )
+        draft = await novel.draft_chapter(
+            continue_text,
+            user_id=ctx.uid,
+            request_id=ctx.request_id,
         )
         reply = draft.text if hasattr(draft, "text") else draft
         return ChatResponse(reply=reply, memories_used=0)

@@ -19,6 +19,7 @@ from typing import Any
 from openai import OpenAIError
 
 from app.chat.context import ChatContext, ChatRuntime
+from app.core import embedding
 from app.models.database import connect
 from app.services import sepia
 
@@ -281,204 +282,56 @@ def prepare_turn(ctx: ChatContext, runtime: ChatRuntime) -> TurnPreparation:
     )
 
 
-def _known_index_anchors(ctx: ChatContext, history: list[dict[str, Any]]) -> set[str]:
+def _known_index_anchors(ctx: ChatContext) -> set[str]:
     """主人侧读取现有索引词表；访客绝不触达主人专属实体/知识表。"""
     if not ctx.is_owner:
         return set()
-    anchors: set[str] = set()
     try:
-        from app.services import knowledge_domain
+        from app.services import novel_lexicon
 
-        for book, names in knowledge_domain._novel_names().items():
-            if book:
-                anchors.add(book)
-                anchors.add(book.replace("小说-", "").replace("小说－", ""))
-            anchors.update(names)
-        anchors.update(knowledge_domain._novel_class_words())
-        for names in knowledge_domain._novel_person_names().values():
-            anchors.update(names)
+        return novel_lexicon.known_index_anchors()
     except (ImportError, AttributeError, KeyError, TypeError, ValueError) as exc:
         # 词表不可用时仍允许历史中的显式术语安全降级。
         logger.debug("小说锚点词表不可用: %s", exc)
-    return anchors
+        return set()
 
 
-async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPreparation) -> RetrievalBundle:
-    """完成记忆、知识库、自愈与 prompt 动态数据收集。"""
+def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dict[str, Any]:
+    """收集全部 prompt 注入段（同步 DB ×~20，整体供 to_thread 调用）。
+
+    注入器均为纯查询/写入，无后台任务调度——prepare_turn 那种
+    "工作线程里没有事件循环"的限制在这里不存在。
+    执行顺序与拆分前逐项一致，保持注入语义不变。
+    """
     settings = runtime.settings
-    memory = runtime.memory
-    knowledge = runtime.knowledge
     services = runtime.services
-    msg = ctx.message
-    history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
-    known_anchors = _known_index_anchors(ctx, history)
-    # 无 caption 的图片也必须走稳定的非空检索 query，避免 embedding/FTS 空串异常。
-    query_text = msg if msg or ctx.image is None else IMAGE_SEARCH_PLACEHOLDER
-    search_query, anchors, expanded = build_search_query(
-        query_text, history, known_anchors=known_anchors
-    )
-
-    mems = await memory.search(
-        search_query,
-        top_k=settings.inject_top_k,
-        min_similarity=settings.min_similarity,
-        user_id=ctx.uid,
-    )
-    if not mems or mems[0].get("score", 0) < 0.12:
-        deep = memory.deep_keyword_search(search_query, top_k=5, user_id=ctx.uid)
-        if deep:
-            known = {item["id"] for item in mems}
-            mems = deep + [item for item in mems if item["id"] not in known]
-    mems = services.cooccurrence.expand(mems, user_id=ctx.uid)
-    injections = _call_with_user(
-        services.subjective_time.format_injection,
-        mems,
-        user_id=ctx.uid,
-    )
-
-    healed_text = ""
-    knowledge_text = ""
-    entity_ctx = ""
-    trace: dict[str, Any] = {
-        "routing": {},
-        "path": "hybrid",
-        "degraded": 0,
-        "healer_words": [],
-        "search_ms": 0,
-        "original_query": msg,
-        "search_query": search_query,
-        "anchors": anchors,
-        "expanded": expanded,
-    }
-
-    if ctx.is_owner:
-        detect_domains = services.knowledge_domain.detect_domains
-        started = time.monotonic()
-        domains, docs = _detect_domains(detect_domains, search_query, ctx.uid)
-
-        trace["routing"] = {"domains": domains, "docs": docs}
-        if "__skip__" in domains:
-            trace["path"] = "skip"
-
-        knowledge_hits = await knowledge.search_knowledge(search_query, top_k=4)
-        trace["search_ms"] = int((time.monotonic() - started) * 1000)
-        trace["degraded"] = 1 if knowledge.last_vector_degraded() else 0
-        knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
-
-        index_healer = services.index_healer
-        if settings.healer_enabled:
-            try:
-                diagnosis = index_healer.diagnose(search_query, domains, docs, knowledge_hits)
-                if diagnosis is not None:
-                    healed_text, healed_chunks = await _call_with_context(
-                        index_healer.heal,
-                        diagnosis,
-                        search_query,
-                        user_id=ctx.uid,
-                        request_id=ctx.request_id,
-                    )
-                    if healed_text:
-                        trace["_heal_words"] = list(diagnosis["words"])
-                        runtime.logger.info(
-                            "[healer] 兜底提炼生效: %s → %d 块",
-                            diagnosis["words"],
-                            len(healed_chunks),
-                        )
-                        domain = index_healer.classify_aggregate_domain(healed_chunks)
-                        register_class = services.knowledge_domain.register_class
-                        for word in diagnosis["words"]:
-                            register_class(word, domain=domain, source_query=search_query[:200])
-                        auto_book = index_healer.majority_novel_book(healed_chunks)
-                        if auto_book:
-                            track_background(
-                                runtime,
-                                _call_with_context(
-                                    index_healer.auto_extract_task,
-                                    diagnosis["words"],
-                                    auto_book,
-                                    user_id=ctx.uid,
-                                    request_id=ctx.request_id,
-                                ),
-                            )
-            except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
-                runtime.logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", exc)
-
-        knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
-        alias_note = knowledge.get_alias_note(search_query)
-        if alias_note:
-            knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
-
-        entity_ctx = services.novel_entities.build_entity_context(search_query)
-        if entity_ctx:
-            knowledge_text = entity_ctx + "\n\n" + knowledge_text
-            trace["path"] = "entity"
-
-        novel_facts = knowledge.get_novel_facts(search_query)
-        if novel_facts:
-            knowledge_text = (
-                "【小说设定卡（知识库权威资料，回答时直接采用）】\n- "
-                + "\n- ".join(novel_facts)
-                + "\n\n"
-                + knowledge_text
-            )
-
-        fitness_cards = services.fitness.get_fitness_facts(search_query)
-        if fitness_cards:
-            knowledge_text = (
-                "【健身知识卡（权威资料，可注明出处年份）】\n"
-                "用户若提出训练/饮食安排，先据此逐项核对：动作选择是否重复、"
-                "容量与次数是否匹配动作类型、相邻训练日是否有肌群恢复冲突。"
-                "发现问题直接说明并给替代方案；没问题才确认。不要只复述用户的计划。\n- "
-                + "\n- ".join(fitness_cards)
-                + "\n\n"
-                + knowledge_text
-            )
-
-    from app.chat.prompting import _untrusted_reference
-
-    if knowledge_text:
-        knowledge_text = _untrusted_reference("知识库、实体与资料卡", knowledge_text)
-    if healed_text:
-        healed_text = _untrusted_reference("检索自愈聚合", healed_text)
-
-    index_healer = services.index_healer
-    intent_label = ""
-    if ctx.is_owner:
-        if healed_text:
-            intent_label = "healed"
-            trace["path"] = "heal"
-            trace["healer_words"] = list(trace.get("_heal_words", []))
-        elif entity_ctx:
-            intent_label = "entity"
-        elif trace["routing"].get("domains") and index_healer.detect_enum_intent(search_query):
-            intent_label = "enum"
-        elif trace["routing"].get("docs") or trace["routing"].get("domains") == ["novel"]:
-            intent_label = "novel"
+    memory = runtime.memory
+    owner = ctx.is_owner
 
     profile = services.profile.get_profile_injection(user_id=ctx.uid)
-    lessons = services.self_reflect.get_lessons_injection(user_id=ctx.uid) if ctx.is_owner else ""
+    lessons = services.self_reflect.get_lessons_injection(user_id=ctx.uid) if owner else ""
     concerns = services.concern_tracker.get_concerns_injection(user_id=ctx.uid)
     jargon = services.jargon.get_jargon_injection(msg, user_id=ctx.uid)
     style_examples = services.few_shot.get_examples_injection(user_id=ctx.uid)
     facts = memory.get_facts_injection(user_id=ctx.uid)
     behavior = (
         services.behavior_context.get_behavior_injection(user_id=ctx.uid)
-        if ctx.is_owner and settings.behavior_inject_enabled
+        if owner and settings.behavior_inject_enabled
         else ""
     )
     goals_text = services.goals.get_goals_injection(user_id=ctx.uid)
     open_issues = services.unresolved.get_open_issues_injection(user_id=ctx.uid)
     slang = services.slang.get_slang_injection(msg, user_id=ctx.uid)
-    mood_text = services.mood.detect_mood(msg) if ctx.is_owner else ""
-    mood_state = services.mood.get_state_injection(user_id=ctx.uid) if ctx.is_owner else ""
+    mood_text = services.mood.detect_mood(msg) if owner else ""
+    mood_state = services.mood.get_state_injection(user_id=ctx.uid) if owner else ""
     self_state = services.self_state.get_self_state_injection(user_id=ctx.uid)
 
     extra_blocks: list[str] = []
-    if ctx.is_owner and services.growth.detect_self_doubt(msg):
+    if owner and services.growth.detect_self_doubt(msg):
         block = services.growth.build_injection(user_id=ctx.uid)
         if block:
             extra_blocks.append(block)
-    if ctx.is_owner:
+    if owner:
         services.intent_goals.record_intent(msg, user_id=ctx.uid)
         followup = services.intent_goals.build_injection(user_id=ctx.uid)
         if followup:
@@ -493,7 +346,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     # 续写短命令「继续/接着写」不含章节字样但会进生成档，所以用 gen 判据全集。
     from app.chat.prompting import _GENERATION_INTENT
 
-    if ctx.image is None and ctx.is_owner and _GENERATION_INTENT.search(msg):
+    if ctx.image is None and owner and _GENERATION_INTENT.search(msg):
         generation_block = sepia.build_generation_block()
         if generation_block:
             extra_blocks.append(generation_block)
@@ -505,6 +358,197 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         if block:
             extra_blocks.append(block)
 
+    return {
+        "profile": profile,
+        "lessons": lessons,
+        "concerns": concerns,
+        "jargon": jargon,
+        "style_examples": style_examples,
+        "facts": facts,
+        "behavior": behavior,
+        "goals_text": goals_text,
+        "open_issues": open_issues,
+        "slang": slang,
+        "mood": mood_text,
+        "mood_state": mood_state,
+        "self_state": self_state,
+        "older": older,
+        "extra_blocks": extra_blocks,
+    }
+
+
+async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPreparation) -> RetrievalBundle:
+    """完成记忆、知识库、自愈与 prompt 动态数据收集。
+
+    记忆与知识两路检索并发执行（只共享 search_query，无数据依赖）；
+    外层开 embedding 请求级去重作用域，同一 query 的多次 embed 只打一次 API。
+    """
+    settings = runtime.settings
+    memory = runtime.memory
+    knowledge = runtime.knowledge
+    services = runtime.services
+    msg = ctx.message
+    history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
+    known_anchors = _known_index_anchors(ctx)
+    # 无 caption 的图片也必须走稳定的非空检索 query，避免 embedding/FTS 空串异常。
+    query_text = msg if msg or ctx.image is None else IMAGE_SEARCH_PLACEHOLDER
+    search_query, anchors, expanded = build_search_query(
+        query_text, history, known_anchors=known_anchors
+    )
+
+    with embedding.query_scope():
+        mem_task = asyncio.ensure_future(
+            memory.search(
+                search_query,
+                top_k=settings.inject_top_k,
+                min_similarity=settings.min_similarity,
+                user_id=ctx.uid,
+            )
+        )
+        know_task = (
+            asyncio.ensure_future(knowledge.search_knowledge(search_query, top_k=4))
+            if ctx.is_owner
+            else None
+        )
+        started = time.monotonic()
+
+        healed_text = ""
+        knowledge_text = ""
+        entity_ctx = ""
+        trace: dict[str, Any] = {
+            "routing": {},
+            "path": "hybrid",
+            "degraded": 0,
+            "healer_words": [],
+            "search_ms": 0,
+            "original_query": msg,
+            "search_query": search_query,
+            "anchors": anchors,
+            "expanded": expanded,
+        }
+
+        # 域判定只服务 trace 与 healer（search_knowledge 内部自行判域），
+        # 与两路检索无数据依赖，放在任务之后并发消化。
+        if ctx.is_owner:
+            detect_domains = services.knowledge_domain.detect_domains
+            domains, docs = _detect_domains(detect_domains, search_query, ctx.uid)
+            trace["routing"] = {"domains": domains, "docs": docs}
+            if "__skip__" in domains:
+                trace["path"] = "skip"
+
+        mems = await mem_task
+        if not mems or mems[0].get("score", 0) < 0.12:
+            deep = memory.deep_keyword_search(search_query, top_k=5, user_id=ctx.uid)
+            if deep:
+                known = {item["id"] for item in mems}
+                mems = deep + [item for item in mems if item["id"] not in known]
+        mems = services.cooccurrence.expand(mems, user_id=ctx.uid)
+        injections = _call_with_user(
+            services.subjective_time.format_injection,
+            mems,
+            user_id=ctx.uid,
+        )
+
+        knowledge_hits: list[dict] = []
+        if know_task is not None:
+            knowledge_hits = await know_task
+            trace["search_ms"] = int((time.monotonic() - started) * 1000)
+            trace["degraded"] = 1 if knowledge.last_vector_degraded() else 0
+            knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
+
+            index_healer = services.index_healer
+            if settings.healer_enabled:
+                try:
+                    diagnosis = index_healer.diagnose(search_query, domains, docs, knowledge_hits)
+                    if diagnosis is not None:
+                        healed_text, healed_chunks = await _call_with_context(
+                            index_healer.heal,
+                            diagnosis,
+                            search_query,
+                            user_id=ctx.uid,
+                            request_id=ctx.request_id,
+                        )
+                        if healed_text:
+                            trace["_heal_words"] = list(diagnosis["words"])
+                            runtime.logger.info(
+                                "[healer] 兜底提炼生效: %s → %d 块",
+                                diagnosis["words"],
+                                len(healed_chunks),
+                            )
+                            domain = index_healer.classify_aggregate_domain(healed_chunks)
+                            register_class = services.knowledge_domain.register_class
+                            for word in diagnosis["words"]:
+                                register_class(word, domain=domain, source_query=search_query[:200])
+                            auto_book = index_healer.majority_novel_book(healed_chunks)
+                            if auto_book:
+                                track_background(
+                                    runtime,
+                                    _call_with_context(
+                                        index_healer.auto_extract_task,
+                                        diagnosis["words"],
+                                        auto_book,
+                                        user_id=ctx.uid,
+                                        request_id=ctx.request_id,
+                                    ),
+                                )
+                except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
+                    runtime.logger.warning("[healer] 自愈流程异常（不影响主回复）: %s", exc)
+
+            knowledge_text = knowledge.format_knowledge_injection(knowledge_hits)
+            alias_note = knowledge.get_alias_note(search_query)
+            if alias_note:
+                knowledge_text = f"（背景：{alias_note}）\n" + knowledge_text
+
+            entity_ctx = services.novel_entities.build_entity_context(search_query)
+            if entity_ctx:
+                knowledge_text = entity_ctx + "\n\n" + knowledge_text
+                trace["path"] = "entity"
+
+            novel_facts = knowledge.get_novel_facts(search_query)
+            if novel_facts:
+                knowledge_text = (
+                    "【小说设定卡（知识库权威资料，回答时直接采用）】\n- "
+                    + "\n- ".join(novel_facts)
+                    + "\n\n"
+                    + knowledge_text
+                )
+
+            fitness_cards = services.fitness.get_fitness_facts(search_query)
+            if fitness_cards:
+                knowledge_text = (
+                    "【健身知识卡（权威资料，可注明出处年份）】\n"
+                    "用户若提出训练/饮食安排，先据此逐项核对：动作选择是否重复、"
+                    "容量与次数是否匹配动作类型、相邻训练日是否有肌群恢复冲突。"
+                    "发现问题直接说明并给替代方案；没问题才确认。不要只复述用户的计划。\n- "
+                    + "\n- ".join(fitness_cards)
+                    + "\n\n"
+                    + knowledge_text
+                )
+
+        from app.chat.prompting import _untrusted_reference
+
+        if knowledge_text:
+            knowledge_text = _untrusted_reference("知识库、实体与资料卡", knowledge_text)
+        if healed_text:
+            healed_text = _untrusted_reference("检索自愈聚合", healed_text)
+
+        index_healer = services.index_healer
+        intent_label = ""
+        if ctx.is_owner:
+            if healed_text:
+                intent_label = "healed"
+                trace["path"] = "heal"
+                trace["healer_words"] = list(trace.get("_heal_words", []))
+            elif entity_ctx:
+                intent_label = "entity"
+            elif trace["routing"].get("domains") and index_healer.detect_enum_intent(search_query):
+                intent_label = "enum"
+            elif trace["routing"].get("docs") or trace["routing"].get("domains") == ["novel"]:
+                intent_label = "novel"
+
+        # 注入收集整体（同步 SQLite ×~20）迁工作线程
+        collected = await asyncio.to_thread(_collect_injections, ctx, runtime, msg)
+
     return RetrievalBundle(
         mems=mems,
         injections=injections,
@@ -515,20 +559,20 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         trace=trace,
         last_ai=preparation.last_ai,
         history=history,
-        older=older,
         definition_term=preparation.definition_term,
-        profile=profile,
-        lessons=lessons,
-        concerns=concerns,
-        jargon=jargon,
-        style_examples=style_examples,
-        facts=facts,
-        behavior=behavior,
-        goals_text=goals_text,
-        open_issues=open_issues,
-        slang=slang,
-        mood=mood_text,
-        mood_state=mood_state,
-        self_state=self_state,
-        extra_blocks=extra_blocks,
+        profile=collected["profile"],
+        lessons=collected["lessons"],
+        concerns=collected["concerns"],
+        jargon=collected["jargon"],
+        style_examples=collected["style_examples"],
+        facts=collected["facts"],
+        behavior=collected["behavior"],
+        goals_text=collected["goals_text"],
+        open_issues=collected["open_issues"],
+        slang=collected["slang"],
+        mood=collected["mood"],
+        mood_state=collected["mood_state"],
+        self_state=collected["self_state"],
+        older=collected["older"],
+        extra_blocks=collected["extra_blocks"],
     )

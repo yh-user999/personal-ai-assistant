@@ -1,9 +1,31 @@
 """Embedding 客户端：OpenAI 兼容协议（智谱 BigModel embedding-3）。"""
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from openai import AsyncOpenAI
 
 from app.config import settings
 
 _client: AsyncOpenAI | None = None
+
+# 请求级同文本去重缓存：retrieve() 外层开一次作用域，作用域内同一文本的
+# 多次 embed 只打一次 API（聊天检索里 memory.search 与 knowledge._vector_search
+# 会对同一 search_query 各调一次，单次 218~1244ms）。作用域只由检索链路打开，
+# 灌库批处理等长任务不进缓存，无内存膨胀。to_thread 工作线程复制上下文时
+# 共享同一 dict 对象，跨线程去重同样生效。
+_query_scope: ContextVar[dict[str, list[list[float]]] | None] = ContextVar(
+    "embedding_query_scope", default=None
+)
+
+
+@contextmanager
+def query_scope():
+    """打开请求级 embed 去重作用域（用法：``with embedding.query_scope():``）。"""
+    token = _query_scope.set({})
+    try:
+        yield
+    finally:
+        _query_scope.reset(token)
 
 
 def get_client() -> AsyncOpenAI:
@@ -21,7 +43,23 @@ def get_client() -> AsyncOpenAI:
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
-    """批量向量化。返回与 texts 等长的向量列表。"""
+    """批量向量化。返回与 texts 等长的向量列表。
+
+    处于 query_scope() 作用域内时按文本去重：已算过的文本直接复用缓存向量。
+    """
+    cache = _query_scope.get()
+    if cache is None:
+        return await _embed_api(texts)
+    results: list[list[float] | None] = [cache.get(t) for t in texts]
+    missing = [t for t, r in zip(texts, results) if r is None]
+    if missing:
+        fresh = await _embed_api(missing)
+        for t, v in zip(missing, fresh):
+            cache[t] = v
+    return [cache[t] for t in texts]
+
+
+async def _embed_api(texts: list[str]) -> list[list[float]]:
     resp = await get_client().embeddings.create(
         model=settings.embedding_model,
         input=texts,

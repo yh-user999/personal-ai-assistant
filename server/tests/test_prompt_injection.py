@@ -65,8 +65,8 @@ def test_chat_marks_knowledge_entity_and_healer_material_as_untrusted(
     )
     monkeypatch.setattr(chat_api.knowledge, "get_alias_note", lambda message: "")
     monkeypatch.setattr(chat_api.knowledge, "get_novel_facts", lambda message: [malicious])
-    monkeypatch.setattr(chat_api.novel_entities, "build_entity_context", lambda message: malicious)
-    monkeypatch.setattr(chat_api.fitness, "get_fitness_facts", lambda message: [])
+    monkeypatch.setattr("app.services.novel_entities.build_entity_context", lambda message: malicious)
+    monkeypatch.setattr("app.services.fitness.get_fitness_facts", lambda message: [])
     monkeypatch.setattr(
         "app.services.knowledge_domain.detect_domains",
         lambda message: (["novel"], ["恶意资料"]),

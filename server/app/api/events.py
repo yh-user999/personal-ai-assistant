@@ -1,4 +1,5 @@
 """行为事件接收接口：Windows 采集器推送的事件入库 + 心跳上报。"""
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_roles
 from app.core.memory import owner_user_id
-from app.models.database import connect
+from app.models import repo
 
 router = APIRouter()
 
@@ -59,49 +60,53 @@ class EventBatch(BaseModel):
     events: list[BehaviorEvent] = Field(default_factory=list, max_length=100)
 
 
+def _prepare_event_rows(user_id: str, events: list) -> list[dict]:
+    """批量脱敏 + 计算幂等 event_id（纯 CPU，供 to_thread 调用）。
+
+    幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次
+    （采集器换机器/丢游标后会补推历史，服务器必须能消化重复）。
+    """
+    from app.services.sanitize import sanitize
+
+    rows = []
+    for e in events:
+        name = sanitize(e.name[:200])
+        detail = sanitize(e.detail[:200])
+        end_ts = e.end_ts[:64]
+        start_ts = e.start_ts[:64]
+        meta = _normalize_meta(e.meta)
+        event_id = (e.event_id or "").strip() or _stable_event_id(
+            kind=e.kind,
+            name=name,
+            detail=detail,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            meta=meta,
+        )
+        rows.append({
+            "user_id": user_id, "event_id": event_id, "kind": e.kind,
+            "name": name, "detail": detail, "start_ts": start_ts,
+            "end_ts": end_ts, "meta": meta,
+        })
+    return rows
+
+
 @router.post("/events")
 async def receive_events(batch: EventBatch, request: Request) -> dict:
     auth = require_roles(request, "collector", "internal", "owner")
     # collector/internal/owner 都是主人范围；事件主体只来自认证上下文，
     # 不信任批次中的任意 user_id 字段。
     user_id = str(auth.subject or owner_user_id()).strip() or owner_user_id()
-    """批量接收行为事件（采集器断网重试时也是整批推送）。
+    """批量接收行为事件（采集器断网重试时也是整批推送，最多 100 条/批）。
 
-    幂等：按 (kind, name, detail, start_ts) 去重——同一事件重复推送只入库一次。
-    场景：采集器换机器/换目录丢失游标后会补推历史，服务器必须能消化重复。
-    鉴权：由全局 AuthMiddleware 统一处理（API_TOKEN）。
+    鉴权：由全局 AuthMiddleware 统一处理。
     脱敏：入库前统一过 sanitize（窗口标题里的公网 IP 打码，第 6.14 课）。
     """
-    from app.services.sanitize import sanitize
+    async def _persist() -> int:
+        rows = await asyncio.to_thread(_prepare_event_rows, user_id, batch.events)
+        return await asyncio.to_thread(repo.insert_behavior_events, rows)
 
-    conn = connect()
-    inserted = 0
-    try:
-        for e in batch.events:
-            name = sanitize(e.name[:200])
-            detail = sanitize(e.detail[:200])
-            end_ts = e.end_ts[:64]
-            start_ts = e.start_ts[:64]
-            meta = _normalize_meta(e.meta)
-            event_id = (e.event_id or "").strip() or _stable_event_id(
-                kind=e.kind,
-                name=name,
-                detail=detail,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                meta=meta,
-            )
-            cur = conn.execute(
-                """INSERT INTO behavior_events
-                   (user_id, event_id, kind, name, detail, start_ts, end_ts, meta)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT DO NOTHING""",
-                (user_id, event_id, e.kind, name, detail, start_ts, end_ts, meta),
-            )
-            inserted += max(0, cur.rowcount)
-        conn.commit()
-    finally:
-        conn.close()
+    inserted = await _persist()
     return {"received": len(batch.events), "inserted": inserted}
 
 

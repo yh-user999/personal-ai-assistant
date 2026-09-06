@@ -173,11 +173,6 @@ class Settings(BaseSettings):
         return parse_llm_api_keys(self.llm_api_keys, self.llm_api_key)
 
     @property
-    def llm_api_key_list(self) -> list[str]:
-        """兼容更直观的属性名，实际数据源仍由 ``llm_api_key_values`` 统一解析。"""
-        return self.llm_api_key_values
-
-    @property
     def db_file(self) -> Path:
         p = Path(self.db_path)
         if not p.is_absolute():

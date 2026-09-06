@@ -30,7 +30,6 @@ let autoTimer = null;
 let pollDelay = 5000;
 let searchActive = false;
 let jobSubmitKey = null;
-let drawerEsc = null;
 
 // ── DOM 快捷方式（$ / clearNode 由 app.js 提供） ──────────
 function el(tag, className, text) {
@@ -63,17 +62,7 @@ function findChapter(no) {
   return chapters.find((c) => String(c.chapter_no) === String(no));
 }
 
-// ── 错误态（避免“加载中…”卡死） ───────────────────────────
-function renderBoxError(box, e, retry) {
-  clearNode(box);
-  const empty = el('div', 'empty');
-  empty.appendChild(el('div', 'icon', '⚠️'));
-  empty.appendChild(el('div', '', e.message || '加载失败'));
-  const btn = el('button', 'small', '重试');
-  btn.addEventListener('click', () => retry().catch(() => {}));
-  empty.appendChild(btn);
-  box.appendChild(empty);
-}
+// ── 错误态用 app.js 的 renderBoxError ─────────────────────
 
 // ── 项目 ──────────────────────────────────────────────────
 async function loadProjects() {
@@ -193,7 +182,6 @@ async function openChapterByNo(chapterNo) {
 }
 
 function openChapterDrawer(chapter) {
-  $('drawer-title').textContent = '第' + chapter.chapter_no + '章 ' + (chapter.title || '');
   const meta = $('drawer-meta');
   clearNode(meta);
   meta.appendChild(makeBadge(CHAPTER_STATUS, chapter.status));
@@ -201,13 +189,7 @@ function openChapterDrawer(chapter) {
   $('drawer-body').textContent = chapter.content || '（暂无正文）';
   const editBtn = $('drawer-edit');
   editBtn.onclick = () => openChapterModal(chapter.chapter_no, chapter.title, chapter.content, chapter.version);
-  openOverlay($('drawer'), $('drawer-close'));
-  drawerEsc = registerEscClose(closeDrawer);
-}
-
-function closeDrawer() {
-  closeOverlay($('drawer'));
-  if (drawerEsc) { drawerEsc(); drawerEsc = null; }
+  openDrawer('第' + chapter.chapter_no + '章 ' + (chapter.title || ''));
 }
 
 // ── 生成任务 ──────────────────────────────────────────────
@@ -537,31 +519,7 @@ function openJobModal() {
   showModal('job-modal');
 }
 
-// ── Token ─────────────────────────────────────────────────
-let tokenEsc = null;
-function openTokenModal() {
-  $('token-input').value = getToken();
-  showModal('token-modal');
-}
-
-async function saveTokenFromModal() {
-  saveToken($('token-input').value);
-  hideModal('token-modal');
-  toast('Token 已保存', 'ok');
-  await boot();
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '—';
-    const pad = (n) => String(n).padStart(2, '0');
-    return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-  } catch (e) {
-    return '—';
-  }
-}
+// ── Token（openTokenModal 由 app.js 提供，保存后重跑 boot）──
 
 async function refreshProjectData() {
   await Promise.all([loadChapters(), loadJobs(), loadOverview()]);
@@ -607,11 +565,6 @@ $('new-job-btn').addEventListener('click', () => {
 });
 $('job-save').addEventListener('click', createJob);
 $('job-cancel').addEventListener('click', () => hideModal('job-modal'));
-$('drawer-close').addEventListener('click', closeDrawer);
-$('drawer-mask').addEventListener('click', closeDrawer);
-$('token-btn').addEventListener('click', openTokenModal);
-$('token-save').addEventListener('click', saveTokenFromModal);
-$('token-cancel').addEventListener('click', () => hideModal('token-modal'));
-$('theme-btn').addEventListener('click', toggleTheme);
-
+// token/theme/drawer 的事件绑定由 app.js bindShared 提供
+setTokenSavedHook(() => boot());
 boot();

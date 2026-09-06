@@ -1,4 +1,8 @@
-"""小月 QQ 接入插件 v1.4.1（借壳小白，第 8 课 + 第 9 课多人支持）。
+"""小月 QQ 接入插件 v1.4.2（第 8 课 + 第 9 课多人支持）。
+
+本插件以「小月」独立名义运行：QQ 端回复全部来自小月服务，宿主 AstrBot 的
+默认 LLM（原"小白"人格）在所有分支均被屏蔽，仅作为协议壳存在；宿主默认
+人格建议切到「小月」以保持兜底身份一致（见 docs/QQ_OPS.md 人格路由一节）。
 
 路由规则（隐私优先）：
 - 群聊：一律静默且 stop_event（v1.4.1 兜底——AstrBot 会话白名单关闭后
@@ -7,6 +11,9 @@
   小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
 - 陌生私聊：可聊，但仅限对话；主人专属功能（执行器/提醒/文件入库等）只在主人会话生效
 - 文件入库：仅主人私聊可用（should_handle 白名单，与 v1.3 相同）
+
+v1.4.2：去壳更名——移除"借壳小白"表述，插件以小月独立名义注册；
+宿主默认人格切换指引见 docs/QQ_OPS.md。
 
 v1.4.1：
 - AstrBot enable_id_white_list 必须为 False（否则陌生人私聊在
@@ -266,8 +273,8 @@ def safe_doc_name(name: str) -> str:
 @register(
     "astrbot_plugin_xy",
     "小月接入",
-    "小月 QQ 接入（借壳小白）：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
-    "v1.4.1",
+    "小月 QQ 接入：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
+    "v1.4.2",
 )
 class XiaoYuePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):

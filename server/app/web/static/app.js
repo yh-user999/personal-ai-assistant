@@ -5,6 +5,11 @@ const TOKEN_KEY = 'api_token';
 
 function $(id) { return document.getElementById(id); }
 
+function clearNode(node) {
+  if (!node) return;
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
 function getToken() {
   return localStorage.getItem(TOKEN_KEY) || '';
 }

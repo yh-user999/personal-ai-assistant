@@ -45,6 +45,15 @@ def test_shared_token_carried_via_authorization_header():
     assert "opts.headers = authHeaders" in app_js
 
 
+def test_shared_dom_clear_helper_is_loaded_before_workbench_use():
+    app_js = APP_JS.read_text(encoding="utf-8")
+    novel_js = NOVEL_JS.read_text(encoding="utf-8")
+    html = NOVEL_HTML.read_text(encoding="utf-8")
+    assert "function clearNode(node)" in app_js
+    assert "clearNode(" in novel_js
+    assert html.index('src="/app.js?v=4"') < html.index('src="/novel/index.js?v=4"')
+
+
 def test_project_creation_reports_conflicts_and_refreshes_selection():
     js = NOVEL_JS.read_text(encoding="utf-8")
     assert "project_slug_conflict" in js

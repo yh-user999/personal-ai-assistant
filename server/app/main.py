@@ -42,6 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger("assistant")
 
 APP_VERSION = "0.4.1"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用（v0.4 多人隔离）
+NOVEL_WORKBENCH_VERSION = "7"
 
 
 @asynccontextmanager
@@ -159,6 +160,17 @@ app = FastAPI(
 )
 app.add_middleware(AuthMiddleware)
 
+
+@app.middleware("http")
+async def disable_novel_workbench_cache(request: Request, call_next):
+    """工作台由机器人固定入口打开，静态资源必须随部署立即更新。"""
+    response = await call_next(request)
+    if request.url.path == "/novel" or request.url.path.startswith("/novel/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 # ── 路由 ──────────────────────────────────────────────────
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(events.router, prefix="/api", tags=["events"])
@@ -175,7 +187,11 @@ app.include_router(observability.router, prefix="/api", tags=["observability"])
 @app.get("/api/health")
 async def health():
     """轻量存活探针：只返回版本和存活状态，不暴露采集活动或时间信息。"""
-    return {"status": "ok", "version": APP_VERSION}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "workbench_version": NOVEL_WORKBENCH_VERSION,
+    }
 
 
 @app.get("/api/ready")

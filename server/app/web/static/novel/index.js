@@ -20,6 +20,7 @@ const CHAPTER_STATUS = {
 // 活跃过滤与轮询，否则会被其他排队任务挤出可见区，用户永远无法确认发布。
 const ACTIVE_STATUSES = ['queued', 'generating', 'reviewing', 'awaiting_confirmation'];
 const ACTIVE_SORT = {awaiting_confirmation: 0, generating: 1, reviewing: 2, queued: 3};
+const WORKBENCH_VERSION = '7';
 
 let projects = [];
 let currentProject = null;
@@ -702,12 +703,22 @@ async function refreshProjectData() {
   await Promise.all([loadChapters(), loadJobs(), loadOverview()]);
 }
 
+async function verifyWorkbenchRuntime() {
+  const runtime = await apiFetch('/api/health?workbench=' + WORKBENCH_VERSION, {cache: 'no-store'});
+  if (runtime.workbench_version !== WORKBENCH_VERSION) {
+    const error = new Error('当前机器人连接的是旧版小说工作台服务，请关闭此页面后从机器人重新打开');
+    error.kind = 'stale-workbench';
+    throw error;
+  }
+}
+
 // ── 启动 ──────────────────────────────────────────────────
 async function boot() {
   const box = $('project-list');
   clearNode(box);
   box.appendChild(el('div', 'muted', '加载中…'));
   try {
+    await verifyWorkbenchRuntime();
     await loadProjects();
     if (projects.length) {
       await selectProject(projects[0].project_id);

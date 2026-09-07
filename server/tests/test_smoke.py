@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app
+from app.main import NOVEL_WORKBENCH_VERSION, app
 from app.models.database import init_db, reset_connections
 
 
@@ -33,7 +33,11 @@ def test_health():
         r = client.get("/api/health")
         assert r.status_code == 200
         payload = r.json()
-        assert payload == {"status": "ok", "version": app.version}
+        assert payload == {
+            "status": "ok",
+            "version": app.version,
+            "workbench_version": NOVEL_WORKBENCH_VERSION,
+        }
         assert "collector_heartbeat" not in payload
         assert "timestamp" not in payload
         assert "app_name" not in payload

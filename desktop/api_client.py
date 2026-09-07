@@ -6,7 +6,7 @@
 import os
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from ssh_tunnel import SshTunnelConfig, SshTunnelError, get_shared_tunnel_manager
@@ -18,6 +18,9 @@ _IMAGE_MEDIA_TYPES = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+
+# 机器人每次打开工作台都带一个发布指纹，避免浏览器复用旧 HTML/旧 JS。
+NOVEL_WORKBENCH_CACHE_VERSION = "7"
 
 
 class NovelWorkbenchError(RuntimeError):
@@ -46,6 +49,15 @@ class ApiClient:
             raise NovelWorkbenchError("NOVEL_WEB_URL 不支持在地址中嵌入账号信息")
         return candidate
 
+    @staticmethod
+    def _add_workbench_cache_buster(url: str) -> str:
+        """给机器人打开的工作台 URL 加发布指纹，不携带任何凭据。"""
+        parsed = urlsplit(url)
+        query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                 if key != "workbench"]
+        query.append(("workbench", NOVEL_WORKBENCH_CACHE_VERSION))
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
     def novel_workbench_url(self) -> str:
         """解析小说工作台网页地址，不启动隧道。"""
         configured_url = os.environ.get("NOVEL_WEB_URL", "").strip()
@@ -60,10 +72,10 @@ class ApiClient:
         """准备小说工作台访问地址；需要时先确保共享 SSH 隧道已就绪。"""
         configured_url = os.environ.get("NOVEL_WEB_URL", "").strip()
         if configured_url:
-            return self._validate_novel_web_url(configured_url)
+            return self._add_workbench_cache_buster(self._validate_novel_web_url(configured_url))
         config = self.novel_tunnel_config()
         if config is None:
-            return self.novel_workbench_url()
+            return self._add_workbench_cache_buster(self.novel_workbench_url())
         url = f"http://127.0.0.1:{config.local_port}/novel/"
         try:
             self._tunnel_manager.ensure_ready(config)
@@ -71,7 +83,7 @@ class ApiClient:
             raise NovelWorkbenchError(str(exc)) from exc
         except Exception as exc:
             raise NovelWorkbenchError("小说工作台隧道准备失败，请检查桌面端配置") from exc
-        return url
+        return self._add_workbench_cache_buster(url)
 
     def close_novel_tunnel(self) -> None:
         """关闭共享管理器创建的隧道；手动已有隧道不会被关闭。"""

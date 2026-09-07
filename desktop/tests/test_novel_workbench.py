@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -122,7 +123,12 @@ def test_api_client_generates_local_novel_url_and_prepares_tunnel(monkeypatch):
     manager = Manager()
     client = api_client.ApiClient(tunnel_manager=manager)
 
-    assert client.prepare_novel_workbench() == "http://127.0.0.1:18001/novel/"
+    url = client.prepare_novel_workbench()
+    parsed = urlsplit(url)
+    assert parsed.scheme == "http"
+    assert parsed.port == 18001
+    assert parsed.path == "/novel/"
+    assert parse_qs(parsed.query)["workbench"] == ["7"]
     assert len(manager.configs) == 1
     assert manager.configs[0].target == "desktop-alias"
     assert manager.configs[0].local_port == 18001
@@ -148,7 +154,9 @@ def test_explicit_novel_url_overrides_tunnel_and_never_gets_api_token(monkeypatc
     client = api_client.ApiClient(tunnel_manager=manager)
     url = client.prepare_novel_workbench()
 
-    assert url == "https://workbench.example/novel/"
+    parsed = urlsplit(url)
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://workbench.example/novel/"
+    assert parse_qs(parsed.query)["workbench"] == ["7"]
     assert secret not in url
     assert manager.called is False
 
@@ -161,8 +169,10 @@ def test_fallback_url_uses_server_url_without_api_token(monkeypatch):
     monkeypatch.delenv("NOVEL_TUNNEL_TARGET", raising=False)
 
     url = api_client.ApiClient().prepare_novel_workbench()
+    parsed = urlsplit(url)
 
-    assert url == "http://server.example:8000/novel/"
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://server.example:8000/novel/"
+    assert parse_qs(parsed.query)["workbench"] == ["7"]
     assert secret not in url
 
 

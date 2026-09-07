@@ -24,7 +24,8 @@ echo "==> 2/6 拉取代码"
 if [ ! -d "$APP_DIR/.git" ]; then
   git clone git@github.com:yh-user999/personal-ai-assistant.git "$APP_DIR"
 else
-  git -C "$APP_DIR" pull --ff-only
+  # 仅信任本次部署使用的固定仓库路径，不修改全局 Git 配置。
+  git -c safe.directory="$APP_DIR" -C "$APP_DIR" pull --ff-only origin main
 fi
 
 echo "==> 3/6 安装依赖（固定使用项目 venv）"

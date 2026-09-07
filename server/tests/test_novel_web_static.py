@@ -86,6 +86,8 @@ def test_deploy_script_restarts_existing_service_after_pull():
     assert "$SUDO systemctl daemon-reload" in script
     assert "$SUDO systemctl enable ${SERVICE_NAME}" in script
     assert "$SUDO systemctl restart ${SERVICE_NAME}" in script
+    assert 'git -c safe.directory="$APP_DIR" -C "$APP_DIR" pull --ff-only origin main' in script
+    assert "git config --global" not in script
     assert "enable --now" not in script
 
 

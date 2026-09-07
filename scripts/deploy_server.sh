@@ -71,9 +71,11 @@ LimitNOFILE=4096
 WantedBy=multi-user.target
 EOF
 
-echo "==> 6/6 启用服务"
+echo "==> 6/6 启用并重启服务"
 
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable --now ${SERVICE_NAME}
+$SUDO systemctl enable ${SERVICE_NAME}
+# 代码已通过 git pull 更新；必须重启已运行进程，避免继续使用旧路由。
+$SUDO systemctl restart ${SERVICE_NAME}
 $SUDO systemctl status ${SERVICE_NAME} --no-pager
 echo "==> 完成。访问 http://<服务器IP>:8000"

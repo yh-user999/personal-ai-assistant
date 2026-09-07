@@ -13,6 +13,7 @@ NOVEL_CSS = STATIC / "novel" / "index.css"
 STYLES_CSS = STATIC / "styles.css"
 CHAT_JS = STATIC / "chat.js"
 APP_JS = STATIC / "app.js"
+DEPLOY_SCRIPT = Path(__file__).parents[2] / "scripts" / "deploy_server.sh"
 
 
 def test_files_exist():
@@ -76,6 +77,14 @@ def test_project_management_controls_support_rename_and_delete():
     assert "project-toolbar" in css
     assert 'src="/novel/index.js?v=5"' in html
     assert 'href="/novel/index.css?v=4"' in html
+
+
+def test_deploy_script_restarts_existing_service_after_pull():
+    script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "$SUDO systemctl daemon-reload" in script
+    assert "$SUDO systemctl enable ${SERVICE_NAME}" in script
+    assert "$SUDO systemctl restart ${SERVICE_NAME}" in script
+    assert "enable --now" not in script
 
 
 def test_novel_status_labels_are_localized():

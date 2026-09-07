@@ -26,6 +26,10 @@ class NovelRepository(Protocol):
     def list_chapters(self, project_id: str | None = None) -> list[Chapter]: ...
 
 
+class NovelProjectRootError(ValueError):
+    """项目根目录不在 NOVEL_ROOT 内或无法作为目录使用。"""
+
+
 class SQLiteNovelRepository:
     """支持幂等、乐观锁和重启恢复的小说仓储。"""
 
@@ -37,20 +41,29 @@ class SQLiteNovelRepository:
             row = conn.execute("SELECT * FROM novel_projects WHERE project_id='default'").fetchone()
             if row:
                 return self._project(row)
+        root_path, created_paths = self._prepare_project_root(None, "default")
+        try:
             now = _now()
-            root = self._project_root(None, "default")
-            conn.execute("INSERT INTO novel_projects(project_id, owner_id, name, slug, root, created_at, updated_at) VALUES ('default', ?, '默认小说', 'default', ?, ?, ?)", (self.owner_id, root, now, now))
-            return NovelProject("default", "默认小说", "default", self.owner_id, root=root, version=1, updated_at=now)
+            with db_connection() as conn:
+                conn.execute("INSERT INTO novel_projects(project_id, owner_id, name, slug, root, created_at, updated_at) VALUES ('default', ?, '默认小说', 'default', ?, ?, ?)", (self.owner_id, str(root_path), now, now))
+        except Exception:
+            self._cleanup_project_root(created_paths)
+            raise
+        return NovelProject("default", "默认小说", "default", self.owner_id, root=str(root_path), version=1, updated_at=now)
 
     def create_project(self, name: str, *, project_id: str | None = None, slug: str | None = None, owner_id: str | None = None, root: str | None = None, metadata: dict | None = None) -> NovelProject:
         project_id = project_id or str(uuid.uuid4())
         slug = slug or project_id
         owner_id = owner_id or self.owner_id
-        root = self._project_root(root, project_id)
-        now = _now()
-        with db_connection() as conn:
-            conn.execute("INSERT INTO novel_projects(project_id, owner_id, name, slug, root, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (project_id, owner_id, name, slug, root, json.dumps(metadata or {}, ensure_ascii=False), now, now))
-        return NovelProject(project_id, name, slug, owner_id, root, metadata or {}, 1, now)
+        root_path, created_paths = self._prepare_project_root(root, project_id)
+        try:
+            now = _now()
+            with db_connection() as conn:
+                conn.execute("INSERT INTO novel_projects(project_id, owner_id, name, slug, root, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (project_id, owner_id, name, slug, str(root_path), json.dumps(metadata or {}, ensure_ascii=False), now, now))
+        except Exception:
+            self._cleanup_project_root(created_paths)
+            raise
+        return NovelProject(project_id, name, slug, owner_id, str(root_path), metadata or {}, 1, now)
 
     def get_project(self, project_id: str | None = None) -> NovelProject:
         project_id = project_id or "default"
@@ -63,16 +76,25 @@ class SQLiteNovelRepository:
         return self._project(row)
 
     def update_project(self, project_id: str, *, name: str | None = None, root: str | None = None, metadata: dict | None = None, expected_version: int | None = None) -> NovelProject:
-        with db_connection() as conn:
-            row = conn.execute("SELECT * FROM novel_projects WHERE project_id=?", (project_id,)).fetchone()
-            if not row:
-                raise KeyError(f"项目不存在: {project_id}")
-            if expected_version is not None and row["version"] != expected_version:
-                raise ValueError("项目版本冲突")
-            next_root = self._project_root(root, project_id) if root is not None else row["root"]
-            now = _now()
-            conn.execute("UPDATE novel_projects SET name=COALESCE(?,name), root=?, metadata=COALESCE(?,metadata), version=version+1, updated_at=? WHERE project_id=?", (name, next_root, json.dumps(metadata, ensure_ascii=False) if metadata is not None else None, now, project_id))
-            row = conn.execute("SELECT * FROM novel_projects WHERE project_id=?", (project_id,)).fetchone()
+        created_paths: tuple[Path, ...] = ()
+        try:
+            with db_connection() as conn:
+                row = conn.execute("SELECT * FROM novel_projects WHERE project_id=?", (project_id,)).fetchone()
+                if not row:
+                    raise KeyError(f"项目不存在: {project_id}")
+                if expected_version is not None and row["version"] != expected_version:
+                    raise ValueError("项目版本冲突")
+                if root is not None:
+                    root_path, created_paths = self._prepare_project_root(root, project_id)
+                    next_root = str(root_path)
+                else:
+                    next_root = row["root"]
+                now = _now()
+                conn.execute("UPDATE novel_projects SET name=COALESCE(?,name), root=?, metadata=COALESCE(?,metadata), version=version+1, updated_at=? WHERE project_id=?", (name, next_root, json.dumps(metadata, ensure_ascii=False) if metadata is not None else None, now, project_id))
+                row = conn.execute("SELECT * FROM novel_projects WHERE project_id=?", (project_id,)).fetchone()
+        except Exception:
+            self._cleanup_project_root(created_paths)
+            raise
         return self._project(row)
 
     def list_projects(self, user_id: str | None = None) -> list[NovelProject]:
@@ -82,12 +104,50 @@ class SQLiteNovelRepository:
         return [self._project(row) for row in rows]
 
     @staticmethod
-    def _project_root(root: str | None, project_id: str) -> str:
+    def _resolve_project_root(root: str | None, project_id: str) -> Path:
         base = Path(settings.novel_root).expanduser().resolve()
         candidate = (Path(root).expanduser() if root else base / project_id).resolve()
         if candidate != base and base not in candidate.parents:
-            raise ValueError("小说项目根目录必须位于 NOVEL_ROOT 内")
-        candidate.mkdir(parents=True, exist_ok=True)
+            raise NovelProjectRootError("小说项目根目录必须位于 NOVEL_ROOT 内")
+        return candidate
+
+    @classmethod
+    def _prepare_project_root(cls, root: str | None, project_id: str) -> tuple[Path, tuple[Path, ...]]:
+        """准备项目目录并返回本次新建的目录链，供数据库失败时回滚。"""
+        base = Path(settings.novel_root).expanduser().resolve()
+        candidate = cls._resolve_project_root(root, project_id)
+        missing: list[Path] = []
+        cursor = candidate
+        while cursor != base and not cursor.exists():
+            missing.append(cursor)
+            cursor = cursor.parent
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            # 并发调用可能已经创建了同一路径；此时不能把别的调用创建的目录
+            # 记入回滚集合，更不能在后续数据库冲突时删除它。
+            if not candidate.is_dir():
+                raise NovelProjectRootError("项目根目录不是可用目录") from exc
+            missing = []
+        except OSError as exc:
+            raise NovelProjectRootError("项目根目录无法创建") from exc
+        if not candidate.is_dir():
+            raise NovelProjectRootError("项目根目录不是可用目录")
+        return candidate, tuple(missing)
+
+    @staticmethod
+    def _cleanup_project_root(created_paths: tuple[Path, ...]) -> None:
+        """只删除本次新建且仍为空的目录，绝不触碰已有用户目录。"""
+        for path in created_paths:
+            try:
+                path.rmdir()
+            except OSError:
+                # 目录可能已被并发写入或复用；宁可保留，也不误删用户文件。
+                pass
+
+    @classmethod
+    def _project_root(cls, root: str | None, project_id: str) -> str:
+        candidate, _ = cls._prepare_project_root(root, project_id)
         return str(candidate)
 
     def add_member(self, project_id: str, user_id: str, role: str = "member") -> None:

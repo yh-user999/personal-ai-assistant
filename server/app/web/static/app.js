@@ -25,7 +25,9 @@ function authHeaders(extra) {
  * 返回解析后的 JSON。
  */
 async function apiFetch(url, options) {
-  const opts = Object.assign({headers: authHeaders()}, options || {});
+  const opts = Object.assign({}, options || {});
+  // 调用方可补充自定义头，但不能意外覆盖 Token 鉴权头。
+  opts.headers = authHeaders(opts.headers || {});
   let resp;
   try {
     resp = await fetch(url, opts);
@@ -54,7 +56,8 @@ async function apiFetch(url, options) {
       (detail && typeof detail === "object" && detail.message) ||
       (typeof detail === "string" && detail) ||
       ('请求失败（HTTP ' + resp.status + '）');
-    throw Object.assign(new Error(message), {kind: 'api', status: resp.status, detail: detail});
+    const code = detail && typeof detail === 'object' ? (detail.code || '') : '';
+    throw Object.assign(new Error(message), {kind: 'api', status: resp.status, code: code, detail: detail});
   }
   return data;
 }

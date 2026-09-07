@@ -23,7 +23,7 @@ from app.novel.index import (
     search_chapters,
     sync_file_index,
 )
-from app.novel.repository import SQLiteNovelRepository
+from app.novel.repository import NovelProjectRootError, SQLiteNovelRepository
 from app.novel.workflow import NovelWorkflow
 
 router = APIRouter()
@@ -103,7 +103,22 @@ def list_projects(request: Request):
 @router.post("/novel/projects")
 def create_project(req: ProjectRequest, request: Request):
     repo, user_id = _repo(request)
-    project = repo.create_project(req.name, slug=req.slug, root=req.root, owner_id=user_id)
+    name = req.name.strip()
+    if not name:
+        raise _error(422, "project_name_required", "书名不能为空")
+    slug = req.slug.strip() if req.slug else None
+    root = req.root.strip() if req.root else None
+    try:
+        project = repo.create_project(name, slug=slug or None, root=root or None, owner_id=user_id)
+    except sqlite3.IntegrityError as exc:
+        message = str(exc).casefold()
+        if "novel_projects.slug" in message:
+            raise _error(409, "project_slug_conflict", "项目标识已存在") from exc
+        if "novel_projects.project_id" in message:
+            raise _error(409, "project_id_conflict", "项目已存在") from exc
+        raise _error(409, "project_conflict", "项目无法创建") from exc
+    except NovelProjectRootError as exc:
+        raise _error(422, "project_root_invalid", str(exc)) from exc
     _audit(user_id, project.project_id, "project.create", project.project_id)
     return project_payload(project)
 
@@ -113,10 +128,16 @@ def update_project(project_id: str, req: ProjectUpdateRequest, request: Request)
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id, write=True):
         raise _error(403, "project_write_forbidden", "无项目写入权限")
+    name = req.name.strip() if req.name is not None else None
+    if req.name is not None and not name:
+        raise _error(422, "project_name_required", "书名不能为空")
+    root = req.root.strip() if req.root else None
     try:
-        project = repo.update_project(project_id, name=req.name, root=req.root, metadata=req.metadata, expected_version=req.expected_version)
+        project = repo.update_project(project_id, name=name, root=root, metadata=req.metadata, expected_version=req.expected_version)
     except KeyError as exc:
         raise _error(404, "project_not_found", "项目不存在") from exc
+    except NovelProjectRootError as exc:
+        raise _error(422, "project_root_invalid", str(exc)) from exc
     except ValueError as exc:
         raise _error(409, "project_version_conflict", str(exc)) from exc
     _audit(user_id, project_id, "project.update", project_id)

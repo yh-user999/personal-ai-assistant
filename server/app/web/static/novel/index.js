@@ -413,9 +413,27 @@ function hideModal(id) {
   if (modalEsc[id]) { modalEsc[id](); delete modalEsc[id]; }
 }
 
+function clearProjectValidation() {
+  ['project-name', 'project-slug'].forEach((id) => $(id).removeAttribute('aria-invalid'));
+}
+
+function focusProjectField(id) {
+  const field = $(id);
+  field.setAttribute('aria-invalid', 'true');
+  field.focus();
+  if (typeof field.select === 'function') field.select();
+}
+
 async function createProject() {
   const name = $('project-name').value.trim();
-  if (!name) { toast('请填写书名'); return; }
+  if (!name) {
+    focusProjectField('project-name');
+    toast('请填写书名');
+    return;
+  }
+  const btn = $('project-save');
+  btn.disabled = true;
+  clearProjectValidation();
   try {
     const payload = {name: name};
     const slug = $('project-slug').value.trim();
@@ -424,11 +442,21 @@ async function createProject() {
     hideModal('project-modal');
     $('project-name').value = '';
     $('project-slug').value = '';
-    toast('项目已创建', 'ok');
+    // 创建成功后立即刷新列表并选中新项目，避免用户必须手动刷新页面。
     await loadProjects();
     await selectProject(p.project_id);
+    toast('项目已创建', 'ok');
   } catch (e) {
-    toast(e.message, 'err');
+    if (e.code === 'project_slug_conflict') {
+      focusProjectField('project-slug');
+      toast('项目标识已存在，请换一个', 'err');
+    } else if (e.code === 'project_root_invalid') {
+      toast(e.message || '项目目录不可用', 'err');
+    } else {
+      toast(e.message, 'err');
+    }
+  } finally {
+    btn.disabled = false;
   }
 }
 

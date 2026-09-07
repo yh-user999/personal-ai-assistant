@@ -69,6 +69,34 @@ def test_project_root_is_confined_to_novel_root(db, monkeypatch, tmp_path):
         repo.create_project("越界书", project_id="escape", slug="escape-book", root=str(tmp_path / "outside"))
 
 
+def test_project_create_rolls_back_new_root_when_database_insert_fails(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    repo = SQLiteNovelRepository()
+    repo.create_project("已有项目", project_id="existing", slug="same-slug")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.create_project("重复项目", project_id="duplicate", slug="same-slug")
+
+    assert not (tmp_path / "novels" / "duplicate").exists()
+    with database.db_connection() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM novel_projects WHERE project_id=?", ("duplicate",)
+        ).fetchone() is None
+
+
+def test_project_create_keeps_existing_root_when_database_insert_fails(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    shared_root = tmp_path / "novels" / "shared"
+    shared_root.mkdir(parents=True)
+    repo = SQLiteNovelRepository()
+    repo.create_project("已有项目", project_id="existing", slug="shared-slug", root=str(shared_root))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.create_project("重复项目", project_id="duplicate", slug="shared-slug", root=str(shared_root))
+
+    assert shared_root.is_dir()
+
+
 def test_publish_updates_job_and_chapter_atomically(db):
     repo = SQLiteNovelRepository(owner_id="owner")
     repo.create_project("书", project_id="publish", slug="publish-book")

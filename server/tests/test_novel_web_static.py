@@ -42,6 +42,15 @@ def test_shared_token_carried_via_authorization_header():
     app_js = APP_JS.read_text(encoding="utf-8")
     assert "Bearer " in app_js
     assert "localStorage" in app_js
+    assert "opts.headers = authHeaders" in app_js
+
+
+def test_project_creation_reports_conflicts_and_refreshes_selection():
+    js = NOVEL_JS.read_text(encoding="utf-8")
+    assert "project_slug_conflict" in js
+    assert "btn.disabled = true" in js
+    assert "await loadProjects()" in js
+    assert "await selectProject(p.project_id)" in js
 
 
 def test_novel_status_labels_are_localized():

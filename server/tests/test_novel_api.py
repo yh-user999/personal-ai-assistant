@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.main import app
 from app.models.database import reset_connections
+from app.novel.repository import SQLiteNovelRepository
 
 
 def test_novel_api_error_contract(tmp_path, monkeypatch):
@@ -31,6 +32,113 @@ def test_novel_create_project_rejects_blank_name(tmp_path, monkeypatch):
             "code": "project_name_required",
             "message": "书名不能为空",
         }
+
+
+def test_novel_project_rename_and_delete_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "project-management.db"))
+    monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))
+    monkeypatch.setattr(settings, "api_token", "")
+    monkeypatch.setattr(settings, "owner_api_token", "")
+    monkeypatch.setattr(settings, "internal_api_token", "")
+    reset_connections()
+    with TestClient(app) as client:
+        created = client.post("/api/novel/projects", json={"name": "旧书名", "slug": "managed-book"})
+        assert created.status_code == 200
+        project_id = created.json()["project_id"]
+        assert created.json()["version"] == 1
+
+        renamed = client.patch(
+            f"/api/novel/projects/{project_id}",
+            json={"name": "新书名", "expected_version": 1},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "新书名"
+        assert renamed.json()["slug"] == "managed-book"
+        assert renamed.json()["version"] == 2
+
+        deleted = client.delete(
+            f"/api/novel/projects/{project_id}", params={"expected_version": 2}
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "project_id": project_id,
+            "deleted": True,
+            "files_deleted": True,
+            "cleanup_pending": False,
+        }
+        assert all(p["project_id"] != project_id for p in client.get("/api/novel/projects").json()["projects"])
+
+
+def test_novel_project_delete_reports_version_conflict(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "delete-version.db"))
+    monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))
+    monkeypatch.setattr(settings, "api_token", "")
+    monkeypatch.setattr(settings, "owner_api_token", "")
+    monkeypatch.setattr(settings, "internal_api_token", "")
+    reset_connections()
+    with TestClient(app) as client:
+        created = client.post("/api/novel/projects", json={"name": "版本删除书", "slug": "delete-version"})
+        assert created.status_code == 200
+        project_id = created.json()["project_id"]
+
+        response = client.delete(
+            f"/api/novel/projects/{project_id}", params={"expected_version": 2}
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "code": "project_version_conflict",
+            "message": "项目版本冲突",
+        }
+        assert client.get("/api/novel/projects").json()["projects"]
+
+
+def test_novel_project_delete_reports_protected_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "protected-project.db"))
+    monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))
+    monkeypatch.setattr(settings, "api_token", "")
+    monkeypatch.setattr(settings, "owner_api_token", "")
+    monkeypatch.setattr(settings, "internal_api_token", "")
+    reset_connections()
+    with TestClient(app) as client:
+        SQLiteNovelRepository(owner_id="owner").get_project("default")
+        response = client.delete("/api/novel/projects/default")
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "code": "project_protected",
+            "message": "默认小说项目不能删除",
+        }
+
+
+def test_novel_project_delete_requires_owner_or_internal_role(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "delete-auth.db"))
+    monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))
+    monkeypatch.setattr(settings, "api_token", "")
+    monkeypatch.setattr(settings, "owner_api_token", "owner-test-token")
+    monkeypatch.setattr(settings, "internal_api_token", "internal-test-token")
+    monkeypatch.setattr(settings, "collector_api_token", "collector-test-token")
+    reset_connections()
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/novel/projects",
+            headers={"Authorization": "Bearer owner-test-token"},
+            json={"name": "权限书", "slug": "delete-auth"},
+        )
+        assert created.status_code == 200
+        project_id = created.json()["project_id"]
+
+        denied = client.delete(
+            f"/api/novel/projects/{project_id}",
+            headers={"Authorization": "Bearer collector-test-token"},
+            params={"expected_version": 1},
+        )
+        assert denied.status_code == 403
+
+        deleted = client.delete(
+            f"/api/novel/projects/{project_id}",
+            headers={"Authorization": "Bearer internal-test-token"},
+            params={"expected_version": 1},
+        )
+        assert deleted.status_code == 200
 
 
 def test_novel_create_project_reports_duplicate_slug(tmp_path, monkeypatch):

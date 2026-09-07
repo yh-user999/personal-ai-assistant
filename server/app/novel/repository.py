@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,14 @@ class NovelRepository(Protocol):
 
 class NovelProjectRootError(ValueError):
     """项目根目录不在 NOVEL_ROOT 内或无法作为目录使用。"""
+
+
+class NovelProjectProtectedError(ValueError):
+    """项目受系统保护，不能执行当前操作。"""
+
+
+class NovelProjectDeleteError(ValueError):
+    """项目删除因文件或项目关系不安全而被阻止。"""
 
 
 class SQLiteNovelRepository:
@@ -97,6 +106,71 @@ class SQLiteNovelRepository:
             raise
         return self._project(row)
 
+    def delete_project(self, project_id: str, *, expected_version: int | None = None) -> dict[str, object]:
+        """删除项目及其数据库数据，并安全清理项目目录。"""
+        if project_id == "default":
+            raise NovelProjectProtectedError("默认小说项目不能删除")
+
+        root_path: Path | None = None
+        quarantined: Path | None = None
+        try:
+            with db_connection() as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT * FROM novel_projects WHERE project_id=?", (project_id,)
+                    ).fetchone()
+                    if not row:
+                        raise KeyError(f"项目不存在: {project_id}")
+                    if expected_version is not None and row["version"] != expected_version:
+                        raise ValueError("项目版本冲突")
+
+                    root_path = self._resolve_project_delete_root(row["root"])
+                    self._assert_project_root_not_shared(conn, project_id, root_path)
+                    quarantined = self._quarantine_project_root(root_path)
+
+                    # FTS 是虚拟表，未声明项目外键，必须显式清理；其余项目表
+                    # 由 novel_projects 的 ON DELETE CASCADE 级联删除。
+                    conn.execute(
+                        "DELETE FROM novel_chapters_fts WHERE project_id=?", (project_id,)
+                    )
+                    clauses = ["project_id=?"]
+                    params: list[object] = [project_id]
+                    if expected_version is not None:
+                        clauses.append("version=?")
+                        params.append(expected_version)
+                    deleted = conn.execute(
+                        "DELETE FROM novel_projects WHERE " + " AND ".join(clauses), params
+                    )
+                    if deleted.rowcount != 1:
+                        raise ValueError("项目版本冲突")
+                except Exception:
+                    conn.rollback()
+                    raise
+
+            files_deleted = True
+            if quarantined is not None:
+                try:
+                    shutil.rmtree(quarantined)
+                except OSError:
+                    files_deleted = False
+            return {
+                "project_id": project_id,
+                "deleted": True,
+                "files_deleted": files_deleted,
+                "cleanup_pending": not files_deleted,
+            }
+        except Exception:
+            if quarantined is not None and quarantined.exists() and root_path is not None:
+                try:
+                    if not root_path.exists():
+                        quarantined.rename(root_path)
+                except OSError:
+                    # 恢复失败时保留原始异常；隔离目录仍能避免数据库删除
+                    # 失败时误删用户文件，后续可人工从 .project-delete-* 恢复。
+                    pass
+            raise
+
     def list_projects(self, user_id: str | None = None) -> list[NovelProject]:
         user_id = user_id or self.owner_id
         with db_connection() as conn:
@@ -110,6 +184,65 @@ class SQLiteNovelRepository:
         if candidate != base and base not in candidate.parents:
             raise NovelProjectRootError("小说项目根目录必须位于 NOVEL_ROOT 内")
         return candidate
+
+    @staticmethod
+    def _has_symlink_component(path: Path) -> bool:
+        current = path
+        while True:
+            if current.is_symlink():
+                return True
+            parent = current.parent
+            if parent == current:
+                return False
+            current = parent
+
+    @classmethod
+    def _resolve_project_delete_root(cls, root: str | None) -> Path | None:
+        if not root:
+            return None
+        base = Path(settings.novel_root).expanduser().resolve()
+        raw = Path(root).expanduser()
+        raw_absolute = raw if raw.is_absolute() else Path.cwd() / raw
+        if cls._has_symlink_component(raw_absolute):
+            raise NovelProjectRootError("项目根目录不能是符号链接")
+        candidate = raw_absolute.resolve(strict=False)
+        if candidate == base:
+            raise NovelProjectRootError("不能删除 NOVEL_ROOT 目录")
+        if base not in candidate.parents:
+            raise NovelProjectRootError("小说项目根目录必须位于 NOVEL_ROOT 内")
+        if candidate.exists() and not candidate.is_dir():
+            raise NovelProjectRootError("项目根目录不是可用目录")
+        return candidate
+
+    @staticmethod
+    def _paths_overlap(left: Path, right: Path) -> bool:
+        return left == right or left in right.parents or right in left.parents
+
+    @classmethod
+    def _assert_project_root_not_shared(cls, conn, project_id: str, root: Path | None) -> None:
+        if root is None:
+            return
+        rows = conn.execute(
+            "SELECT project_id, root FROM novel_projects "
+            "WHERE project_id<>? AND root IS NOT NULL AND root<>''",
+            (project_id,),
+        ).fetchall()
+        for row in rows:
+            other = Path(row["root"]).expanduser().resolve(strict=False)
+            if cls._paths_overlap(root, other):
+                raise NovelProjectDeleteError("项目目录被其他项目共享，不能直接删除")
+
+    @classmethod
+    def _quarantine_project_root(cls, root: Path | None) -> Path | None:
+        if root is None or not root.exists():
+            return None
+        base = Path(settings.novel_root).expanduser().resolve()
+        quarantine = base / f".project-delete-{uuid.uuid4().hex}"
+        try:
+            root.rename(quarantine)
+        except OSError as exc:
+            raise NovelProjectDeleteError("项目文件目录暂时无法移入隔离区") from exc
+        return quarantine
 
     @classmethod
     def _prepare_project_root(cls, root: str | None, project_id: str) -> tuple[Path, tuple[Path, ...]]:

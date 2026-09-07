@@ -16,7 +16,7 @@
     })();
   </script>
   <link rel="stylesheet" href="/styles.css?v=3">
-  <link rel="stylesheet" href="/novel/index.css?v=3">
+  <link rel="stylesheet" href="/novel/index.css?v=4">
 </head>
 <body>
 <div id="app" class="app">
@@ -48,6 +48,18 @@
 
     <!-- 工作区 -->
     <main class="work">
+      <!-- 当前项目管理 -->
+      <section class="project-toolbar card" aria-labelledby="current-project-name">
+        <div class="project-summary">
+          <h2 id="current-project-name">未选择项目</h2>
+          <span id="current-project-slug" class="muted"></span>
+        </div>
+        <div class="project-actions">
+          <button id="rename-project-btn" class="small" disabled>改名</button>
+          <button id="delete-project-btn" class="danger small" disabled>删除项目</button>
+        </div>
+      </section>
+
       <!-- 概览统计 -->
       <section id="overview" class="overview"></section>
 
@@ -100,6 +112,7 @@
 <div id="project-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
   <div class="modal-box card">
     <h3 id="project-modal-title">新建小说项目</h3>
+    <p id="project-modal-hint" class="muted hidden">改名只修改显示名称，项目标识保持不变。</p>
     <label class="field"><span>书名</span><input id="project-name" maxlength="200" placeholder="如：工作仙缘"></label>
     <label class="field"><span>拼音代号（可选）</span><input id="project-slug" maxlength="100" placeholder="如：gongzuo-xianyuan"></label>
     <div class="modal-actions">
@@ -151,6 +164,6 @@
 </aside>
 
 <script src="/app.js?v=4"></script>
-<script src="/novel/index.js?v=4"></script>
+<script src="/novel/index.js?v=5"></script>
 </body>
 </html>

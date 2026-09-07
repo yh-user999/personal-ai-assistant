@@ -7,7 +7,12 @@ import pytest
 
 from app.models import database
 from app.novel.domain import GenerationJobStatus
-from app.novel.repository import SQLiteNovelRepository
+from app.novel.index import rebuild_chapter_index
+from app.novel.repository import (
+    NovelProjectDeleteError,
+    NovelProjectProtectedError,
+    SQLiteNovelRepository,
+)
 from app.novel.workflow import NovelWorkflow
 
 
@@ -95,6 +100,123 @@ def test_project_create_keeps_existing_root_when_database_insert_fails(db, monke
         repo.create_project("重复项目", project_id="duplicate", slug="shared-slug", root=str(shared_root))
 
     assert shared_root.is_dir()
+
+
+def test_project_rename_preserves_slug_root_and_increments_version(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    root = tmp_path / "novels" / "rename-book"
+    repo = SQLiteNovelRepository(owner_id="owner")
+    project = repo.create_project("旧书名", project_id="rename", slug="rename-book", root=str(root))
+
+    renamed = repo.update_project("rename", name="新书名", expected_version=project.version)
+
+    assert renamed.name == "新书名"
+    assert renamed.slug == "rename-book"
+    assert renamed.root == str(root.resolve())
+    assert renamed.version == project.version + 1
+    assert root.is_dir()
+
+
+def test_project_delete_cascades_data_and_removes_root(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    root = tmp_path / "novels" / "delete-book"
+    root.mkdir(parents=True)
+    (root / "draft.md").write_text("保留在项目目录内的正文", encoding="utf-8")
+    repo = SQLiteNovelRepository(owner_id="owner")
+    project = repo.create_project("待删除书", project_id="delete", slug="delete-book", root=str(root))
+    repo.add_member("delete", "editor", "editor")
+    repo.upsert_chapter("delete", "1", title="开端", content="正文", status="published")
+    job = repo.create_job("delete", "1", "delete-job")
+    rebuild_chapter_index("delete")
+    with database.db_connection() as conn:
+        conn.execute(
+            "INSERT INTO novel_file_index(project_id,relative_path,size_bytes,mtime_ns,sha256,indexed_at) "
+            "VALUES(?,?,?,?,?,?)",
+            ("delete", "draft.md", 1, 1, "digest", "now"),
+        )
+        conn.execute(
+            "INSERT INTO novel_audit_logs(user_id,project_id,action,target,summary,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            ("owner", "delete", "before.delete", "delete", "{}", "now"),
+        )
+
+    result = repo.delete_project("delete", expected_version=project.version)
+
+    assert result == {
+        "project_id": "delete",
+        "deleted": True,
+        "files_deleted": True,
+        "cleanup_pending": False,
+    }
+    assert not root.exists()
+    assert repo.list_projects("owner") == []
+    with database.db_connection() as conn:
+        for table in (
+            "novel_project_members",
+            "novel_chapters",
+            "novel_generation_jobs",
+            "novel_file_index",
+        ):
+            assert conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE project_id=?", ("delete",)
+            ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM novel_chapters_fts WHERE project_id=?", ("delete",)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM novel_audit_logs WHERE project_id=?", ("delete",)
+        ).fetchone()[0] == 1
+    assert repo.get_job(job.job_id) is None
+
+
+def test_project_delete_rejects_default_and_shared_root(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    repo = SQLiteNovelRepository(owner_id="owner")
+    repo.get_project("default")
+    with pytest.raises(NovelProjectProtectedError, match="不能删除"):
+        repo.delete_project("default")
+
+    shared_root = tmp_path / "novels" / "shared"
+    shared_root.mkdir(parents=True)
+    repo.create_project("第一本", project_id="one", slug="one", root=str(shared_root))
+    repo.create_project("第二本", project_id="two", slug="two", root=str(shared_root))
+    with pytest.raises(NovelProjectDeleteError, match="共享"):
+        repo.delete_project("one")
+    assert shared_root.is_dir()
+    assert repo.get_project("one").name == "第一本"
+    assert repo.get_project("two").name == "第二本"
+
+
+def test_project_delete_version_conflict_keeps_database_and_root(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    root = tmp_path / "novels" / "version-book"
+    repo = SQLiteNovelRepository()
+    repo.create_project("版本书", project_id="version", slug="version-book", root=str(root))
+
+    with pytest.raises(ValueError, match="版本冲突"):
+        repo.delete_project("version", expected_version=2)
+
+    assert root.is_dir()
+    assert repo.get_project("version").name == "版本书"
+
+
+def test_project_delete_rejects_symlink_root(db, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.novel_root", str(tmp_path / "novels"))
+    root = tmp_path / "novels" / "real-book"
+    link = tmp_path / "novels" / "linked-book"
+    root.mkdir(parents=True)
+    link.symlink_to(root, target_is_directory=True)
+    repo = SQLiteNovelRepository()
+    repo.create_project("链接书", project_id="linked", slug="linked-book", root=str(root))
+    with database.db_connection() as conn:
+        conn.execute("UPDATE novel_projects SET root=? WHERE project_id=?", (str(link), "linked"))
+
+    with pytest.raises(ValueError, match="符号链接"):
+        repo.delete_project("linked")
+
+    assert root.is_dir()
+    assert link.is_symlink()
+    assert repo.get_project("linked").name == "链接书"
 
 
 def test_publish_updates_job_and_chapter_atomically(db):

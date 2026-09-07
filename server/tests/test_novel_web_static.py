@@ -51,7 +51,7 @@ def test_shared_dom_clear_helper_is_loaded_before_workbench_use():
     html = NOVEL_HTML.read_text(encoding="utf-8")
     assert "function clearNode(node)" in app_js
     assert "clearNode(" in novel_js
-    assert html.index('src="/app.js?v=4"') < html.index('src="/novel/index.js?v=4"')
+    assert html.index('src="/app.js?v=4"') < html.index('src="/novel/index.js?v=5"')
 
 
 def test_project_creation_reports_conflicts_and_refreshes_selection():
@@ -60,6 +60,22 @@ def test_project_creation_reports_conflicts_and_refreshes_selection():
     assert "btn.disabled = true" in js
     assert "await loadProjects()" in js
     assert "await selectProject(p.project_id)" in js
+
+
+def test_project_management_controls_support_rename_and_delete():
+    html = NOVEL_HTML.read_text(encoding="utf-8")
+    js = NOVEL_JS.read_text(encoding="utf-8")
+    css = NOVEL_CSS.read_text(encoding="utf-8")
+    for element_id in ("rename-project-btn", "delete-project-btn", "current-project-name"):
+        assert f'id="{element_id}"' in html
+    assert "openProjectRenameModal" in js
+    assert "method: 'PATCH'" in js
+    assert "deleteCurrentProject" in js
+    assert "method: 'DELETE'" in js
+    assert "window.confirm" in js
+    assert "project-toolbar" in css
+    assert 'src="/novel/index.js?v=5"' in html
+    assert 'href="/novel/index.css?v=4"' in html
 
 
 def test_novel_status_labels_are_localized():

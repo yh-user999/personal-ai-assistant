@@ -23,7 +23,12 @@ from app.novel.index import (
     search_chapters,
     sync_file_index,
 )
-from app.novel.repository import NovelProjectRootError, SQLiteNovelRepository
+from app.novel.repository import (
+    NovelProjectDeleteError,
+    NovelProjectProtectedError,
+    NovelProjectRootError,
+    SQLiteNovelRepository,
+)
 from app.novel.workflow import NovelWorkflow
 
 router = APIRouter()
@@ -142,6 +147,30 @@ def update_project(project_id: str, req: ProjectUpdateRequest, request: Request)
         raise _error(409, "project_version_conflict", str(exc)) from exc
     _audit(user_id, project_id, "project.update", project_id)
     return project_payload(project)
+
+
+@router.delete("/novel/projects/{project_id}")
+def delete_project(project_id: str, request: Request, expected_version: int | None = Query(None, ge=1)):
+    repo, user_id = _repo(request)
+    if not repo.can_access(project_id, user_id, write=True):
+        raise _error(403, "project_write_forbidden", "无项目写入权限")
+    try:
+        result = repo.delete_project(project_id, expected_version=expected_version)
+    except KeyError as exc:
+        raise _error(404, "project_not_found", "项目不存在") from exc
+    except NovelProjectProtectedError as exc:
+        raise _error(409, "project_protected", str(exc)) from exc
+    except NovelProjectRootError as exc:
+        raise _error(422, "project_root_invalid", str(exc)) from exc
+    except NovelProjectDeleteError as exc:
+        raise _error(409, "project_delete_blocked", str(exc)) from exc
+    except ValueError as exc:
+        raise _error(409, "project_version_conflict", str(exc)) from exc
+    _audit(user_id, project_id, "project.delete", project_id, summary={
+        "files_deleted": result["files_deleted"],
+        "cleanup_pending": result["cleanup_pending"],
+    })
+    return result
 
 
 @router.put("/novel/projects/{project_id}/members")

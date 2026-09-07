@@ -30,6 +30,8 @@ let autoTimer = null;
 let pollDelay = 5000;
 let searchActive = false;
 let jobSubmitKey = null;
+let projectModalMode = 'create';
+let editingProjectId = null;
 
 // ── DOM 快捷方式（$ / clearNode 由 app.js 提供） ──────────
 function el(tag, className, text) {
@@ -68,7 +70,29 @@ function findChapter(no) {
 async function loadProjects() {
   const data = await apiFetch('/api/novel/projects');
   projects = data.projects || [];
+  if (currentProject) {
+    currentProject = projects.find((p) => p.project_id === currentProject.project_id) || null;
+  }
   renderProjectList();
+  renderProjectSummary();
+}
+
+function renderProjectSummary() {
+  const name = $('current-project-name');
+  const slug = $('current-project-slug');
+  const rename = $('rename-project-btn');
+  const remove = $('delete-project-btn');
+  if (!currentProject) {
+    name.textContent = '未选择项目';
+    slug.textContent = '';
+    rename.disabled = true;
+    remove.disabled = true;
+    return;
+  }
+  name.textContent = currentProject.name || '(未命名)';
+  slug.textContent = currentProject.slug ? '项目标识：' + currentProject.slug : '';
+  rename.disabled = false;
+  remove.disabled = false;
 }
 
 function renderProjectList() {
@@ -87,11 +111,30 @@ function renderProjectList() {
   });
 }
 
+function clearProjectWorkspace() {
+  chapters = [];
+  jobs = [];
+  searchActive = false;
+  $('search-input').value = '';
+  $('chapter-count').textContent = '';
+  $('job-count').textContent = '';
+  clearNode($('overview'));
+  renderEmptyChapters();
+  renderJobs();
+  renderProjectSummary();
+}
+
 async function selectProject(projectId) {
   currentProject = projects.find((p) => p.project_id === projectId) || null;
   searchActive = false;
+  $('search-input').value = '';
   renderProjectList();
+  renderProjectSummary();
   stopAutoRefresh();
+  if (!currentProject) {
+    clearProjectWorkspace();
+    return;
+  }
   try {
     await refreshProjectData();
     startAutoRefresh();
@@ -424,7 +467,44 @@ function focusProjectField(id) {
   if (typeof field.select === 'function') field.select();
 }
 
-async function createProject() {
+function openProjectCreateModal() {
+  projectModalMode = 'create';
+  editingProjectId = null;
+  $('project-modal-title').textContent = '新建小说项目';
+  $('project-modal-hint').classList.add('hidden');
+  $('project-name').value = '';
+  $('project-slug').value = '';
+  $('project-slug').disabled = false;
+  $('project-save').textContent = '创建';
+  clearProjectValidation();
+  showModal('project-modal');
+}
+
+function openProjectRenameModal() {
+  if (!currentProject) return;
+  projectModalMode = 'rename';
+  editingProjectId = currentProject.project_id;
+  $('project-modal-title').textContent = '改名小说项目';
+  $('project-modal-hint').classList.remove('hidden');
+  $('project-name').value = currentProject.name || '';
+  $('project-slug').value = currentProject.slug || '';
+  $('project-slug').disabled = true;
+  $('project-save').textContent = '保存';
+  clearProjectValidation();
+  showModal('project-modal');
+}
+
+function resetProjectModal() {
+  projectModalMode = 'create';
+  editingProjectId = null;
+  $('project-modal-title').textContent = '新建小说项目';
+  $('project-modal-hint').classList.add('hidden');
+  $('project-slug').disabled = false;
+  $('project-save').textContent = '创建';
+  clearProjectValidation();
+}
+
+async function saveProject() {
   const name = $('project-name').value.trim();
   if (!name) {
     focusProjectField('project-name');
@@ -434,22 +514,34 @@ async function createProject() {
   const btn = $('project-save');
   btn.disabled = true;
   clearProjectValidation();
+  const isRename = projectModalMode === 'rename' && editingProjectId && currentProject;
   try {
-    const payload = {name: name};
-    const slug = $('project-slug').value.trim();
-    if (slug) payload.slug = slug;
-    const p = await apiFetch('/api/novel/projects', {method: 'POST', body: JSON.stringify(payload)});
+    let p;
+    if (isRename) {
+      p = await apiFetch('/api/novel/projects/' + encodeURIComponent(editingProjectId), {
+        method: 'PATCH',
+        body: JSON.stringify({name: name, expected_version: currentProject.version}),
+      });
+    } else {
+      const payload = {name: name};
+      const slug = $('project-slug').value.trim();
+      if (slug) payload.slug = slug;
+      p = await apiFetch('/api/novel/projects', {method: 'POST', body: JSON.stringify(payload)});
+    }
     hideModal('project-modal');
     $('project-name').value = '';
     $('project-slug').value = '';
-    // 创建成功后立即刷新列表并选中新项目，避免用户必须手动刷新页面。
+    resetProjectModal();
+    // 改名/创建成功后立即刷新列表并选中目标项目。
     await loadProjects();
     await selectProject(p.project_id);
-    toast('项目已创建', 'ok');
+    toast(isRename ? '项目已改名' : '项目已创建', 'ok');
   } catch (e) {
     if (e.code === 'project_slug_conflict') {
       focusProjectField('project-slug');
       toast('项目标识已存在，请换一个', 'err');
+    } else if (e.code === 'project_version_conflict') {
+      toast('项目已被其他操作更新，请关闭弹窗后重新打开', 'err');
     } else if (e.code === 'project_root_invalid') {
       toast(e.message || '项目目录不可用', 'err');
     } else {
@@ -457,6 +549,55 @@ async function createProject() {
     }
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function deleteCurrentProject() {
+  if (!currentProject) return;
+  const project = currentProject;
+  const confirmed = window.confirm(
+    '确定删除「' + (project.name || '未命名项目') + '」？\n\n'
+    + '该项目的章节、生成任务、成员和服务器项目目录都会永久删除，此操作不可撤销。'
+  );
+  if (!confirmed) return;
+  const btn = $('delete-project-btn');
+  btn.disabled = true;
+  try {
+    const result = await apiFetch(
+      '/api/novel/projects/' + encodeURIComponent(project.project_id)
+      + '?expected_version=' + encodeURIComponent(project.version),
+      {method: 'DELETE'}
+    );
+    stopAutoRefresh();
+    currentProject = null;
+    clearProjectWorkspace();
+    await loadProjects();
+    if (projects.length) {
+      await selectProject(projects[0].project_id);
+    } else {
+      clearProjectWorkspace();
+    }
+    if (result && result.files_deleted === false) {
+      toast('项目已删除，但项目文件清理失败，请联系管理员', 'err');
+    } else {
+      toast('项目已删除', 'ok');
+    }
+  } catch (e) {
+    if (e.code === 'project_protected') {
+      toast('该项目受保护，不能删除', 'err');
+    } else if (e.code === 'project_version_conflict') {
+      toast('项目已被其他操作更新，请刷新后重试', 'err');
+      await loadProjects().catch(() => {});
+    } else if (e.code === 'project_delete_blocked') {
+      toast(e.message || '项目文件正在被占用，暂时无法删除', 'err');
+    } else if (e.code === 'project_root_invalid') {
+      toast(e.message || '项目目录不安全，无法删除', 'err');
+    } else {
+      toast(e.message, 'err');
+    }
+  } finally {
+    btn.disabled = false;
+    renderProjectSummary();
   }
 }
 
@@ -563,8 +704,7 @@ async function boot() {
     if (projects.length) {
       await selectProject(projects[0].project_id);
     } else {
-      renderEmptyChapters();
-      renderJobs();
+      clearProjectWorkspace();
     }
   } catch (e) {
     renderBoxError(box, e, boot);
@@ -581,9 +721,11 @@ $('chapter-filter').addEventListener('change', () => {
   if (searchActive) clearSearchView();
   else renderChapters();
 });
-$('new-project-btn').addEventListener('click', () => showModal('project-modal'));
-$('project-save').addEventListener('click', createProject);
-$('project-cancel').addEventListener('click', () => hideModal('project-modal'));
+$('new-project-btn').addEventListener('click', openProjectCreateModal);
+$('project-save').addEventListener('click', saveProject);
+$('project-cancel').addEventListener('click', () => { hideModal('project-modal'); resetProjectModal(); });
+$('rename-project-btn').addEventListener('click', openProjectRenameModal);
+$('delete-project-btn').addEventListener('click', deleteCurrentProject);
 $('new-chapter-btn').addEventListener('click', () => openChapterModal('', '', ''));
 $('chapter-save').addEventListener('click', () => saveChapter(false));
 $('chapter-cancel').addEventListener('click', () => hideModal('chapter-modal'));

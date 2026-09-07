@@ -1,457 +1,918 @@
-# Personal AI Assistant 🤖
+# 个人智能助手
 
-个人智能助手 —— Windows 本地 + 服务器混合部署，桌面悬浮机器人形态，实现「记忆 → 分析 → 学习」闭环的个人工作助手。
+一个面向个人使用的 AI 助手项目：把聊天、长期记忆、知识库、图片识别、提醒、桌面机器人、QQ 接入和小说写作工作台组合在一起。
 
-> 状态：六课带教全部完成 · 进阶课 9/10（第 6 课 CI / 第 7 课仪表盘待做）· **服务端隔离回归 1004 passed / 2 skipped** · **QQ 图片专项 5 passed** · **桌面图片专项 6 passed** · QQ 接入已上线 · 图片识别一期已接入
+它采用“服务器 + 可选 Windows 客户端”的结构：
 
-## 能力总览
+- 服务器负责保存数据、调用模型、处理聊天、运行定时任务和小说生成任务。
+- Windows 采集器负责可选的本地行为采集、心跳和远程执行器。
+- Windows 桌面端提供悬浮机器人、聊天面板、托盘和本地快捷操作。
+- QQ/AstrBot 插件提供手机端私聊入口。
+- 浏览器可以直接打开聊天页和小说工作台。
 
-| 维度 | 能力 |
-|------|------|
-| **记忆** | 双层记忆（情景原文 + 三元组事实）、向量检索 + BM25 混合、遗忘衰减、术语词典、四维画像 |
-| **反思** | 自省（纠正→教训→去重永久遵守，身份类优先）、每日小结（22:00）、每周学习反思（周日 21:00） |
-| **拟人** | 自我状态（熟络度/久别/刚被纠正）、隔日情绪跟进（记得你昨天不顺）、主观时间（按事件而非日期回忆）、不确定就直说、主动开口通道（默认关闭，每日 1 条 + 夜间静默 + 无回应降频） |
-| **成长感知** | 你说"感觉没收获"时给**事实反证**而非鸡汤：聚合 git 提交/应用时长/话题演进/知识库灌入/纠正次数，指出你忽略的判断价值。零 LLM 聚合 |
-| **被动追踪** | 从对话识别目标意向（不需要打命令——`goals` 表长期为空正是因为命令式录入没人用），存为候选，问过两次没回应自动丢弃；知识库主动提示（库里有相关资料但你没问时提一句，带三层冷却防打扰） |
-| **人格安全** | 身份守卫：角色扮演/侮辱性命名不进长期人格，改名需显式确认（`kind=identity` 的教训永久最高优先注入，一句玩笑话就能长期扭曲人格） |
-| **感知** | 行为实时注入（当前窗口/git 提交/近 1h 活跃）、三通道采集（前台窗口/浏览器历史/git）、心跳健康 |
-| **学习** | 关切追踪（在意什么）、风格学习（认可的回复形式）、多轮上下文（8 轮原文 + 摘要续接） |
-| **RAG** | 文档知识库：切块 → 向量化 → 混合检索（RRF）→ 带引用回答；Hit@k/MRR 评测体系 |
-| **图片识别** | 桌面端选图/剪贴板粘贴/图片-only；QQ 私聊支持主人与访客图片、群聊静默；Web/API 走 `/api/chat/vision` multipart；原始图片不落库 |
-| **实体检索** | 小说专名索引 + 五层检索：枚举式提问（"有哪些命丛"）走专名精确匹配而非向量（类名检索精度仅 15.9%，专名接近 100%），注入自带完整度报告 |
-| **小说写作** | 设定冲突检查 + 续写辅助 + 写作台账（6.25）；**章节分析二期**：`分析章节：<正文>` 零 LLM 残留检测（AI 元话语/章节尾标记）+ 字数对照 + 1 次 LLM 逻辑/时间线/动机/称谓/设定五维问题清单（带引句与建议）+ 节奏超载评估；`章节存档：第X章 <摘要>` 零 LLM 入库；写第 N 章自动注入前情提要 + 未回收伏笔；生成档长回复自动提炼章节存档（被动抓取，无需打命令） |
-| **产出** | 对话式文档生成（"写文档"命令）、简历优化（专家 prompt + .docx 导出）、个性化问候 |
-| **交互** | 桌面悬浮机器人（三套自绘皮肤：班德机械版/宇航员重制版/萌系风，呼吸眨眼+状态灯）、气泡聊天（Markdown 渲染 + 面板可缩放/最大化/移动/尺寸记忆）、托盘通知、📌 图钉 |
-| **执行** | 快捷启动器（"记住 打开B站=网址"注册常用软件/网页/搜索模板，打开X / 在X搜索 / 指定浏览器 / 时段常用推荐）、文件手（复制/备份/移动/重命名，白名单内）、远程指令队列（原子认领+超时释放）、破坏性操作确认层 |
-| **运维** | 10 个定时任务、每日 03:00 热备份（校验 + gzip，3 份日备 + 4 份周备）、行为事件按类留存期淘汰、采集通道停滞告警、开机自启 + 崩溃自愈、黑匣子日志、LLM token 用量记账 |
+> 这不是一个注册账号即可使用的 SaaS，也不是开箱即用的聊天机器人。你需要准备自己的服务器、模型服务、密钥和网络访问方式。
 
-## 架构
+## 先看结论
 
+如果你是第一次接触这个项目，可以按下面的顺序理解：
+
+1. 只想在浏览器聊天：只部署 `server/`。
+2. 想在 Windows 桌面上使用悬浮机器人：再部署 `desktop/`。
+3. 想让助手了解 Windows 上的窗口、浏览器或 Git 活动：再启用 `collector/`；这些采集开关默认关闭。
+4. 想用手机 QQ：再配置 NapCat、AstrBot 和 `qq/astrbot_plugin_xy/` 插件。
+5. 想写小说：打开服务器提供的 `/novel/` 小说工作台，不需要 Windows 电脑一直开着。服务器在线时，项目、章节、生成任务和进度都保存在服务器上。
+
+电脑关机时，服务器上的聊天、知识库、提醒、小说数据和已提交的小说生成任务仍然可以运行；依赖 Windows 的本地文件操作、桌面快捷启动和行为采集会暂时不可用，等待 Windows 客户端恢复连接。
+
+## 一、项目能做什么
+
+### 1. 聊天和长期记忆
+
+- 普通文本聊天。
+- 保存对话中的重要事实、用户偏好、术语、风格示例、目标和待解决事项。
+- 使用关键词检索、全文检索和向量检索召回相关内容。
+- 通过摘要整合、事实提取、反思和遗忘策略，避免所有历史消息无限增长。
+- 对主人和其他 QQ 用户按身份隔离记忆。
+
+### 2. 知识库和文档
+
+- 上传或导入 Markdown、文本、CSV、JSON、DOCX、PDF 等文档。
+- 文档会被切块，之后可以在聊天中检索和问答。
+- 支持按文档域、项目和小说实体进行检索，减少不同资料之间的串库。
+- 可以通过“写文档”类命令生成 Markdown 文档，并同步到知识库。
+- 可以把简历资料放入知识库，再请求优化并导出 Word 文件。
+
+### 3. 图片识别
+
+- 浏览器、Windows 桌面端和 QQ 私聊都可以发送图片。
+- 支持 JPEG、PNG、WebP。
+- 服务端默认限制单张图片不超过 10 MB，并同时检查文件头和 MIME 类型。
+- 原始图片只在当前请求中处理，不把原始图片字节写入记忆库。
+- 图片请求与普通文字聊天使用独立的视觉模型配置。
+
+### 4. 提醒、目标和工作日志
+
+- 中文自然语言提醒，例如“30分钟后提醒我喝水”“明早9点提醒我开会”。
+- 通过“目标：……”创建目标，通过“目标进度：……”更新进度。
+- 通过“记录：……”记录工作日志。
+- 到期提醒可以通过 QQ 推送给主人。
+- 每日小结、每周反思和画像刷新由服务器定时任务完成。
+
+### 5. Windows 桌面助手
+
+- PySide6 悬浮机器人和聊天气泡面板。
+- 支持拖动、缩放、最大化、置顶、托盘菜单和状态灯。
+- 支持选择图片、粘贴剪贴板图片和只发送图片。
+- 快捷启动器可以注册网页、应用、搜索模板和指定浏览器。
+- 本地执行器支持打开、列目录、读文件、复制、备份、移动、重命名和搜索文件。
+- 文件操作受白名单和确认层限制，不提供任意远程 Shell 执行。
+- 小说工作台入口可以自动建立 SSH 隧道。
+
+### 6. QQ 接入
+
+通过 NapCat、AstrBot 和本项目插件，可以在手机 QQ 私聊中使用助手：
+
+- 主人使用主人角色权限。
+- 访客可以私聊，但记忆按 QQ 号隔离。
+- 群聊默认一律静默，不上传群聊消息。
+- 主人可以发送文档入知识库。
+- 主人和访客使用不同的 token；访客请求还需要 QQ 身份 HMAC 签名。
+- 详细配置见 [QQ 接入运维手册](docs/QQ_OPS.md)。
+
+### 7. 小说工作台
+
+当前小说工作台已经支持：
+
+- 创建、改名和删除小说项目。
+- 创建、编辑和查看章节。
+- 草稿、已发布和存档等章节状态。
+- 创建小说生成任务，查看生成进度和失败原因。
+- 生成结果先进入待确认状态，确认后才发布，不会直接覆盖已发布正文。
+- 章节全文搜索和索引重建。
+- 项目成员和项目级权限。
+- 生成任务重试、取消、心跳、重启恢复和审计记录。
+- 将已发布章节安全同步到项目文件目录。
+
+当前**没有**完整集成外部 `oh-story-claudecode` Skill 包，也没有在工作台中实现完整的扫榜、平台爬取、自动拆文、总纲/卷纲/细纲生成流水线。`server/app/novel/outline.py` 目前主要是为后续接入保留接口的占位读取层。不要根据项目名称或旧讨论把尚未实现的能力当成现成功能。
+
+### 8. 可选 MCP 接口
+
+项目包含一个默认关闭的 MCP stdio 服务，可供支持 MCP 的本地 Agent 调用记忆、知识库、任务和小说工具。它是独立进程，不随普通 FastAPI 请求自动开放；启用时仍按 `owner` 或 `internal` 角色限制权限，并保留审计记录。
+
+MCP 不是 QQ 或手机入口，也不负责图片上传；默认不提供任意 Shell、Python 或删除工具。第一次部署不需要开启它，确认 API、Web 和权限边界稳定后再单独配置。
+
+## 二、系统结构
+
+```text
+                       手机浏览器 / QQ
+                              |
+                              v
++---------------------------------------------------------------+
+|                         服务器                               |
+|                                                               |
+|  FastAPI + SQLite + 定时任务 + LLM/Embedding                 |
+|  聊天、记忆、知识库、图片识别、提醒、小说工作台和生成任务     |
+|                                                               |
++--------------------------+------------------------------------+
+                           |
+              私有网络或 SSH 隧道
+                           |
+        +------------------+------------------+
+        |                                     |
+        v                                     v
++-------------------+                 +----------------------+
+| Windows 采集器    |                 | Windows 桌面机器人   |
+| 窗口/浏览器/Git   |                 | 悬浮球、聊天、托盘   |
+| 心跳、脱敏、缓存  |                 | 本地执行器、图片     |
++-------------------+                 +----------------------+
+
+QQ 通道：NapCat -> AstrBot -> QQ 插件 -> 服务器 API
 ```
-┌─ Windows 本地 ──────────────────────────────────────┐
-│ ② collector/ 行为采集器（窗口 8s / 浏览器 10min / git 15min）│
-│    脱敏 → 攒批 → 幂等推送 → 心跳（5min）                    │
-│ ③ desktop/   桌面悬浮机器人（PySide6）                       │
-│    文本聊天 / 选图 / 剪贴板粘贴 / 图片-only / 托盘 / 状态灯   │
-└────────────────────────────────────────────────────┘
-        ↕ 私有加密专线（公网只暴露 SSH 22）
-┌─ 云服务器 ──────────────────────────────────────────┐
-│ ① server/    FastAPI 单进程（uvicorn）                      │
-│    聊天编排 + 记忆闭环 + 知识库 + 行为统计 + 反思生成        │
-│    SQLite（WAL）+ sqlite-vec（cosine KNN）                  │
-│    普通聊天：deepseek-v4-flash                             │
-│    图片识别：deepseek-v4-flash-vision-exp · Embedding：智谱 │
-│    /api/chat（JSON）· /api/chat/vision（multipart）          │
-└────────────────────────────────────────────────────┘
 
-┌─ QQ 通道 ───────────────────────────────────────────┐
-│ NapCat → AstrBot 插件 → /api/chat 或 /api/chat/vision     │
-│ 私聊按 QQ 号隔离 + HMAC 身份签名；群聊 stop_event 静默     │
-└────────────────────────────────────────────────────┘
+### 一次普通聊天请求
+
+```text
+用户输入文字或图片
+        |
+        v
+API 鉴权、身份确认、请求幂等检查
+        |
+        +--> 命中快捷命令：直接执行，通常不调用 LLM
+        |
+        +--> 未命中：检索记忆和知识库，组装上下文
+                         |
+                         v
+                    调用 LLM
+                         |
+                         v
+          返回回复、记录消息、更新用量和命中反馈
 ```
 
-**一次聊天请求的数据流**：
+### 服务器和 Windows 的职责边界
 
+| 能力 | 服务器在线即可 | 需要 Windows 在线 |
+|---|---:|---:|
+| 普通聊天 | 是 | 否 |
+| 记忆和知识库问答 | 是 | 否 |
+| 图片识别 | 是 | 否，QQ/浏览器可直接使用 |
+| 提醒、每日小结、周报 | 是 | 否 |
+| 小说项目、章节和生成任务 | 是 | 否 |
+| 读取 Windows 本地文件 | 否 | 是 |
+| 打开 Windows 应用或网页 | 否 | 是 |
+| Windows 窗口、浏览器、Git 采集 | 否 | 是，且默认关闭 |
+| 桌面悬浮机器人 | 否 | 是 |
+
+## 三、目录结构
+
+```text
+personal-ai-assistant/
+├── server/                 # FastAPI 服务端、数据库、定时任务和 Web 页面
+│   ├── run.py              # 服务端启动入口
+│   ├── app/api/            # HTTP API
+│   ├── app/chat/           # 聊天上下文、路由、检索和生成编排
+│   ├── app/core/           # LLM、Embedding、记忆、知识库和调度基础设施
+│   ├── app/novel/          # 小说项目、章节、生成任务和工作流
+│   ├── app/services/       # 记忆、反思、提醒、文档、小说等业务服务
+│   ├── app/web/static/     # 聊天页和小说工作台前端
+│   └── tests/              # 服务端隔离测试
+├── collector/              # Windows 行为采集器和远程执行器客户端
+├── desktop/                # Windows PySide6 桌面机器人
+├── qq/astrbot_plugin_xy/  # AstrBot QQ 插件
+├── common/                 # 跨端共享的脱敏、文件操作和启动器逻辑
+├── scripts/                # 部署、开机自启、打包和导入脚本
+├── docs/                   # 部署、运维、QQ、API 和设计文档
+├── .env.example            # 脱敏配置模板
+├── Makefile                # 常用开发命令
+└── pyproject.toml          # ruff 和 pytest 的仓库级配置
 ```
-用户消息（桌面端 / QQ 私聊 / Web/API）
-  ├─ 图片入口（如有附件）
-  │   ├─ 接收 multipart：image + message + request_id（可选 user_id）
-  │   ├─ 边界校验 JPEG/PNG/WebP、MIME 与 ≤10MB；服务端不抓取图片 URL
-  │   ├─ QQ 额外校验 QQ_API_TOKEN + QQ_IDENTITY_SECRET HMAC；群聊在插件层静默
-  │   └─ 组装多模态消息，跳过零 LLM 命令，使用视觉模型
-  ├─ 无图片时走身份守卫与命令路由（按注册顺序：身份 → 确认 → 日志 → 时间 → 提醒 → …）
-  │   命中即回，零 LLM
-  └─ 未命中 → LLM 主路径
-       ├─ 检索：记忆（向量+BM25 混合 → 弱命中深挖兜底 → 一跳共现扩散）
-       │        知识库（混合检索 + 邻域扩展 + 实体索引五层检索）
-       ├─ 注入：稳定档案区（facts/画像/教训/风格/关切/术语/目标/未解决）
-       │        动态上下文区（10 轮原文 + 更早摘要 + 记忆 + 知识库
-       │                      + 行为 + 情绪 + 自我状态）
-       ├─ LLM 生成（普通聊天 deepseek-v4-flash；图片识别 deepseek-v4-flash-vision-exp；usage 记账）
-       └─ 写库 + 提升被引用记忆的 importance/hit_count + 后台事实提取
-          （图片只保留文本与 [图片] 标记，原始字节不落库）
 
-定时任务（10 个）
-  每分钟  QQ 提醒推送（推送成功才消费，失败下轮重推）
-  每 4h   摘要整合：碎片 → summary/topics/facts
-  每 6h   淘汰：按 kind 分留存期 + 清孤儿向量
-  03:00   热备份（integrity_check + gzip，3 日备 + 4 周备）
-  04:10   进度同步：docs/*.md 重灌知识库
-  04:30   每日画像刷新
-  22:00   每日小结  ·  22:10  主动开口（默认关闭）
-  周日 20:00 画像 → 21:00 周报
-```
+## 四、开始之前要准备什么
 
-**prompt 分区的成本考量**：稳定档案区放在前部，动态上下文区放在末尾。因为 LLM 前缀缓存的命中依赖前缀不变，而缓存读取单价比输入便宜约 30 倍（实测命中率 30%~76%）。**区块顺序是成本决策，不只是可读性。**
+### 必需准备
 
-## 图片识别一期接口
+1. 一个 Linux 服务器，推荐使用 Ubuntu 或 Debian。
+2. Python 3.12 或兼容版本。仓库 CI 以 Python 3.12 为基准。
+3. Git。
+4. 一个 OpenAI 兼容格式的 LLM 服务地址和至少一个 API Key。
+5. 如果要使用完整知识库向量检索，再准备 Embedding 服务和 API Key。
+6. 一种安全网络方式，让你能访问服务器，例如 Tailscale 或 SSH 隧道。
 
-服务端提供 `POST /api/chat/vision`，使用 `multipart/form-data` 接收图片和文字问题；普通文本仍使用 `POST /api/chat` 的 JSON 接口。
+### 可选准备
+
+- Windows 10/11 和 Python：用于桌面机器人、采集器和本地执行器。
+- NapCat 和 AstrBot：用于 QQ 私聊入口。
+- Node.js：用于检查 Web 前端 JavaScript 语法。
+- Chromium 浏览器：只有未来需要浏览器自动化或榜单采集时才需要；当前项目没有集成完整扫榜功能。
+
+### 不要提前准备或提交到 GitHub 的内容
+
+以下内容只放在本地配置或服务器私有目录，不要写进 README、源码、Issue 或提交记录：
+
+- LLM、Embedding、API、QQ、NapCat、SSH 的 Token 和 Key。
+- HMAC secret、密码、Cookie、浏览器登录态。
+- 真实 QQ 号。
+- 公网 IP、私网 IP、服务器主机名和本机绝对路径。
+- 小说正文、私人文档、聊天数据库、行为采集数据和日志。
+
+## 五、第一次部署：先启动服务器
+
+下面的示例使用占位符。把 `<your-github-username>`、`<your-repository>`、`<server-project-path>` 等替换成你自己的值；不要把真实密钥替换回 README。
+
+### 1. 从 GitHub 获取代码
+
+在服务器上执行：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/chat/vision \
-  -H "Authorization: Bearer ${API_TOKEN}" \
-  -F "image=@sample.png;type=image/png" \
-  -F "message=请描述图片中的内容" \
-  -F "request_id=desktop-20260905-0001" \
-  -F "user_id=10086"
+git clone https://github.com/<your-github-username>/<your-repository>.git <server-project-path>
+cd <server-project-path>
 ```
 
-| 字段 | 必填 | 说明 |
-|---|---:|---|
-| `image` | 是 | 图片文件；只接受 JPEG、PNG、WebP，服务端按文件头和 MIME 双重校验 |
-| `message` | 否 | 图片问题或补充说明；为空时使用默认识图指令 |
-| `request_id` | 是 | 客户端重试幂等键，不能为空，最长 128 个字符 |
-| `user_id` | 否 | 用户主体；QQ 请求必须与 HMAC 签名中的 QQ 号一致，主人/内部 token 不信任 body 覆盖身份 |
+如果仓库是私有仓库，请先在服务器上准备好 GitHub SSH 访问权限或其他安全的 Git 凭据。不要把 GitHub Token 写进命令、脚本或文档。
 
-单图上限由 `VISION_MAX_IMAGE_BYTES` 控制，默认 `10485760` 字节（10MB）。服务端只在请求内存中生成 data URL，不抓取远程图片 URL，也不把原始图片字节写入记忆库。
+### 2. 创建 Python 虚拟环境并安装服务端依赖
 
-鉴权规则：配置任意服务端 token 后，必须带 `Authorization: Bearer ...`；该路由仅允许 `owner`、`internal`、`qq` 角色。QQ 插件还必须使用独立的 `QQ_API_TOKEN`，并发送 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`（或 `X-Request-ID`）和 `X-QQ-Signature`；签名载荷为“QQ 号、时间戳、request_id”逐行拼接的 HMAC-SHA256，默认 300 秒内有效。
+```bash
+cd <server-project-path>
+python3 -m venv server/.venv
+server/.venv/bin/python -m pip install --upgrade pip
+server/.venv/bin/python -m pip install -r server/requirements.txt
+```
 
-幂等与错误语义：同一用户同一 `request_id` 且消息/图片 SHA-256 相同会复用成功响应；同一 ID 改了消息或图片返回 `409`，请求仍在处理时返回 `409` 并带 `Retry-After: 1`。`400` 表示缺字段、空文件或损坏文件，`401/403` 表示鉴权/身份失败，`413` 表示超过大小上限，`415` 表示格式或 MIME 不支持。视觉上游超时或调用失败返回正常 `ChatResponse` 的友好失败文案，但该失败不会缓存，客户端可用原 `request_id` 重试。
+虚拟环境的作用是把项目依赖和系统 Python 隔离开。以后升级依赖，也只操作这个虚拟环境。
 
-### 图片相关配置
+### 3. 创建本地配置文件
+
+```bash
+cd <server-project-path>
+cp .env.example .env
+chmod 600 .env
+```
+
+然后编辑 `.env`。`.env` 已被 `.gitignore` 排除，不应提交。
+
+至少确认以下配置：
 
 ```dotenv
-# 普通聊天与图片识别使用不同模型
-LLM_MODEL=deepseek-v4-flash
-VISION_LLM_MODEL=deepseek-v4-flash-vision-exp
-VISION_MAX_IMAGE_BYTES=10485760
-VISION_TIMEOUT=90
+HOST=0.0.0.0
+PORT=8000
 
-# 推荐多 Key；留空时回退旧的 LLM_API_KEY
-LLM_API_KEYS=<key-1>,<key-2>
+# OpenAI 兼容格式的模型服务
+LLM_BASE_URL=https://<your-llm-provider>/v1
+LLM_API_KEYS=<your-llm-key>
+LLM_MODEL=<your-chat-model>
 
-# QQ 入站插件鉴权（值只放服务器 .env / AstrBot 配置，不进仓库）
-# 主人 QQ 使用 OWNER_API_TOKEN；未配置时兼容 API_TOKEN
-OWNER_API_TOKEN=<owner-api-token>
-QQ_API_TOKEN=<qq-api-token>
-QQ_IDENTITY_SECRET=<shared-hmac-secret>
-QQ_IDENTITY_MAX_AGE_SECONDS=300
+# 完整知识库检索建议配置
+EMBEDDING_BASE_URL=https://<your-embedding-provider>/v4
+EMBEDDING_API_KEY=<your-embedding-key>
+EMBEDDING_MODEL=<your-embedding-model>
+EMBEDDING_DIMENSION=<your-embedding-dimension>
+
+# 生产环境至少配置一个长度足够且随机的 API token
+API_TOKEN=<your-random-api-token>
+
+# 数据目录可以先使用模板默认值
+DB_PATH=./data/assistant.db
+NOVEL_ROOT=./data/novels
 ```
 
-主人 QQ 的 AstrBot 配置填 `owner_api_token`，访客配置填 `api_token`（对应 `QQ_API_TOKEN`）；访客还需将 `identity_secret` 与 `QQ_IDENTITY_SECRET` 对齐。所有 Key/token/secret 只写脱敏占位符，不要复制真实值到文档或仓库。
-
-## 记忆系统（十通道）
-
-| 通道 | 表 | 注入时机 | 作用 |
-|------|-----|----------|------|
-| 情境记忆 | `memories` | 向量检索 Top-5 | 相似对话召回 |
-| 持久事实 | `facts` | 每次必注入 | 身份/项目/偏好（"我叫小月"） |
-| 教训 | `lessons` | 每次必注入 | 用户纠正永久遵守（`UNIQUE(content)` 去重，`kind=identity` 的身份设定优先且不占配额） |
-| 画像 | `profile` | 每次必注入 | 四维用户理解 |
-| 关切 | `concerns` | 每次必注入 | 在意的话题 + 搁置提醒 |
-| 术语 | `jargon_terms` | 命中时注入 | 解释口径一致 |
-| 风格范例 | `style_examples` | 每次必注入 | 认可的回复形式 |
-| 行为上下文 | `behavior_events` | 每次必注入 | 当前窗口/提交/活跃 |
-| 情绪状态 | `mood_log` | 有记录时注入 | 今日情绪曲线 + 负面连击降级 + 隔日跟进 |
-| 自我状态 | （只读 `memories`/`lessons`） | 有内容时注入 | 她自己的处境：熟络度/久别/刚被纠正 |
-
-记忆检索的三层增强：
-
-- **主观时间**：注入里的日期换成事件锚点（`[记忆] 接码平台记录那阵子:` 而不是 `2026-08-28:`）。锚点取自已有的 `daily_summaries` / `work_log`，零 LLM；无可用锚点时退回原始日期。人不按日期记事，按事件记事。
-- **一跳共现扩散**：捞出"语义不相近但同期出现"的记忆（问跳槽时把当时记的薪资对比也带上）。按数据量门控——带话题的记忆 <200 条时自动跳过，稀疏图上建不出可靠的边。
-- **使用反馈**：`memories` / `lessons` 都记 `hit_count`（不衰减的累计注入次数）。它和 `importance` 分工不同——后者会被"你好"这类短句刷高（越短越容易被向量命中），前者才能回答"这条到底被用过没有"。
-
-## 知识库分域检索
-
-**问题**：19 个文档（两本小说 + 项目文档 + PDF 教程 + 简历）混在一张表里检索，跨域污染严重。实测：
-
-| 提问 | 改造前命中 | 改造后 |
-|---|---|---|
-| 「李羽的能力是什么」 | **6/6 全错**（4 块另一本小说 + 2 块 LESSONS.md）| 跳过检索（facts 已覆盖），1004ms → 108ms |
-| 「命丛有哪些」 | 3/6 无关（反代教程 PDF、AI 模板、名词焦虑 PDF）| **6/6** 全是《寂静杀戮》 |
-| 「蜃宗为什么挖走命丛」 | 1/6 无关（LESSONS）| **6/6** 全对 |
-| 「RAG 检索怎么优化」 | 混检 | 限定项目文档域 |
-
-**根因不是检索算法写错，是 embedding 各向异性**：实测所有块的相似度都塌在 `0.023~0.025` 这个 0.002 宽的区间里（正常应有梯度：相关 0.7+、无关 0.3-）。向量对"相关/无关"没有区分力，`min_similarity=0.35` 这个配置形同虚设——没有任何块能达到。既然向量分不出来，就用**元数据过滤**兜住。
-
-**四层策略**：
-
-```
-1. 文档分域          novel(3350) / project_doc(123) / manual(30) / resume(17)
-2. 查询意图路由      书名 → 定位到那本书
-                    专名（实体表 160 个）→ 定位到那本书
-                    体系词（命丛/命图）→ 按出现频次独占度定位（≥90% 才收窄）
-                    项目术语/简历/教程 → 对应域
-                    facts 已覆盖且知识库无内容 → 明确跳过检索
-3. 严格分域 + 兜底   先只搜目标域；无结果再全域（BM25 仅 20ms，多跑一次可接受）
-4. 权重与降级        BM25 权重 1.5→3；向量 top-k 相似度极差 <0.005 时
-                    本轮放弃向量结果（等于随机噪声，融进 RRF 只会挤掉正确命中）
-```
-
-**耗时对比**（实测）：向量 218~1244ms（含 embedding 网络往返）· BM25 8~27ms · 实体索引 621ms · 邻域扩展 1~4ms。向量最贵而质量最差，所以提 BM25 权重同时省了大量耗时。
-
-**自我污染的处理**：`LESSONS.md`／`TESTING_GUIDE.md`／`AI_OPTIMIZATION_PROMPTS.md` 不再灌进知识库（`progress_sync.KNOWLEDGE_EXCLUDE`）。它们写满了「左志诚被谁挖走了命丛」这类用来说明踩坑的剧情引用，反复出现在剧情问题的命中里——**我们写的踩坑文档变成了检索噪声**。这类文档是给人读的，不是给检索用的。
-
-## 小说实体索引（五层检索）
-
-**解决的问题**：问「小说里出现过哪些命丛」时，向量检索几乎无用。实测数据（《寂静杀戮》1936 块）：
-
-| 检索方式 | 命中 | 精度 |
-|---|---|---|
-| 向量搜「命丛有哪些」 | top3 全是无关 PDF，小说排第四 | ≈0（sim 0.023 vs 0.025 无区分力）|
-| FTS5 搜**类名**「命丛」 | 308 / 1936 块 | **15.9%**，等于没筛 |
-| FTS5 搜**专名**「银河灵潮」 | 1 块 | **~100%** |
-
-两个根因：① 枚举式问法（"有哪些"）与叙事文本（"当看到那蜷缩起来的怪物时"）语义分布不重叠；② 具体实体有自己的专名，与类名不构成固定组合——原文是「你的命丛在左眼里，这个命丛，被称之为'夜海'」，专名与类名相隔 8 字，也有「命丛夜海」直连、「就剩下夜海这个命丛了」倒序。含「夜海」的 69 块里有 26 块**根本不含"命丛"二字**，搜类名必漏。
-
-**方案**：先建专名索引（`novel_entities` 表），把低精度的类名匹配转成高精度的专名匹配。
-
-```
-阶段一 · 建索引（一次性）
-  命名句定位（纯规则）  308 块 → 44 块候选，缩 86%
-    ├ 命名句模式：被称之为X / 叫做X / 名为X / 引号包裹
-    ├ 距离约束：专名须在类名 40 字内（否则全书专名都会被抽进来）
-    └ 枚举句补漏：「这四种命图分别是A，B，C以及D」——命名句模式抓不到
-  LLM 抽专名          只做一件事：从候选块里挑出真专名，输出仅含名字
-  跨类去重            同名归属证据更强的一类（枚举句 > 共现频次）
-  用户确认            verified=1 的不被后续自动抽取覆盖，note 优先于原文
-
-阶段二 · 检索（每次提问，零 LLM）
-  第0层 意图+实体识别  枚举意图（哪些/列举/清单/多少种）→ 查实体表拿专名
-  第1层 专名精确召回   逐个专名 FTS5 检索，不设 top_k（宁多勿漏）
-  第2层 块内定位裁剪   只取含专名的句子±1句；与"分为/共有/要求"共现的加权
-  第3层 聚合去重       同一设定被逐字重复引用时只留信息量最大的
-  第4层 预算裁剪+报告  按预算填充，并附完整度："收录 N 个，原文提到该有 M 个"
-```
-
-**效果对比**（同一个问题）：
-
-| | 改造前 | 改造后 |
-|---|---|---|
-| 命丛 | 1 个（冥王蛇） | **27 个**，每个带作用描述 |
-| 命图 | 1 个（银河灵潮） | **8 个**，含各自所需命丛数 |
-| 缺口 | 「没有可靠依据，不敢硬凑」 | 「原文提到七大神命丛，目前只确认 N 个，这个缺口是资料本身不全」 |
-
-《寂静杀戮》已抽出 **160 个实体**：命丛 27 · 命图 8 · 功法 72 · 势力 53。
-问「有哪些势力」时她能按地方帮派 / 官方 / 中原门派 / 异族分类答出，并报告
-「原文提到'三大势力'但清单里没明确对应」这类缺口。
-
-**四类实体的触发词差异**（实测调出来的）：
-
-| 类型 | 触发词 | 备注 |
-|---|---|---|
-| 命丛 / 命图 | `命丛` / `命图` | 专有类名，单词即可 |
-| 功法 | `道术` `功法` `秘籍` `武功` `招式` | 同一功法在不同语境下类名不同 |
-| 势力 | `门派` `兵团` `宗门` `教派` `帮派` `势力` `组织` | **不能用单字**「宗」「教」——会命中"宗旨""教训"，实测候选里混进了"孙悟空""恶意""封印" |
-
-第 4 层的完整度报告是关键：**缺口可见才谈得上诚实**。她现在能说清"确认了几个、原文该有几个、差的是什么"，而不是笼统地推回给用户。
-
-**为什么存索引而不存答案**：实体表存的是**名字**（客观、唯一、不随提问变化），问"有哪些"和问"夜海怎么修炼"用同一张表。若缓存问答结果，会随提问维度爆炸且不同批次互相矛盾。检索每次重做——纯 SQL 零 LLM，重做不心疼。
-
-> 关键原则（LESSONS 6.6/6.7）：**确定事实走注入，不靠检索**——状态、身份、偏好类必须每次必达。
->
-> 前八条通道都是"关于用户"的，第十条是唯一"关于她自己"的——没有它，每轮对话里的小月都是刚出生的。
-
-## 模块说明
-
-| 目录 | 内容 | 技术栈 |
-|------|------|--------|
-| `server/` | 聊天编排、记忆闭环、RAG 知识库、行为统计、反思/备份定时任务、API 鉴权（35 个服务模块） | FastAPI · SQLite · sqlite-vec · APScheduler |
-| `server/benchmarks/` | 检索评测（Hit@k/MRR，8 题测试集）+ 对话回归集（13 题，含 token 用量与成本） | — |
-| `server/scripts/` | 文档同步进知识库（docs/*.md → 可检索） | — |
-| `collector/` | 三通道采集（浏览器覆盖 Chromium 系全 profile + Firefox）、隐私脱敏、断网落盘、心跳上报与通道停滞告警、Win32 API 封装 | Python · ctypes |
-| `common/` | 跨端共享：脱敏规则（`redact.py`）、执行器文件操作与安全判据（`file_ops.py`）、快捷启动器（`launcher.py`） | Python |
-| `desktop/` | 自绘机器人（三套皮肤/呼吸/眨眼/状态灯）、气泡面板（Markdown/可缩放/最大化/尺寸记忆）、快捷启动器、本地执行器、托盘、健康检查、开机自启 | PySide6 · Qt6 |
-| `docs/` | 21 份文档（方案/参考/评审/部署/踩坑/进度/运维/研究/测试/审查报告 + 本文） | Markdown |
-| `scripts/` | 服务器部署、开机自启、桌面打包（一次性冒烟脚本在 `scripts/archive/`） | bash · PowerShell |
-
-### Web 前端（`server/app/web/static/`）
-
-两页手写 vanilla JS（零框架、零 CDN、零构建）：`/` 聊天页（SSE 流式输出、
-历史加载、停止/重试）与 `/novel/` 小说工作台（项目/章节/生成任务/全文搜索）。
-共享 `app.js`（apiFetch/Toast/主题/弹层辅助）与 `styles.css`（设计变量/弹层/抽屉）。
-
-- **防 XSS 契约**：所有 DOM 写入走 `createElement/textContent`，禁止 `innerHTML`，
-  `tests/test_novel_web_static.py` 回归锁定。
-- **缓存升版**：静态引用带 `?v=N` 指纹，改动任何 JS/CSS 后需同步递增两个 HTML
-  里的 `?v=N`（共 4 处），否则发版后浏览器可能命中旧缓存。
-
-### 服务端模块速查（`server/app/services/`）
-
-按职责分组，共 35 个模块：
-
-| 分组 | 模块 | 职责 |
-|---|---|---|
-| **记忆与反思** | `consolidation` `fact_extract` `analyzer` | 4h 摘要整合、事实三元组提取、按 kind 分留存期淘汰 |
-| | `self_reflect` `profile` `weekly_reflect` `daily_summary` | 纠正→教训（去重+分类）、四维画像、周报、每日小结 |
-| **检索增强** | `novel_entities` | 小说专名索引 + 五层检索（本文重点） |
-| | `subjective_time` `cooccurrence` | 事件锚点替代日期、一跳共现扩散 |
-| **拟人化** | `mood` `self_state` `initiative` `greeting` | 情绪轨迹与隔日跟进、她自己的状态、主动开口、个性化问候 |
-| | `identity_guard` `few_shot` `jargon` | 人格安全、风格范例、术语口径 |
-| **任务与追踪** | `goals` `unresolved` `concern_tracker` `worklog` `reminders` | 目标、未解决问题、关切话题、工作日志、定时提醒 |
-| **执行器** | `executor` `confirm` | 指令队列（原子认领+超时释放）、破坏性操作确认层 |
-| **产出** | `documents` `resume` `novel_writing` `chapter_analysis` | 文档生成、简历优化（.docx）、小说写作辅助、章节分析+跨章剧情存档 |
-| **垂直领域** | `fitness` | 健身减脂：台账 + 21 张权威知识卡（含训练学容量/次数/恢复） |
-| **基础设施** | `sanitize` `backup` `behavior_context` `qq_push` `progress_sync` `message_search` | 脱敏、热备份、行为注入、QQ 推送、进度同步、全文搜索 |
-
-### 数据表清单（SQLite，26 张业务表）
-
-| 类别 | 表 | 说明 |
-|---|---|---|
-| 记忆核心 | `memories` `memories_fts` `memory_vectors` | 原文 + FTS5 倒排 + 向量（含 `hit_count` 使用反馈）|
-| 长期知识 | `facts` `profile` `lessons` `concerns` `jargon_terms` `style_examples` | 六类注入通道，均按 `user_id` 隔离 |
-| 知识库 | `knowledge_chunks` `knowledge_fts` `chunk_vectors` `documents` | RAG 三件套 + 生成的文档 |
-| 小说 | `novel_entities` `novel_facts` `writing_log` `chapter_notes` | 专名索引 / 人工修订设定卡 / 写作台账 / 章节剧情存档（每章摘要+未回收伏笔） |
-| 行为 | `behavior_events` `work_log` `mood_log` | 采集事件 / 手动日志 / 情绪轨迹 |
-| 任务 | `goals` `unresolved_issues` `reminders` `executor_commands` | 目标 / 未解决 / 提醒 / 指令队列 |
-| 反思归档 | `weekly_reports` `daily_summaries` | 周报 / 每日小结 |
-| 垂直领域 | `fitness_log` `fitness_facts` | 健身台账 / 知识卡 |
-| 主动性 | `initiative_log` | 主动开口台账（上限/降频依据）|
-
-## 快速开始
-
-### 前置（一次性）
-
-1. Windows 与服务器都加入同一私有加密网络（服务走内网，不暴露公网）
-2. 配置两端开机自动连接，并确认服务器与 Windows 可通过私网地址互通
-
-### 1. 服务器端
+生成随机 API Token 的一种方式：
 
 ```bash
-git clone git@github.com:<用户名>/<仓库名>.git
-cd personal-ai-assistant/server
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp ../.env.example ../.env   # 填 LLM/Embedding Key + 生成 API_TOKEN
-# 当前实例采用手工进程启动；systemd 新装模板见 scripts/deploy_server.sh
-nohup .venv/bin/python run.py > /tmp/assistant.log 2>&1 &
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-`.env` 要点：`API_TOKEN`（32 字节随机）、`LLM_BASE_URL`（OpenCode Go 或 DeepSeek 官方）、`LLM_MODEL`（普通聊天）、`VISION_LLM_MODEL`（图片识别）、`EMBEDDING_DIMENSION`（智谱 embedding-3 = 2048）。实际运行状态与排查命令见 [OPS](docs/OPS.md)。
+把命令输出复制到本地 `.env`，不要复制到 README 或终端截图中。生产环境不能使用空 token、短 token 或示例占位符。
 
-### 2. 采集器（Windows）
+### 4. 启动服务端
 
-```powershell
-git clone https://github.com/<用户名>/<仓库名>.git
-cd personal-ai-assistant\collector
-python -m pip install -r requirements.txt
-# .env: SERVER_URL=http://<服务器私网IP>:8000 + API_TOKEN + GIT_REPOS
-python main.py
-# 开机自启（管理员 PowerShell）:  ..\scripts\install_autostart.ps1
-```
-
-### 3. 桌面机器人（Windows）
-
-```powershell
-cd ..\desktop
-python -m pip install -r requirements.txt
-python main.py
-```
-
-聊天面板操作：拖八方向边缘/角落缩放、按住标题栏移动、点 □ 或双击标题最大化（尺寸自动记忆）、📌 置顶、Esc/✕ 关闭。
-
-快捷启动器（对话即管理）：
-
-```
-记住 打开B站 = https://www.bilibili.com     # 注册网页（裸域名自动补 https）
-记住 打开示例应用 = D:/Program/YourApp/YourApp.exe # 注册应用（显式注册=用户授权，可出白名单）
-记住 在B站搜索 = https://search.bilibili.com/all?keyword={q}  # 搜索模板
-记住 用chrome打开GitHub = github.com        # 指定浏览器
-打开B站 / 在b站搜索 关键词 / 用chrome打开GitHub  # 使用（本地直行，零延迟）
-我的常用 / 忘掉B站                           # 列表（按使用排序）/ 删除
-```
-
-### 4. 同步项目文档进知识库（让机器人知道项目进展）
+第一次建议前台启动，方便直接看到错误：
 
 ```bash
-cd server && git pull
-.venv/bin/python scripts/sync_docs_to_knowledge.py
+cd <server-project-path>/server
+.venv/bin/python run.py
 ```
 
-## 测试与质量
+看到 uvicorn 开始监听后，另开一个终端做健康检查：
 
-| 项 | 状态 |
-|----|------|
-| 服务端隔离回归 | **1004 passed / 2 skipped**（`cd server && .venv/bin/python -m pytest tests/ -q`；视觉用例包含在此回归，未重复调用真实视觉服务） |
-| QQ 图片专项 | **5 passed**（`pytest qq/astrbot_plugin_xy/test_main.py -q`；仅使用 AstrBot/HTTP 桩） |
-| 桌面图片专项 | **6 passed**（`pytest desktop/tests/test_image_input.py -q`；对应选图、剪贴板、图片-only、multipart 与临时文件清理） |
-| 输出格式 | QQ 不渲染 Markdown，回复出口做确定性去标记转换（`plain_text.strip_markdown`）——prompt 禁令是概率性的，实测线上仍大量出现 `**加粗**` 与 `- 列表`。转换而非删除，信息不丢；写文档/简历流程不受影响 |
-| 测试隔离 | conftest 两层护栏：默认库挪出生产库 + `connect()` 上的 time-of-use 拦截器（测试期连生产库直接 RuntimeError）。曾因 14 个测试文件的隔离失效清空过真实库，见 LESSONS 6.31 |
-| 检索评测 | `benchmarks/eval_retrieval.py`：基线 MRR 0.906 → 混合 0.938 |
-| 对话回归集 | `benchmarks/chat_regression.py`：10 题固定问题集（身份/记忆召回/防幻觉/命令/纠正/格式），报告含真实 token 用量与成本；`--dry-run` 跑临时库零污染。一次约 0.09 元 |
-| 踩坑沉淀 | 20+ 个真实问题，每个配"根因+修复+教训"（LESSONS.md） |
-| 依赖 | requirements 全精确锁版 |
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/ready
+```
 
-## 图片识别一期验收清单
+`/api/health` 只检查进程是否存活；`/api/ready` 会检查数据库、定时任务、LLM 配置和向量能力。向量能力不可用时可能显示降级，但关键词检索仍可能工作；LLM 和数据库失败则需要先修复配置。
 
-以下清单按用户入口拆分；`[x]` 仅记录已经完成的本地/隔离测试证据，不把真实视觉调用或 QQ 发消息重复作为文档验收动作。验收基准日：**2026-09-05**。
+### 5. 后台运行
 
-### 桌面端
+确认前台运行正常后，可以暂时使用：
 
-- [ ] 通过“图片”选择 JPEG/PNG/WebP，确认附件名、清除按钮和大小提示正常。
-- [ ] 发送“图片 + 文字”和图片-only；确认图片请求直接走 multipart，不进入本地执行器。
-- [ ] 用“粘贴”或 `Ctrl+V` 粘贴剪贴板图片，发送成功、失败、取消后确认临时 PNG 已清理，原始图片不被修改。
-- [x] `pytest desktop/tests/test_image_input.py -q`：**6 passed**。
+```bash
+cd <server-project-path>/server
+nohup .venv/bin/python run.py > <server-log-path> 2>&1 &
+echo $! > <server-pid-path>
+```
+
+长期运行建议使用经过检查的 systemd 或其他进程管理器。仓库中的 `scripts/deploy_server.sh` 是 Ubuntu/Debian 示例模板，不代表每一台服务器当前都已经由 systemd 接管。使用前请检查仓库地址、服务用户、目录权限和 `.env` 位置。
+
+详细运维流程见 [服务端说明](server/README.md)、[部署环境说明](docs/DEPLOYMENT.md) 和 [运维手册](docs/OPS.md)。文档中的真实实例路径只适合维护者自己的服务器，不要照抄到公开仓库。
+
+## 六、打开 Web 聊天页和小说工作台
+
+服务端启动后提供两个主要页面：
+
+```text
+http://<server-private-address>:8000/
+http://<server-private-address>:8000/novel/
+```
+
+如果服务器只允许私有网络访问，请先让电脑或手机加入同一个私有网络。不要为了方便把 8000 端口直接暴露到公网。
+
+第一次访问页面时：
+
+1. 打开页面右下角或顶栏的 Token 设置。
+2. 输入服务器 `.env` 中对应的主人 token。
+3. Token 会保存到当前浏览器的本地存储中，不会追加到网页 URL。
+4. 如果返回 401，通常是 Token 缺失或错误；返回 403，通常是角色没有访问该接口的权限。
+
+### 聊天页
+
+聊天页支持：
+
+- 普通对话。
+- 历史消息查看和搜索。
+- SSE 流式回复、停止和重试。
+- 图片选择和图片提问。
+- 行为统计、每日小结和周报抽屉。
+- 明暗主题切换。
+
+### 小说工作台
+
+小说工作台的常用流程：
+
+1. 点击“新建”，创建一个小说项目。
+2. 进入项目后创建章节，填写章节号、标题和正文或草稿。
+3. 需要 AI 续写时创建生成任务，填写章节号和写作提示。
+4. 等待任务进入“待确认”状态。
+5. 阅读草稿和审查结果，确认后再发布。
+6. 通过章节全文搜索查找内容，索引异常时手动重建索引。
+
+生成任务的典型状态是：
+
+```text
+排队中 -> 生成中 -> 审阅中 -> 待确认 -> 已发布
+                         +-> 失败 -> 可重试
+```
+
+任务不会自动覆盖已发布正文。项目和章节使用版本号，多个页面同时编辑时可能返回版本冲突，此时应重新加载后再保存。
+
+## 七、安装 Windows 采集器（可选）
+
+采集器不是使用服务器聊天的必要条件。它只在你希望助手知道部分 Windows 工作状态、接收心跳或执行本地白名单指令时才需要。
+
+### 1. 创建环境并安装依赖
+
+在 Windows PowerShell 中执行：
+
+```powershell
+cd <project-root>
+py -3.12 -m venv collector\.venv
+.\collector\.venv\Scripts\python.exe -m pip install -r collector\requirements.txt
+```
+
+### 2. 配置服务器地址和 Token
+
+在 Windows 这份工作区的本地 `.env` 中填写：
+
+```dotenv
+SERVER_URL=http://<server-private-address>:8000
+API_TOKEN=<collector-compatible-token>
+
+# 默认关闭。只有明确需要时才打开
+COLLECT_WINDOW=false
+COLLECT_BROWSER=false
+COLLECT_GIT=false
+
+PRIVACY_FILTER=true
+GIT_REPOS=<windows-repository-path-1>,<windows-repository-path-2>
+```
+
+不要把服务器上的 LLM Key、Embedding Key、QQ secret 或其他无关密钥复制到 Windows `.env`。每台设备只保留它真正需要的配置。
+
+### 3. 前台运行测试
+
+```powershell
+cd <project-root>\collector
+.venv\Scripts\python.exe main.py
+```
+
+默认情况下，采集器只保留心跳和执行器能力，不上传窗口、浏览器和 Git 行为。启用采集前请先阅读 [采集器说明](collector/README.md)，确认你接受采集范围和隐私边界。
+
+采集器具备以下保护：
+
+- 事件离开 Windows 前先经过共享脱敏规则。
+- 断网时暂存在本地缓存，恢复网络后重试。
+- 通过事件幂等键避免重复入库。
+- 上报心跳，让服务器知道电脑是否在线。
+- 本地执行器只接受服务器白名单指令。
+
+### 4. 设置开机自启
+
+确认前台运行正常后，以管理员 PowerShell 执行：
+
+```powershell
+cd <project-root>
+.\scripts\install_autostart.ps1
+```
+
+脚本会注册采集器和桌面机器人任务。安装脚本会使用当前系统的 Python；如果系统中有多个 Python，请先确认 `Get-Command python` 指向正确环境。
+
+## 八、安装 Windows 桌面机器人（可选）
+
+### 1. 创建环境并安装依赖
+
+```powershell
+cd <project-root>
+py -3.12 -m venv desktop\.venv
+.\desktop\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt
+```
+
+### 2. 配置连接信息
+
+Windows 本地 `.env` 至少需要：
+
+```dotenv
+SERVER_URL=http://<server-private-address>:8000
+API_TOKEN=<desktop-compatible-token>
+```
+
+如果要让“小说工作台”按钮自动建立 SSH 隧道，可以增加：
+
+```dotenv
+NOVEL_TUNNEL_TARGET=<ssh-user>@<ssh-host>
+NOVEL_TUNNEL_LOCAL_PORT=18000
+NOVEL_TUNNEL_REMOTE_HOST=127.0.0.1
+NOVEL_TUNNEL_REMOTE_PORT=8000
+NOVEL_TUNNEL_IDENTITY_FILE=<optional-private-key-path>
+```
+
+更推荐把 SSH 主机别名、端口和私钥配置到 Windows 的 SSH config 中。不要把私钥内容、密码或真实主机信息写进仓库。
+
+### 3. 启动
+
+```powershell
+cd <project-root>\desktop
+.venv\Scripts\python.exe main.py
+```
+
+可以从悬浮球、托盘或聊天面板打开小说工作台。配置 SSH 隧道后，桌面端会先检查本地端口，再打开浏览器；没有配置隧道时会回退到 `SERVER_URL/novel/`。
+
+### 4. 日常操作
+
+- 左键或菜单打开聊天面板。
+- 右键悬浮球查看托盘功能。
+- 发送图片时可以选择文件或粘贴剪贴板图片。
+- 注册快捷启动器时，目标会进入本地白名单；涉及文件或破坏性操作时仍需要确认。
+- 机器人异常退出时，查看 `desktop/logs/` 下的日志；不要把日志直接上传到公开 Issue，因为日志可能包含路径或用户输入。
+
+详细说明见 [桌面端说明](desktop/README.md)。
+
+## 九、配置项怎么理解
+
+完整模板见 [.env.example](.env.example)。下面只解释最常见的配置。
+
+| 配置 | 用途 | 是否必需 |
+|---|---|---:|
+| `HOST` / `PORT` | 服务端监听地址和端口 | 是，有默认值 |
+| `LLM_BASE_URL` | OpenAI 兼容模型服务地址 | 是 |
+| `LLM_API_KEYS` | 一个或多个 LLM Key | 是，生产环境至少一个 |
+| `LLM_MODEL` | 普通聊天模型名 | 是 |
+| `VISION_LLM_MODEL` | 图片识别模型名 | 使用图片时需要 |
+| `EMBEDDING_BASE_URL` | 向量服务地址 | 使用向量检索时需要 |
+| `EMBEDDING_API_KEY` | 向量服务 Key | 使用向量检索时需要 |
+| `EMBEDDING_DIMENSION` | 向量维度 | 必须与服务一致 |
+| `DB_PATH` | SQLite 数据库位置 | 有默认值 |
+| `NOVEL_ROOT` | 小说项目文件根目录 | 有默认值 |
+| `API_TOKEN` | 兼容旧客户端的共享 token | 生产环境至少有一个角色 token |
+| `OWNER_API_TOKEN` | 主人 Web/内部访问 token | 推荐配置 |
+| `COLLECTOR_API_TOKEN` | 采集器角色 token | 分角色部署时使用 |
+| `EXECUTOR_API_TOKEN` | Windows 执行器角色 token | 分角色部署时使用 |
+| `QQ_API_TOKEN` | QQ 访客入站 token | 使用访客 QQ 时需要 |
+| `QQ_IDENTITY_SECRET` | QQ 访客身份签名 secret | 使用访客 QQ 时需要 |
+| `QQ_PUSH_URL` | 服务器推送 QQ 提醒的地址 | 使用 QQ 提醒时需要 |
+| `QQ_PUSH_TOKEN` | 出站 QQ 推送 token | 使用 QQ 提醒时需要 |
+| `QQ_ADMIN_ID` | 接收提醒的主人 QQ 号 | 使用 QQ 提醒时需要 |
+
+### 多 Key 和故障切换
+
+`LLM_API_KEYS` 可以用逗号或换行分隔多个 Key。服务端会在临时失败、超时或 Key 冷却时按策略切换。日志只能记录 Key 数量或脱敏指纹，不应打印 Key 原文。
+
+### 角色 token 的简单理解
+
+- 浏览器聊天页和小说工作台：使用主人 token。
+- 采集器上报行为：使用采集器 token。
+- Windows 执行器轮询：使用执行器 token。
+- QQ 访客：使用 QQ token，并额外提供 HMAC 身份签名。
+
+如果你只是单人本地使用，可以先配置 `API_TOKEN`；如果要把 QQ、采集器和执行器分开，建议为不同角色配置不同 token。
+
+## 十、QQ 接入（可选）
+
+QQ 接入链路如下：
+
+```text
+手机 QQ 私聊
+    -> NapCat
+    -> AstrBot
+    -> astrbot_plugin_xy
+    -> FastAPI /api/chat 或 /api/chat/vision
+```
+
+### 基本步骤
+
+1. 准备 NapCat 和 AstrBot 运行环境。
+2. 把 `qq/astrbot_plugin_xy/` 作为 AstrBot 插件使用。
+3. 在 AstrBot 配置中填写服务器地址、主人 QQ 号、主人 token、访客 token 和身份 secret。
+4. 服务端 `.env` 中配置对应的角色 token 和 `QQ_IDENTITY_SECRET`。
+5. 先用主人私聊测试文字，再测试图片和文件。
+6. 确认群聊始终静默。
+
+常见配置项：
+
+| 插件配置 | 说明 |
+|---|---|
+| `api_base` | FastAPI 服务根地址 |
+| `owner_qq` | 主人 QQ 号，只填本地配置 |
+| `owner_api_token` | 主人 token |
+| `api_token` | 访客 QQ token |
+| `identity_secret` | 与服务器 `QQ_IDENTITY_SECRET` 一致 |
+| `onebot_http` | NapCat onebot HTTP 地址 |
+| `onebot_token` | NapCat onebot HTTP token |
+| `vision_timeout` | 图片下载和识别超时 |
+| `container_path_map` | NapCat 容器路径到宿主路径的映射 |
+
+安全行为：
+
+- 群聊消息和群聊图片在上传前静默。
+- 访客只能访问自己的对话范围，不能因为请求体伪造 `user_id` 取得主人权限。
+- 主人文件入库只允许主人私聊。
+- 图片只接受 JPEG、PNG、WebP，默认 10 MB。
+- 入站聊天 token 和出站提醒 token 是两条不同链路，不要混用。
+
+完整排障和升级步骤见 [QQ 接入运维手册](docs/QQ_OPS.md)。
+
+## 十一、常用聊天示例
+
+### 工作日志
+
+```text
+记录：下午完成了知识库检索测试
+写作记录：第5章 3200字
+写作进度
+```
+
+### 提醒
+
+```text
+30分钟后提醒我喝水
+明早9点提醒我开会
+今晚8点提醒我查看服务器日志
+我的提醒
+取消提醒：开会
+```
+
+### 目标
+
+```text
+目标：完成个人助手部署
+目标进度：服务器已经启动，正在配置 QQ
+目标完成：完成个人助手部署
+```
+
+### 文档和简历
+
+```text
+写文档：标题：部署说明，内容：整理本项目的安装和排障步骤
+优化简历：目标岗位：运维工程师
+```
+
+简历优化前，需要先把简历文档上传到知识库。模型只应改写已有真实信息，不应凭空添加经历、技能或数据。
+
+### 小说辅助
+
+```text
+检查设定冲突：这里粘贴新写的正文
+分析章节：这里粘贴章节正文
+章节存档：第5章 主角在雨夜发现了新的线索（伏笔：黑色印记、旧地图）
+续写：主角站在门口，听见屋内传来第二个脚步声
+```
+
+长正文和正式工作流建议使用小说工作台，而不是把整本书一次性粘贴到聊天框。
+
+## 十二、小说数据和工作流
+
+### 数据保存在哪里
+
+小说项目有两部分数据：
+
+1. SQLite 中的项目、章节、生成任务、项目成员、索引和审计记录。
+2. `NOVEL_ROOT` 下的项目文件，例如已发布章节和后续扩展的设定/大纲文件。
+
+`NOVEL_ROOT` 是安全边界：项目根目录必须位于该目录内，文件扩展名和大小也有限制。不要把 `NOVEL_ROOT` 指向整个用户家目录、系统目录或 Git 仓库根目录。
+
+### 生成任务为什么不是立即返回正文
+
+小说生成可能需要较长时间，因此工作台会：
+
+1. 创建一个带幂等键的任务。
+2. 由服务器调度器定期认领任务。
+3. 记录生成、审阅、失败和重试状态。
+4. 把结果放入草稿和待确认状态。
+5. 用户确认后才发布并同步文件。
+
+服务器重启后，过期的运行中任务会被恢复；失败任务可以在工作台重试。若任务长时间停在排队中，先检查服务器是否在线、LLM 是否就绪和定时任务是否运行。
+
+### 当前明确限制
+
+以下能力目前不要当成已经完成的功能：
+
+- 多平台榜单自动抓取。
+- 需要登录态的浏览器 CDP 扫榜。
+- 完整的榜单趋势分析。
+- 自动导入整本小说并逆向生成完整设定。
+- 完整的总纲、卷纲、细纲编辑器。
+- 外部 `oh-story-claudecode` Skill 包的服务器端运行。
+
+这些能力以后如果要做，应先设计独立任务、权限、存储和恢复机制，不能直接把外部 CLI、Hook 或 Agent 文件当成 Web 后端使用。
+
+## 十三、定时任务
+
+服务器启动后会注册定时任务。默认时间按项目配置使用的时区执行，常见任务包括：
+
+| 任务 | 默认频率或时间 | 作用 |
+|---|---|---|
+| 摘要整合 | 每 4 小时 | 把近期碎片整理成摘要、主题和事实 |
+| 记忆淘汰 | 每 6 小时 | 清理过期噪声和低价值内容 |
+| 聊天幂等清理 | 每 6 小时 | 清理过期请求记录 |
+| 数据备份 | 每日凌晨 | SQLite 热备份和滚动保留 |
+| 文档进度同步 | 每日凌晨后 | 将项目文档同步到知识库 |
+| 画像刷新 | 每日一次、周报前再刷新 | 更新用户画像 |
+| 每日小结 | 每日晚上 | 生成当天总结 |
+| 主动开口 | 默认关闭 | 根据开关决定是否推送主动消息 |
+| 周报 | 每周一次 | 生成学习和工作反思 |
+| QQ 提醒推送 | 每分钟检查 | 推送到期提醒 |
+| 小说生成 | 每分钟最多处理一个 | 执行排队中的小说生成任务 |
+
+定时任务失败时会记录日志；如果配置了 QQ 推送，部分失败会向主人发送告警。
+
+## 十四、隐私和安全
+
+### 配置和数据
+
+- `.env`、数据库、小说正文、日志、采集缓存和备份不提交 GitHub。
+- 示例配置只使用 `<your-...>` 形式的占位符。
+- 不要在 Issue、截图和日志中公开 Token、Key、QQ 号、Cookie、HMAC secret 或服务器地址。
+- 生产环境至少配置一个随机且足够长的 API token。
+- 不要把服务端 `.env` 原样复制到 Windows 或 QQ 宿主；每个组件只配置自己需要的字段。
+
+### 网络
+
+- 推荐让 API 只通过 Tailscale、VPN 或 SSH 隧道访问。
+- 不建议把 8000 端口直接暴露到公网。
+- SSH 使用密钥认证，并按服务器安全策略限制登录。
+- 浏览器 Token 存在本地浏览器存储中；共用电脑使用完应清除。
+
+### 采集
+
+- Windows 窗口、浏览器和 Git 采集默认关闭。
+- 开启采集前，先检查 `.env` 中的 `COLLECT_WINDOW`、`COLLECT_BROWSER` 和 `COLLECT_GIT`。
+- 事件在 Windows 本地脱敏后再上传。
+- 浏览器采集不应被理解为上传网页正文；具体采集字段以 `collector/` 实现为准。
+- 断网缓存也属于个人数据，不要提交或上传到公共位置。
 
 ### QQ
 
-- [ ] 主人私聊发送图片并带问题，确认回复来自 `/api/chat/vision`；访客私聊可识图但不能读取主人记忆或调用主人专属功能。
-- [ ] 群聊图片在任何上传前静默并 `stop_event`，不触发 API/默认 LLM。
-- [ ] 优先验证 NapCat `get_file`；失败时再验证 CDN 直连/`download_proxy` 代理兜底，并检查临时文件最终删除。
-- [ ] 验证 JPEG/PNG/WebP 的文件头、MIME、10MB 上限、错误提示，以及 `QQ_API_TOKEN` + `identity_secret` 对齐的 HMAC/request_id。
-- [x] `pytest qq/astrbot_plugin_xy/test_main.py -q`：**5 passed**。
+- 群聊默认静默。
+- 主人和访客按 token、HMAC 和 QQ 号分流。
+- 服务端不信任请求体单独提交的身份字段。
+- 图片原始字节不进入长期记忆。
 
-### Web/API
+### 本地执行器
 
-- [ ] 先执行无副作用的 `GET /api/health` 与 `GET /api/ready`；不得把真实视觉调用放进健康检查。
-- [ ] 用 `multipart/form-data` 验证 `image`、可选 `message`、必填 `request_id` 和可选 `user_id`；确认格式、MIME、10MB 边界按预期返回。
-- [ ] 配置角色 token 后验证 `owner`/`internal`/`qq` 可访问，`collector`/`executor` 被拒绝；QQ 请求还需通过 HMAC 身份校验。
-- [ ] 用同一用户同一 `request_id` 重试确认成功响应复用；更换消息或图片返回 `409`，视觉失败不缓存并可安全重试。
-- [x] `cd server && .venv/bin/python -m pytest tests/ -q`：**1004 passed / 2 skipped**，视觉用例包含在此回归。
+- 服务器端会检查动作类型和路径白名单。
+- Windows 端只允许白名单根目录中的文件操作。
+- 打开应用和破坏性操作需要额外确认。
+- 不提供任意 Shell 或远程脚本执行。
 
-### MCP
+## 十五、备份、恢复和数据迁移
 
-- [ ] 明确一期边界：MCP 不承载图片上传；图片入口只验收桌面端、QQ、Web/API，MCP 只验收既有本地工具链。
-- [ ] 保持 `MCP_ENABLED=false` 时关闭；启用后只允许独立 stdio 进程，`MCP_STDIO_ROLE` 只能是 `owner`/`internal`，`MCP_STDIO_USER_ID` 不得绕过主人边界。
-- [ ] 检查 MCP stdout 只输出协议内容、普通日志走 stderr；确认读取权限、显式确认闸门和未批准的 shell/Python/删除工具仍关闭。
-- [ ] 检查 `mcp_audit_logs` 记录 user/role/tool/request_id/client_name、成功失败和耗时，参数只保存脱敏摘要，不保存图片或敏感全文。
+建议至少备份两类数据：
 
-## 文档导航
+1. 服务端 SQLite 数据库。
+2. `NOVEL_ROOT` 下的小说项目目录。
 
-| 文档 | 内容 |
-|------|------|
-| [实施方案细则](docs/实施方案细则.md) | 最初的设计蓝图与里程碑 |
-| [REFERENCES](docs/REFERENCES.md) | 理论参考（认知科学/Agent 记忆范式）+ 学习路径 |
-| [LESSONS](docs/LESSONS.md) | 实践日志：20+ 问题复盘 + 13 条工程原则 |
-| [LEARNING_PROGRESS](docs/LEARNING_PROGRESS.md) | 六课+进阶课进度账本 |
-| [OPS](docs/OPS.md) | 组件启停/日志/排查速查 |
-| [DEPLOYMENT](docs/DEPLOYMENT.md) | 部署环境（脱敏版） |
-| [AI_REVIEW](docs/AI_REVIEW.md) | 三轮外部评审的采纳/拒绝 |
-| [AI_OPTIMIZATION_PROMPTS](docs/AI_OPTIMIZATION_PROMPTS.md) | 让 AI 继续优化的提问模板 |
-| [RESEARCH_GUIDE](docs/RESEARCH_GUIDE.md) | 心智功能术语地图 + 检索方法 |
-| [TESTING_GUIDE](docs/TESTING_GUIDE.md) | 记忆/反思/人格/情绪测试法 |
+升级或迁移前：
 
-## 路线图
+```text
+1. 停止服务端，避免 SQLite 正在写入。
+2. 复制数据库和小说目录到受保护的备份位置。
+3. 记录当前 Git 提交号和配置变更，但不要备份到公开仓库。
+4. 更新代码并运行健康检查。
+5. 确认聊天、项目列表和章节内容正常后，再删除旧实例。
+```
 
-| 优先级 | 内容 | 状态 |
-|--------|------|------|
-| 已完成 | 六课带教 + RAG 知识库（第 9 课）+ 检索评测（第 10 课） | ✅ |
-| 已完成 | 第 11 课 Agent 工具链（执行器队列 + 桌面本地执行）/ 第 12 课 Goal 系统 + unresolved 追踪 / 第 13 课 文件手 + 脚本脚 | ✅ |
-| 已完成 | 执行器安全加固（白名单归一化 / 入队强制校验 / open 黑名单 / 原子认领） | ✅ |
-| 已完成 | 第 14 课 快捷启动器（别名注册常用软件/网页/搜索模板 + 指定浏览器 + 失败建议） | ✅ |
-| 已完成 | 第 8 课 QQ 私聊接入（AstrBot 插件 + 提醒 QQ 推送唯一通道 + 群聊零暴露白名单） | ✅ |
-| 已完成 | 全量代码审计整修（执行器绕过 / 命令误吞 + 确认层 / 脱敏合并 / git 游标 / 淘汰与备份 / 桌面稳定性 / 采集可靠性，302→421 测试） | ✅ |
-| 已完成 | 测试隔离修复（14 个文件的库隔离失效曾清空生产库）+ conftest 两层护栏 | ✅ |
-| 已完成 | 拟人化：教训去重与身份优先 / 隔日情绪跟进 / 自我状态注入 / 主动开口通道（默认关闭，421→459 测试） | ✅ |
-| 已完成 | 主观时间锚定 / 身份守卫 / 使用反馈 hit_count / 一跳共现扩散（467→548 测试） | ✅ |
-| ⭐⭐ | 第 6 课 CI / 第 7 课仪表盘 | ⏳ |
-| ⭐ | 注入可观测性：单通道超时护栏 + 慢注入耗时分解 + 最小 trace 表 | ⏳ |
-| ⭐ | 拟人化续：打字节奏、表情联动（桌面端，需实机视觉验证） | ⏳ |
+不要把数据库、小说目录或 `.env` 放在 GitHub 作为“同步方案”。Windows 端的代码更新统一来自 GitHub；个人数据通过服务器 API、项目文件同步或专用备份流程管理。
 
-## 安全
+## 十六、更新代码
 
-- 全 API `API_TOKEN` 鉴权（32 字节随机，不入库）
-- 服务仅私有专线可达；公网仅暴露 SSH 22（密钥 + fail2ban）
-- 事件出网前本地脱敏（密码/token/手机号/邮箱/各类云凭证；规则单一来源 `common/redact.py`，两端共用防漂移）
-- 执行器纵深防御：扩展名黑名单（归一化尾点/尾空格/NTFS 数据流，防变形绕过）→ 白名单根目录校验（realpath 解析链接）→ 破坏性操作二次确认；别名解析对路径样式目标不生效，避免劫持
-- 敏感信息（IP/密钥/token）只存本地笔记，**禁止入仓库**（每次提交前终扫）
+### Windows 端
+
+Windows 端必须从 GitHub 更新，不要从服务器工作区直接复制代码：
+
+```powershell
+cd <project-root>
+git pull --ff-only origin main
+```
+
+如果工作区有本地修改，先保存或提交到自己的分支，再执行拉取。不要用强制覆盖命令处理冲突。
+
+### 服务器端
+
+```bash
+cd <server-project-path>
+git pull --ff-only origin main
+```
+
+拉取后需要重启正在运行的服务进程，否则旧进程仍会继续使用旧代码。重启方式以当前实例的进程管理方式为准，不要假设所有服务器都有同名 systemd 服务。
+
+更新后建议检查：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/ready
+```
+
+如果改动了 Web JavaScript 或 CSS，还要确认页面引用的版本参数已经更新，避免浏览器继续使用旧缓存。
+
+## 十七、测试和开发
+
+### 服务端测试
+
+```bash
+cd <project-root>
+server/.venv/bin/python -m pytest server/tests/ -q
+```
+
+服务端测试使用隔离数据库；不要把测试指向真实生产数据库。
+
+### QQ 插件测试
+
+在具备测试依赖的环境中执行：
+
+```bash
+python -m pytest qq/astrbot_plugin_xy/test_main.py -q
+```
+
+测试使用 AstrBot 和 HTTP 桩，不应发送真实 QQ 消息。
+
+### Windows 桌面端测试
+
+```powershell
+cd <project-root>
+.\desktop\.venv\Scripts\python.exe -m pytest desktop\tests\ -q
+```
+
+### 静态检查
+
+```bash
+cd <project-root>
+server/.venv/bin/python -m pip install ruff
+server/.venv/bin/ruff check .
+node --check server/app/web/static/chat.js
+node --check server/app/web/static/novel/index.js
+bash -n scripts/deploy_server.sh
+```
+
+GitHub Actions 会在推送和 Pull Request 时运行服务端、QQ、桌面端、ruff、JavaScript 和 shell 检查。测试结果应以当前 CI 页面和本地实际输出为准，不要把旧的测试数量写死在文档中。
+
+## 十八、常见问题
+
+### 1. 浏览器打开页面返回 401
+
+检查：
+
+- 是否在页面 Token 弹窗中填写了 token。
+- token 是否来自当前服务器的 `.env`。
+- 是否把访客 QQ token 当成了主人 Web token。
+- 浏览器是否保存了旧 token；必要时清除站点本地存储后重新填写。
+
+### 2. `/api/ready` 返回 503
+
+先执行 `/api/health` 确认进程还活着，再查看服务端日志。常见原因包括：
+
+- LLM Key 没有配置或仍是模板值。
+- 模型名为空。
+- 数据库无法打开或迁移失败。
+- 定时任务没有正常启动。
+- 生产环境 token 不符合长度要求。
+
+### 3. Windows 机器人显示离线
+
+检查：
+
+- Windows 是否加入与服务器相同的私有网络。
+- `SERVER_URL` 是否正确。
+- Token 是否匹配。
+- 服务端 `/api/health` 是否正常。
+- `desktop/logs/desktop.log` 和 `faulthandler.log` 是否有错误。
+
+### 4. 采集器没有数据
+
+这可能是正常的，因为三个采集开关默认都是关闭的。先检查：
+
+```dotenv
+COLLECT_WINDOW=true
+COLLECT_BROWSER=true
+COLLECT_GIT=true
+```
+
+只打开你确实需要的通道，并确认 `GIT_REPOS` 使用的是 Windows 本地路径。再查看采集器日志和任务计划状态。
+
+### 5. QQ 私聊没有回复
+
+检查 `api_base`、主人/访客 token、`identity_secret` 和服务端健康状态。主人请求和访客请求使用不同权限；不要把出站 `QQ_PUSH_TOKEN` 填到入站聊天 token 中。
+
+### 6. 群聊中机器人没有回复
+
+这是预期行为。项目设计为群聊静默，避免把个人记忆或私人信息带入群聊。
+
+### 7. 图片识别失败
+
+检查：
+
+- 是否是 JPEG、PNG 或 WebP。
+- 是否超过默认 10 MB。
+- `VISION_LLM_MODEL` 和视觉 API Key 是否配置。
+- QQ 入口是否能通过 NapCat 取到图片。
+- 图片请求是否使用了 `/api/chat/vision`，而不是普通 JSON `/api/chat`。
+
+### 8. 小说任务一直排队
+
+检查服务端是否正常运行、调度器是否启动、LLM 是否就绪，以及任务是否因版本冲突或失败进入错误状态。小说生成任务不是即时同步接口，默认由调度器每分钟处理。
+
+### 9. 页面显示旧版本
+
+先强制刷新浏览器。如果仍然是旧页面，检查前端 HTML 中的 `?v=` 资源版本是否随 JS/CSS 修改同步增加，然后重启服务端进程。
+
+### 10. 想把小说或数据库放进 GitHub
+
+不要这样做。GitHub 只同步代码和脱敏文档；小说正文、数据库、日志、备份和密钥应留在服务器私有存储中。
+
+## 十九、进一步阅读
+
+| 文档 | 适合什么时候看 |
+|---|---|
+| [.env.example](.env.example) | 第一次配置环境变量 |
+| [服务端说明](server/README.md) | 了解 FastAPI、API 和服务端启动方式 |
+| [采集器说明](collector/README.md) | 配置 Windows 行为采集和隐私过滤 |
+| [桌面端说明](desktop/README.md) | 配置悬浮机器人、图片和 SSH 隧道 |
+| [QQ 接入运维手册](docs/QQ_OPS.md) | 配置 NapCat、AstrBot 和 QQ 鉴权 |
+| [小说 API 契约](docs/novel-api-contract.md) | 对接小说项目、章节和生成任务 API |
+| [运维手册](docs/OPS.md) | 启停服务、查日志和排障 |
+| [部署环境说明](docs/DEPLOYMENT.md) | 了解服务器部署边界和安全注意事项 |
+| [测试指南](docs/TESTING_GUIDE.md) | 编写和运行测试 |
+| [经验教训](docs/LESSONS.md) | 查看历史问题复盘和工程约束 |
+| [架构对比](docs/ARCHITECTURE_COMPARISON.md) | 了解设计取舍 |
+| [许可证](LICENSE) | 查看使用和分发限制 |
+
+## 二十、当前路线和已知边界
+
+已经具备的基础能力：
+
+- 服务端聊天、记忆、知识库和图片识别。
+- Web 聊天页和小说工作台。
+- Windows 桌面端、采集器和本地执行器。
+- QQ 私聊、图片和主人文档入库。
+- API 角色鉴权、QQ 身份签名、请求幂等和定时任务。
+- 小说项目、章节、生成任务、审阅、发布、索引和审计基础设施。
+
+仍需要单独设计或验证的方向：
+
+- 更完整的 Web 仪表盘和运营视图。
+- 更丰富的小说大纲、设定和细纲编辑器。
+- 榜单采集、平台登录态和浏览器自动化。
+- 更复杂的多 Agent 写作流程。
+- 生产环境的标准化进程管理和灾备演练。
+
+外部小说 Skill 包不属于当前仓库的运行依赖。本项目不会因为 README 中提到某个外部项目，就自动获得该项目的功能。
 
 ## 许可证
 
-私有项目，保留所有权利（见 [LICENSE](LICENSE)）。代码仅供本人使用与学习，
-可阅读源码做技术交流，但未经书面许可不得复制、分发或用于商业用途。
+这是一个个人项目，许可证和使用限制见 [LICENSE](LICENSE)。除非获得明确许可，不要复制、分发、公开部署或将其用于商业用途。第三方依赖遵循各自许可证。
 
-依赖的第三方库遵循其各自的开源许可证。设计上参考过的外部项目见
-[LESSONS 6.34](docs/LESSONS.md)——仅借鉴公开文档描述的概念，未复制代码。
+## 贡献和安全报告
+
+提交代码前请：
+
+1. 运行相关测试和静态检查。
+2. 检查 `git diff` 中没有 `.env`、日志、数据库、小说正文、Token、Key、QQ 号、私网地址或个人路径。
+3. 不要在 Issue 中公开敏感配置或原始日志。
+4. Windows 和服务器都通过 GitHub 更新，不要直接互相复制工作区文件。

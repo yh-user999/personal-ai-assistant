@@ -552,6 +552,18 @@ async function saveProject() {
   }
 }
 
+async function requestProjectDelete(project) {
+  const baseUrl = '/api/novel/projects/' + encodeURIComponent(project.project_id);
+  const params = '?expected_version=' + encodeURIComponent(project.version);
+  try {
+    // 某些反向代理默认拒绝 DELETE；POST 兼容入口优先保证工作台可用。
+    return await apiFetch(baseUrl + '/delete' + params, {method: 'POST'});
+  } catch (e) {
+    if (e.status !== 405) throw e;
+    return apiFetch(baseUrl + params, {method: 'DELETE'});
+  }
+}
+
 async function deleteCurrentProject() {
   if (!currentProject) return;
   const project = currentProject;
@@ -563,11 +575,7 @@ async function deleteCurrentProject() {
   const btn = $('delete-project-btn');
   btn.disabled = true;
   try {
-    const result = await apiFetch(
-      '/api/novel/projects/' + encodeURIComponent(project.project_id)
-      + '?expected_version=' + encodeURIComponent(project.version),
-      {method: 'DELETE'}
-    );
+    const result = await requestProjectDelete(project);
     stopAutoRefresh();
     currentProject = null;
     clearProjectWorkspace();

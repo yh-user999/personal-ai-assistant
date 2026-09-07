@@ -150,6 +150,7 @@ def update_project(project_id: str, req: ProjectUpdateRequest, request: Request)
 
 
 @router.delete("/novel/projects/{project_id}")
+@router.post("/novel/projects/{project_id}/delete")
 def delete_project(project_id: str, request: Request, expected_version: int | None = Query(None, ge=1)):
     repo, user_id = _repo(request)
     if not repo.can_access(project_id, user_id, write=True):

@@ -52,7 +52,7 @@ def test_shared_dom_clear_helper_is_loaded_before_workbench_use():
     html = NOVEL_HTML.read_text(encoding="utf-8")
     assert "function clearNode(node)" in app_js
     assert "clearNode(" in novel_js
-    assert html.index('src="/app.js?v=4"') < html.index('src="/novel/index.js?v=5"')
+    assert html.index('src="/app.js?v=4"') < html.index('src="/novel/index.js?v=6"')
 
 
 def test_project_creation_reports_conflicts_and_refreshes_selection():
@@ -73,9 +73,11 @@ def test_project_management_controls_support_rename_and_delete():
     assert "method: 'PATCH'" in js
     assert "deleteCurrentProject" in js
     assert "method: 'DELETE'" in js
+    assert "baseUrl + '/delete'" in js
+    assert "e.status !== 405" in js
     assert "window.confirm" in js
     assert "project-toolbar" in css
-    assert 'src="/novel/index.js?v=5"' in html
+    assert 'src="/novel/index.js?v=6"' in html
     assert 'href="/novel/index.css?v=4"' in html
 
 

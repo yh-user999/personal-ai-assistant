@@ -69,6 +69,30 @@ def test_novel_project_rename_and_delete_api(tmp_path, monkeypatch):
         assert all(p["project_id"] != project_id for p in client.get("/api/novel/projects").json()["projects"])
 
 
+def test_novel_project_delete_post_compatibility_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "project-delete-post.db"))
+    monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))
+    monkeypatch.setattr(settings, "api_token", "")
+    monkeypatch.setattr(settings, "owner_api_token", "")
+    monkeypatch.setattr(settings, "internal_api_token", "")
+    reset_connections()
+    with TestClient(app) as client:
+        created = client.post("/api/novel/projects", json={"name": "兼容删除书", "slug": "delete-post"})
+        assert created.status_code == 200
+        project_id = created.json()["project_id"]
+
+        deleted = client.post(
+            f"/api/novel/projects/{project_id}/delete", params={"expected_version": 1}
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "project_id": project_id,
+            "deleted": True,
+            "files_deleted": True,
+            "cleanup_pending": False,
+        }
+
+
 def test_novel_project_delete_reports_version_conflict(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "delete-version.db"))
     monkeypatch.setattr(settings, "novel_root", str(tmp_path / "novels"))

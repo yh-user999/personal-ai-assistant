@@ -5,13 +5,14 @@
 """
 import logging
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 
 from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -330,15 +331,24 @@ CREATE TABLE IF NOT EXISTS dynamic_classes (
 -- 写入是 fire-and-forget 后台任务，失败不影响回复；30 天由 evict_stale 清理。
 CREATE TABLE IF NOT EXISTS request_traces (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id TEXT NOT NULL DEFAULT '',
+  request_id TEXT NOT NULL DEFAULT '',
   user_id TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  route_name TEXT NOT NULL DEFAULT '',
   query TEXT NOT NULL,
   ts TEXT NOT NULL,
   routing TEXT DEFAULT '{}',
+  retrieval TEXT DEFAULT '{}',
   retrieval_path TEXT DEFAULT '',
   vector_degraded INTEGER DEFAULT 0,
   healer TEXT DEFAULT '',
   injection_bytes TEXT DEFAULT '{}',
-  search_ms INTEGER DEFAULT 0
+  stages TEXT DEFAULT '{}',
+  search_ms INTEGER DEFAULT 0,
+  total_latency_ms INTEGER DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'ok',
+  error_code TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_traces_ts ON request_traces(ts);
 
@@ -585,7 +595,69 @@ _MIGRATIONS = [
     "ALTER TABLE novel_generation_jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE novel_generation_jobs ADD COLUMN heartbeat_at TEXT",
     "ALTER TABLE novel_generation_jobs ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''",
+    # 阶段 1 Trace：保留旧列兼容读取，新增请求级元数据与稳定载荷。
+    "ALTER TABLE request_traces ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE request_traces ADD COLUMN request_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE request_traces ADD COLUMN channel TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE request_traces ADD COLUMN route_name TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE request_traces ADD COLUMN retrieval TEXT DEFAULT '{}'",
+    "ALTER TABLE request_traces ADD COLUMN stages TEXT DEFAULT '{}'",
+    "ALTER TABLE request_traces ADD COLUMN total_latency_ms INTEGER DEFAULT 0",
+    "ALTER TABLE request_traces ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'",
+    "ALTER TABLE request_traces ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
 ]
+
+
+def _migrate_request_traces(conn: sqlite3.Connection) -> None:
+    """补齐 Trace 元数据、为历史行生成 trace_id，并建立查询索引。"""
+    if not _table_exists(conn, "request_traces"):
+        return
+    owner = settings.qq_admin_id.strip() or "owner"
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(request_traces)").fetchall()}
+    # _MIGRATIONS 已负责加列；这里兼容被中断在迁移列表中间的旧库。
+    fallback_columns = {
+        "trace_id": "TEXT NOT NULL DEFAULT ''",
+        "request_id": "TEXT NOT NULL DEFAULT ''",
+        "channel": "TEXT NOT NULL DEFAULT ''",
+        "route_name": "TEXT NOT NULL DEFAULT ''",
+        "retrieval": "TEXT DEFAULT '{}'",
+        "stages": "TEXT DEFAULT '{}'",
+        "total_latency_ms": "INTEGER DEFAULT 0",
+        "status": "TEXT NOT NULL DEFAULT 'ok'",
+        "error_code": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column, definition in fallback_columns.items():
+        if column not in columns:
+            conn.execute(f"ALTER TABLE request_traces ADD COLUMN {column} {definition}")
+
+    rows = conn.execute(
+        "SELECT id, trace_id, user_id, channel, route_name, status, total_latency_ms, search_ms "
+        "FROM request_traces ORDER BY id"
+    ).fetchall()
+    seen: set[str] = set()
+    for row in rows:
+        trace_id = str(row["trace_id"] or "").strip()
+        if not trace_id or trace_id in seen:
+            trace_id = uuid.uuid4().hex
+        seen.add(trace_id)
+        user_id = str(row["user_id"] or "").strip() or owner
+        channel = str(row["channel"] or "").strip() or "legacy"
+        route_name = str(row["route_name"] or "").strip() or "chat"
+        status = str(row["status"] or "").strip() or "ok"
+        total_latency = max(0, int(row["total_latency_ms"] or row["search_ms"] or 0))
+        conn.execute(
+            "UPDATE request_traces SET trace_id=?, user_id=?, channel=?, route_name=?, "
+            "status=?, total_latency_ms=? WHERE id=?",
+            (trace_id, user_id, channel, route_name, status, total_latency, row["id"]),
+        )
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_request_id ON request_traces(request_id, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_status_ts ON request_traces(status, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_channel_ts ON request_traces(channel, ts)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_trace_id "
+        "ON request_traces(trace_id) WHERE trace_id IS NOT NULL AND trace_id <> ''"
+    )
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
@@ -1207,6 +1279,7 @@ def init_db() -> None:
         # 之后再加 asked_at，避免刚加的列被重建丢失。
         _migrate_user_id(conn)
         _migrate_behavior_events(conn)
+        _migrate_request_traces(conn)
         # 用户域旧表先补主体列；日报/周报需要重建唯一约束，避免不同主体
         # 共享同一个日期/周次时互相覆盖。
         for table in ("work_log", "reminders", "mood_log", "writing_log", "fitness_log", "initiative_log"):

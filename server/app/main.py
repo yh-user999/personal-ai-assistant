@@ -23,6 +23,7 @@ from app.api import (
     executor,
     knowledge,
     novel,
+    observability,
     reminders,
     reports,
     stats,
@@ -87,6 +88,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ("/api/messages", {"owner", "internal"}),
         ("/api/novel", {"owner", "internal"}),
         ("/api/mood", {"owner", "internal"}),
+        ("/api/observability", {"owner", "internal"}),
+        ("/api/retrieval/debug", {"owner", "internal"}),
         ("/api/executor/pending", {"executor", "internal", "owner"}),
         ("/api/executor/results", {"executor", "internal", "owner"}),
         ("/api/executor/result", {"executor", "internal", "owner"}),
@@ -166,6 +169,7 @@ app.include_router(documents.router, prefix="/api", tags=["documents"])
 app.include_router(executor.router, prefix="/api", tags=["executor"])
 app.include_router(reminders.router, prefix="/api", tags=["reminders"])
 app.include_router(novel.router, prefix="/api", tags=["novel"])
+app.include_router(observability.router, prefix="/api", tags=["observability"])
 
 
 @app.get("/api/health")

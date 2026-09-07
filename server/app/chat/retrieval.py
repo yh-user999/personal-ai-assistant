@@ -197,6 +197,18 @@ class RetrievalBundle:
             "degraded": 0,
             "healer_words": [],
             "search_ms": 0,
+            "original_query": "",
+            "search_query": "",
+            "anchors": [],
+            "expanded": False,
+            "retrieval": {
+                "memory_candidates": 0,
+                "memory_selected": 0,
+                "knowledge_candidates": 0,
+                "knowledge_selected": 0,
+                "entity_hits": 0,
+                "healed_chunks": 0,
+            },
         }
     )
     last_ai: str | None = None
@@ -425,6 +437,14 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             "search_query": search_query,
             "anchors": anchors,
             "expanded": expanded,
+            "retrieval": {
+                "memory_candidates": 0,
+                "memory_selected": 0,
+                "knowledge_candidates": 0,
+                "knowledge_selected": 0,
+                "entity_hits": 0,
+                "healed_chunks": 0,
+            },
         }
 
         # 域判定只服务 trace 与 healer（search_knowledge 内部自行判域），
@@ -437,12 +457,14 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 trace["path"] = "skip"
 
         mems = await mem_task
+        trace["retrieval"]["memory_candidates"] = len(mems)
         if not mems or mems[0].get("score", 0) < 0.12:
             deep = memory.deep_keyword_search(search_query, top_k=5, user_id=ctx.uid)
             if deep:
                 known = {item["id"] for item in mems}
                 mems = deep + [item for item in mems if item["id"] not in known]
         mems = services.cooccurrence.expand(mems, user_id=ctx.uid)
+        trace["retrieval"]["memory_selected"] = len(mems)
         injections = _call_with_user(
             services.subjective_time.format_injection,
             mems,
@@ -454,7 +476,9 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             knowledge_hits = await know_task
             trace["search_ms"] = int((time.monotonic() - started) * 1000)
             trace["degraded"] = 1 if knowledge.last_vector_degraded() else 0
+            trace["retrieval"]["knowledge_candidates"] = len(knowledge_hits)
             knowledge_hits = knowledge.expand_chunks(knowledge_hits, radius=1, max_chars=1500)
+            trace["retrieval"]["knowledge_selected"] = len(knowledge_hits)
 
             index_healer = services.index_healer
             if settings.healer_enabled:
@@ -470,6 +494,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                         )
                         if healed_text:
                             trace["_heal_words"] = list(diagnosis["words"])
+                            trace["retrieval"]["healed_chunks"] = len(healed_chunks)
                             runtime.logger.info(
                                 "[healer] 兜底提炼生效: %s → %d 块",
                                 diagnosis["words"],
@@ -501,6 +526,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
 
             entity_ctx = services.novel_entities.build_entity_context(search_query)
             if entity_ctx:
+                trace["retrieval"]["entity_hits"] = 1
                 knowledge_text = entity_ctx + "\n\n" + knowledge_text
                 trace["path"] = "entity"
 

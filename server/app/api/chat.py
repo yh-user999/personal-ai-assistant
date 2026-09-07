@@ -11,7 +11,7 @@ import contextlib
 import json
 from logging import getLogger
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.errors import api_error
@@ -91,16 +91,25 @@ async def _chat_impl(req: ChatRequest, request: Request) -> ChatResponse:
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    response: Response = None,
+) -> ChatResponse:
     """聊天入口：对带 request_id 的客户端重试做单飞与结果复用。"""
     if req.image is not None:
         raise api_error(400, "image_not_supported", "图片提问请使用 multipart /api/chat/vision")
-    return await deduplicate_request(req, request, memory, _chat_impl)
+    result = await deduplicate_request(req, request, memory, _chat_impl)
+    trace_id = str(getattr(getattr(request, "state", None), "trace_id", "") or "")
+    if trace_id and response is not None:
+        response.headers["X-Trace-ID"] = trace_id
+    return result
 
 
 @router.post("/chat/vision", response_model=ChatResponse)
 async def vision_chat(
     request: Request,
+    response: Response = None,
     message: str | None = Form(None),
     request_id: str | None = Form(None),
     user_id: str | None = Form(None),
@@ -121,7 +130,11 @@ async def vision_chat(
         user_id=user_id,
         image=ImagePayload(**validated.__dict__),
     )
-    return await deduplicate_request(req, request, memory, _chat_impl)
+    result = await deduplicate_request(req, request, memory, _chat_impl)
+    trace_id = str(getattr(getattr(request, "state", None), "trace_id", "") or "")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
+    return result
 
 
 def _sse_frame(event: str, data: dict) -> str:
@@ -161,7 +174,10 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
                 await queue.put(("end", None))
 
         task = asyncio.create_task(drive())
-        yield _sse_frame("meta", {"request_id": ctx.request_id or ""})
+        yield _sse_frame(
+            "meta",
+            {"request_id": ctx.request_id or "", "trace_id": ctx.trace.trace_id},
+        )
         try:
             while True:
                 kind, payload = await queue.get()
@@ -185,7 +201,11 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Trace-ID": ctx.trace.trace_id,
+        },
     )
 
 

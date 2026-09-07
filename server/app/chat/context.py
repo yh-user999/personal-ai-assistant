@@ -10,9 +10,11 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,6 +50,46 @@ class ChatResponse(BaseModel):
     memories_used: int
 
 
+@dataclass
+class TraceContext:
+    """一轮请求共享的本地 Trace 状态；只保存统计元数据，不保存 prompt/图片原文。"""
+
+    trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    request_id: str = ""
+    channel: str = "chat"
+    route_name: str = "/api/chat"
+    started_at: float = field(default_factory=time.monotonic)
+    stages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    retrieval: dict[str, Any] = field(default_factory=dict)
+    retrieval_trace: dict[str, Any] = field(default_factory=dict)
+    injection_bytes: dict[str, Any] = field(default_factory=dict)
+    status: str = "ok"
+    error_code: str = ""
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        started = time.monotonic()
+        state = self.stages.setdefault(name, {})
+        state["status"] = "running"
+        try:
+            yield
+        except Exception as exc:
+            state.update(status="failed", error=type(exc).__name__)
+            self.status = "failed"
+            self.error_code = self.error_code or type(exc).__name__
+            raise
+        else:
+            state.update(status="ok", elapsed_ms=max(0, int((time.monotonic() - started) * 1000)))
+
+    def fail(self, error_code: str) -> None:
+        self.status = "failed"
+        self.error_code = str(error_code or "error")[:80]
+
+    @property
+    def total_latency_ms(self) -> int:
+        return max(0, int((time.monotonic() - self.started_at) * 1000))
+
+
 @dataclass(frozen=True)
 class ChatContext:
     """一轮聊天的不可变请求上下文。"""
@@ -59,10 +101,11 @@ class ChatContext:
     is_owner: bool
     auth: Any | None = None
     image: ImagePayload | None = None
+    trace: TraceContext = field(default_factory=TraceContext)
 
     @property
     def request_id(self) -> str | None:
-        return self.request_model.request_id
+        return self.request_model.request_id or self.trace.request_id or None
 
     def as_legacy_dict(self) -> dict[str, Any]:
         """为旧命令 handler/外部调用方提供原来的轻量 ctx 形态。"""
@@ -161,16 +204,48 @@ def authenticated_uid(req: ChatRequest, request: Request, memory_module: Any) ->
 
 
 def build_context(req: ChatRequest, request: Request, memory_module: Any) -> ChatContext:
-    """从 FastAPI 请求构造一轮聊天上下文。"""
+    """从 FastAPI 请求构造一轮聊天上下文，并建立服务端 trace_id。"""
     uid, is_owner = authenticated_uid(req, request, memory_module)
+    state = getattr(request, "state", None)
+    auth = getattr(state, "auth", None)
+    url = getattr(request, "url", None)
+    route_name = str(getattr(url, "path", "") or "/api/chat")[:160]
+    headers = getattr(request, "headers", {})
+    header_request_id = ""
+    try:
+        header_request_id = str(headers.get("x-request-id", "") or "").strip()
+    except AttributeError:
+        header_request_id = ""
+    request_id = str(req.request_id or header_request_id).strip()[:160]
+    channel = str(getattr(state, "trace_channel", "") or "").strip()
+    if not channel:
+        if req.image is not None:
+            channel = "vision"
+        elif route_name.endswith("/stream"):
+            channel = "stream"
+        elif getattr(auth, "role", "") == "qq":
+            channel = "qq"
+        else:
+            channel = "chat"
+    trace = TraceContext(
+        request_id=request_id,
+        channel=channel[:40],
+        route_name=route_name,
+    )
+    if state is not None:
+        try:
+            state.trace_id = trace.trace_id
+        except AttributeError:
+            pass
     return ChatContext(
         request=request,
         request_model=req,
         message=req.message.strip(),
         uid=uid,
         is_owner=is_owner,
-        auth=getattr(getattr(request, "state", None), "auth", None),
+        auth=auth,
         image=req.image,
+        trace=trace,
     )
 
 

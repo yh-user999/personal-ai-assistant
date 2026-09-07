@@ -635,5 +635,6 @@ async def dispatch(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
             runtime=runtime,
         )
         if response is not None:
+            ctx.trace.route_name = f"command:{name}"
             return response
     return None

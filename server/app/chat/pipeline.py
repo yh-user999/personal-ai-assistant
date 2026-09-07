@@ -193,32 +193,56 @@ async def _stream_llm_with_fallback(
 async def _record_request_trace(
     ctx: ChatContext,
     runtime: ChatRuntime,
-    bundle: retrieval.RetrievalBundle,
-    system: str,
+    bundle: retrieval.RetrievalBundle | None = None,
+    system: str = "",
 ) -> None:
+    """统一收尾写入 Trace；只保存统计元数据，不保存 prompt/图片原文。"""
     if not (ctx.is_owner and runtime.settings.request_trace_enabled):
         return
-    trace = bundle.trace
-    byte_sizes = {
-        "knowledge": len(bundle.knowledge_text),
-        "entity": len(bundle.entity_ctx),
-        "healed": len(bundle.healed_text),
-        "system_total": len(system),
-        "original_query": trace.get("original_query", ctx.message),
-        "search_query": trace.get("search_query", ctx.message),
-        "anchors": trace.get("anchors", []),
-        "expanded": bool(trace.get("expanded", False)),
-    }
+    if bundle is not None:
+        trace = bundle.trace
+        ctx.trace.retrieval = {
+            "original_query_chars": len(str(trace.get("original_query", ""))),
+            "search_query_chars": len(str(trace.get("search_query", ""))),
+            "anchors_count": len(trace.get("anchors", []) or []),
+            "expanded": bool(trace.get("expanded", False)),
+            **(trace.get("retrieval") or {}),
+        }
+        ctx.trace.injection_bytes = {
+            "knowledge": len(bundle.knowledge_text),
+            "entity": len(bundle.entity_ctx),
+            "healed": len(bundle.healed_text),
+            "system_total": len(system),
+        }
+        ctx.trace.retrieval["intent_label"] = bundle.intent_label or ""
+        ctx.trace.retrieval["memories_used"] = len(bundle.mems)
+        ctx.trace.retrieval["healer_words_count"] = len(trace.get("healer_words", []) or [])
+        ctx.trace.retrieval_trace = dict(trace)
+    trace = ctx.trace.retrieval_trace
+    retrieval_path = trace.get("path", "") if isinstance(trace, dict) else ""
+    routing = trace.get("routing", {}) if isinstance(trace, dict) else {}
+    vector_degraded = bool(trace.get("degraded", 0)) if isinstance(trace, dict) else False
+    healer_words = trace.get("healer_words", []) if isinstance(trace, dict) else []
+    search_ms = trace.get("search_ms", 0) if isinstance(trace, dict) else 0
     runtime_task = asyncio.to_thread(
         runtime.services.request_trace.record,
         ctx.uid,
         ctx.message,
-        trace["routing"],
-        trace["path"],
-        bool(trace["degraded"]),
-        trace["healer_words"],
-        byte_sizes,
-        trace["search_ms"],
+        routing,
+        retrieval_path,
+        vector_degraded,
+        healer_words,
+        ctx.trace.injection_bytes,
+        search_ms,
+        trace_id=ctx.trace.trace_id,
+        request_id=ctx.request_id or "",
+        channel=ctx.trace.channel,
+        route_name=ctx.trace.route_name,
+        retrieval=ctx.trace.retrieval,
+        stages=ctx.trace.stages,
+        total_latency_ms=ctx.trace.total_latency_ms,
+        status=ctx.trace.status,
+        error_code=ctx.trace.error_code,
     )
     retrieval.track_background(runtime, runtime_task)
 
@@ -260,8 +284,18 @@ def _maybe_capture_chapter(
 
 
 async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
-    """执行一轮普通聊天，命令命中时在 LLM 前短路返回。"""
-    return await _run_chat(ctx, runtime, on_delta=None)
+    """执行一轮普通聊天，并在所有返回路径统一落一条 Trace。"""
+    try:
+        with ctx.trace.stage("chat"):
+            return await _run_chat(ctx, runtime, on_delta=None)
+    except BaseException as exc:
+        ctx.trace.fail(type(exc).__name__)
+        raise
+    finally:
+        try:
+            await _record_request_trace(ctx, runtime)
+        except Exception:
+            runtime.logger.warning("Trace 收尾失败，不影响聊天响应", exc_info=True)
 
 
 async def run_chat_stream(
@@ -269,12 +303,18 @@ async def run_chat_stream(
     runtime: ChatRuntime,
     on_delta: Callable[[str], Awaitable[None]],
 ) -> ChatResponse:
-    """流式版聊天：增量经 ``on_delta`` 逐段回调，返回值与 run_chat 一致。
-
-    命令短路、限流、生成失败等一次性回复不会产生任何 delta，直接作为
-    返回值交给调用方下发（SSE done 事件）。
-    """
-    return await _run_chat(ctx, runtime, on_delta=on_delta)
+    """流式版聊天，并在连接结束前统一落一条 Trace。"""
+    try:
+        with ctx.trace.stage("chat"):
+            return await _run_chat(ctx, runtime, on_delta=on_delta)
+    except BaseException as exc:
+        ctx.trace.fail(type(exc).__name__)
+        raise
+    finally:
+        try:
+            await _record_request_trace(ctx, runtime)
+        except Exception:
+            runtime.logger.warning("Trace 收尾失败，不影响聊天响应", exc_info=True)
 
 
 async def _run_chat(
@@ -290,23 +330,26 @@ async def _run_chat(
     msg = ctx.message
 
     max_chars = OWNER_MAX_MSG_CHARS if ctx.is_owner else GUEST_MAX_MSG_CHARS
-    if len(msg) > max_chars:
-        return ChatResponse(
-            reply=f"消息太长啦（{len(msg)} 字，上限 {max_chars}），精简一下再发",
-            memories_used=0,
-        )
+    with ctx.trace.stage("input"):
+        if len(msg) > max_chars:
+            return ChatResponse(
+                reply=f"消息太长啦（{len(msg)} 字，上限 {max_chars}），精简一下再发",
+                memories_used=0,
+            )
 
-    if ctx.image is None and ctx.is_owner and settings.healer_enabled:
-        fixed = services.index_healer.apply_correction(msg)
-        if fixed is not None:
-            return ChatResponse(reply=fixed, memories_used=0)
+    with ctx.trace.stage("preflight"):
+        if ctx.image is None and ctx.is_owner and settings.healer_enabled:
+            fixed = services.index_healer.apply_correction(msg)
+            if fixed is not None:
+                ctx.trace.route_name = "command:index_correction"
+                return ChatResponse(reply=fixed, memories_used=0)
 
-    if not ctx.is_owner and guest_rate_limited(ctx.uid):
-        window_minutes = 1
-        return ChatResponse(
-            reply=f"⏳ 聊得太快啦，歇 {window_minutes} 分钟再来吧",
-            memories_used=0,
-        )
+        if not ctx.is_owner and guest_rate_limited(ctx.uid):
+            window_minutes = 1
+            return ChatResponse(
+                reply=f"⏳ 聊得太快啦，歇 {window_minutes} 分钟再来吧",
+                memories_used=0,
+            )
 
     if ctx.is_owner:
         mood_name = services.mood.detect_mood_name(msg)
@@ -320,7 +363,8 @@ async def _run_chat(
                 # 兼容旧测试替身；真实请求的 ChatContext 总有认证主体。
                 services.initiative.mark_responded()
 
-    routed = await routing.dispatch(ctx, runtime)
+    with ctx.trace.stage("routing"):
+        routed = await routing.dispatch(ctx, runtime)
     if routed is not None:
         return routed
 
@@ -346,29 +390,42 @@ async def _run_chat(
 
     # prepare_turn 保持在事件循环：它内部会调度后台任务（事实桥接），
     # 工作线程里没有可用的 loop；其 DB 开销仅一条小 SELECT + 罕见写入。
-    preparation = retrieval.prepare_turn(ctx, runtime)
-    bundle = await retrieval.retrieve(ctx, runtime, preparation)
+    with ctx.trace.stage("retrieval"):
+        preparation = retrieval.prepare_turn(ctx, runtime)
+        bundle = await retrieval.retrieve(ctx, runtime, preparation)
+        ctx.trace.retrieval = dict(bundle.trace.get("retrieval") or {})
+        ctx.trace.retrieval_trace = dict(bundle.trace)
     # assemble 的注入器均为纯查询（无任务调度），可安全移入工作线程
-    assembly = await asyncio.to_thread(prompting.assemble, ctx, runtime, bundle)
-    await _record_request_trace(ctx, runtime, bundle, assembly.system)
+    with ctx.trace.stage("prompt"):
+        assembly = await asyncio.to_thread(prompting.assemble, ctx, runtime, bundle)
+        ctx.trace.injection_bytes = {
+            "knowledge": len(bundle.knowledge_text),
+            "entity": len(bundle.entity_ctx),
+            "healed": len(bundle.healed_text),
+            "system_total": len(assembly.system),
+        }
 
     memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
-    await memory.write_message(
-        "user",
-        memory_text,
-        user_id=ctx.uid,
-        precomputed_vec=(
-            None
-            if ctx.image is not None
-            else memory.take_query_vec(services.sanitize.sanitize(msg))
-        ),
-    )
+    with ctx.trace.stage("persistence.user"):
+        await memory.write_message(
+            "user",
+            memory_text,
+            user_id=ctx.uid,
+            precomputed_vec=(
+                None
+                if ctx.image is not None
+                else memory.take_query_vec(services.sanitize.sanitize(msg))
+            ),
+        )
 
-    if on_delta is None:
-        reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
-    else:
-        reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
+    with ctx.trace.stage("llm"):
+        if on_delta is None:
+            reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
+        else:
+            reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
     if reply is None:
+        ctx.trace.status = "failed"
+        ctx.trace.error_code = "vision_failed" if ctx.image is not None else "llm_failed"
         if ctx.image is not None:
             return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
         return ChatResponse(
@@ -380,7 +437,8 @@ async def _run_chat(
             memories_used=0,
         )
 
-    await memory.write_message("assistant", reply, user_id=ctx.uid)
+    with ctx.trace.stage("persistence.assistant"):
+        await memory.write_message("assistant", reply, user_id=ctx.uid)
     if bundle.mems:
         await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
     if bundle.definition_term:

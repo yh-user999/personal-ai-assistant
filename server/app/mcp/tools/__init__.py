@@ -3,6 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from .fitness import (
+    complete_fitness_session,
+    get_active_fitness_plan,
+    get_fitness_summary,
+    list_fitness_sessions,
+    log_fitness_set,
+    record_fitness_measurement,
+    search_fitness_exercises,
+    start_fitness_session,
+)
 from .knowledge import search_knowledge, search_novel_entities
 from .memory import get_recent_history, get_user_facts, search_memories
 from .novel import (
@@ -20,6 +30,14 @@ from .tasks import list_goals, list_open_issues
 from .write import create_goal, save_memory
 
 ALL_TOOLS = (
+    get_fitness_summary,
+    search_fitness_exercises,
+    get_active_fitness_plan,
+    list_fitness_sessions,
+    record_fitness_measurement,
+    start_fitness_session,
+    log_fitness_set,
+    complete_fitness_session,
     search_memories,
     get_recent_history,
     get_user_facts,
@@ -48,6 +66,14 @@ def register_tools(server: Any) -> None:
 
 __all__ = [
     "ALL_TOOLS",
+    "complete_fitness_session",
+    "get_active_fitness_plan",
+    "get_fitness_summary",
+    "list_fitness_sessions",
+    "log_fitness_set",
+    "record_fitness_measurement",
+    "search_fitness_exercises",
+    "start_fitness_session",
     "cancel_novel_job",
     "create_goal",
     "get_novel_index_status",

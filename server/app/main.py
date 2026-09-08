@@ -21,6 +21,7 @@ from app.api import (
     documents,
     events,
     executor,
+    fitness,
     knowledge,
     novel,
     observability,
@@ -88,6 +89,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ("/api/reminders", {"owner", "internal"}),
         ("/api/messages", {"owner", "internal"}),
         ("/api/novel", {"owner", "internal"}),
+        ("/api/fitness", {"owner", "internal"}),
         ("/api/mood", {"owner", "internal"}),
         ("/api/observability", {"owner", "internal"}),
         ("/api/retrieval/debug", {"owner", "internal"}),
@@ -174,6 +176,7 @@ async def disable_novel_workbench_cache(request: Request, call_next):
 # ── 路由 ──────────────────────────────────────────────────
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(events.router, prefix="/api", tags=["events"])
+app.include_router(fitness.router, prefix="/api", tags=["fitness"])
 app.include_router(stats.router, prefix="/api", tags=["stats"])
 app.include_router(reports.router, prefix="/api", tags=["reports"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
@@ -211,6 +214,9 @@ async def ready(request: Request):
                 "work_log", "reminders", "mood_log", "lessons",
                 "writing_log", "fitness_log", "initiative_log",
                 "daily_summaries", "weekly_reports",
+                "fitness_profile", "fitness_exercises", "fitness_plans",
+                "fitness_plan_days", "fitness_plan_exercises", "fitness_sessions",
+                "fitness_sets", "fitness_measurements", "fitness_imports",
             }
             rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"

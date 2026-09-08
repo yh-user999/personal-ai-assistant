@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -311,6 +311,147 @@ CREATE TABLE IF NOT EXISTS fitness_facts (
   content TEXT NOT NULL,           -- 权威条目正文（含出处年份）
   created_at TEXT NOT NULL
 );
+
+-- ㉙ 结构化健身领域：本地动作库、计划、会话、训练组与身体指标。
+-- 所有个人表均按 user_id 隔离；第三方来源只保存来源/许可证元数据，不保存秘密。
+CREATE TABLE IF NOT EXISTS fitness_profile (
+  user_id TEXT PRIMARY KEY,
+  goal TEXT NOT NULL DEFAULT '',
+  experience TEXT NOT NULL DEFAULT '',
+  sessions_per_week INTEGER,
+  session_minutes INTEGER,
+  equipment TEXT NOT NULL DEFAULT '[]',
+  limitations TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fitness_exercises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL DEFAULT 'local',
+  source_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  aliases TEXT NOT NULL DEFAULT '[]',
+  primary_muscles TEXT NOT NULL DEFAULT '[]',
+  secondary_muscles TEXT NOT NULL DEFAULT '[]',
+  equipment TEXT NOT NULL DEFAULT '',
+  instructions TEXT NOT NULL DEFAULT '[]',
+  images TEXT NOT NULL DEFAULT '[]',
+  license TEXT NOT NULL DEFAULT '',
+  attribution TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_exercises_name ON fitness_exercises(name);
+CREATE INDEX IF NOT EXISTS idx_fitness_exercises_source ON fitness_exercises(source, source_id);
+
+CREATE TABLE IF NOT EXISTS fitness_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  goal TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  source TEXT NOT NULL DEFAULT 'user',
+  notes TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_plans_user_status ON fitness_plans(user_id, status, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS fitness_plan_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL,
+  day_index INTEGER NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(plan_id) REFERENCES fitness_plans(id) ON DELETE CASCADE,
+  UNIQUE(plan_id, day_index)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_plan_days_plan ON fitness_plan_days(plan_id, day_index);
+
+CREATE TABLE IF NOT EXISTS fitness_plan_exercises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_day_id INTEGER NOT NULL,
+  exercise_id INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL,
+  sets INTEGER NOT NULL,
+  rep_min INTEGER NOT NULL,
+  rep_max INTEGER NOT NULL,
+  rir_target REAL,
+  rest_seconds INTEGER,
+  notes TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(plan_day_id) REFERENCES fitness_plan_days(id) ON DELETE CASCADE,
+  FOREIGN KEY(exercise_id) REFERENCES fitness_exercises(id) ON DELETE RESTRICT,
+  UNIQUE(plan_day_id, sort_order)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_plan_exercises_day ON fitness_plan_exercises(plan_day_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS fitness_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  plan_id INTEGER,
+  plan_day_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  source TEXT NOT NULL DEFAULT 'local',
+  external_id TEXT,
+  notes TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY(plan_id) REFERENCES fitness_plans(id) ON DELETE SET NULL,
+  FOREIGN KEY(plan_day_id) REFERENCES fitness_plan_days(id) ON DELETE SET NULL,
+  UNIQUE(user_id, source, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_sessions_user_started ON fitness_sessions(user_id, started_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_fitness_sessions_user_status ON fitness_sessions(user_id, status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS fitness_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  exercise_id INTEGER NOT NULL,
+  set_order INTEGER NOT NULL,
+  set_type TEXT NOT NULL DEFAULT 'working',
+  reps INTEGER NOT NULL,
+  weight_kg REAL NOT NULL DEFAULT 0,
+  rpe REAL,
+  rir REAL,
+  rest_seconds INTEGER,
+  is_warmup INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES fitness_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY(exercise_id) REFERENCES fitness_exercises(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_sets_session ON fitness_sets(session_id, exercise_id, set_order);
+CREATE INDEX IF NOT EXISTS idx_fitness_sets_exercise ON fitness_sets(exercise_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS fitness_measurements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  value REAL NOT NULL,
+  unit TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  measured_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_measurements_user_kind ON fitness_measurements(user_id, kind, measured_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS fitness_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL,
+  external_id TEXT,
+  content_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'preview',
+  imported_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, source, external_id, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_imports_user_created ON fitness_imports(user_id, created_at DESC, id DESC);
 
 -- ㉔ 动态类名词表（检索自愈一期）：用户问过的、硬编码词表未覆盖的体系类名。
 -- domain='novel' 的词会并入域路由的小说类名表；'' 表示仅登记不参与路由

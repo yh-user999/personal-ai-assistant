@@ -264,15 +264,98 @@ async def _goals(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
     )
 
 
+def _fitness_plan_text(plan: dict) -> str:
+    lines = [f"🏋️ 当前训练计划：{plan.get('name', '')}"]
+    if plan.get("goal"):
+        lines.append(f"目标：{plan['goal']}")
+    for day in plan.get("days", []):
+        exercises = day.get("exercises", [])
+        if not exercises:
+            lines.append(f"第{day.get('day_index', '')}天 {day.get('name', '')}（休息或自由安排）")
+            continue
+        details = []
+        for item in exercises:
+            reps = f"{item.get('rep_min', '')}-{item.get('rep_max', '')}次"
+            details.append(f"{item.get('name', '动作')} {item.get('sets', '')}组×{reps}")
+        lines.append(f"第{day.get('day_index', '')}天 {day.get('name', '')}：" + "、".join(details))
+    return "\n".join(lines)
+
+
 async def _fitness(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
     fitness = runtime.services.fitness
-    msg = ctx.message
+    structured = getattr(runtime.services, "fitness_training", None)
+    catalog = getattr(runtime.services, "fitness_catalog", None)
+    msg = ctx.message.strip()
     weight = fitness.parse_weight(msg)
     if weight is not None:
-        _call_with_user(fitness.add_log, "weight", weight, "", user_id=ctx.uid)
+        if structured is not None and hasattr(structured, "record_measurement"):
+            _call_with_user(
+                structured.record_measurement,
+                kind="weight",
+                value=weight,
+                user_id=ctx.uid,
+            )
+        else:
+            _call_with_user(fitness.add_log, "weight", weight, "", user_id=ctx.uid)
         return ChatResponse(reply=f"⚖️ 体重已记录：{weight} kg ✓", memories_used=0)
-    if msg.strip() in fitness.PROGRESS_WORDS:
+    if msg in fitness.PROGRESS_WORDS:
+        if structured is not None and hasattr(structured, "summary_text"):
+            return ChatResponse(
+                reply=_call_with_user(structured.summary_text, user_id=ctx.uid),
+                memories_used=0,
+            )
         return ChatResponse(reply=_call_with_user(fitness.fitness_summary, user_id=ctx.uid), memories_used=0)
+    if structured is not None:
+        if msg in {"当前训练计划", "健身计划", "训练计划"}:
+            plan = _call_with_user(structured.get_active_plan, user_id=ctx.uid)
+            return ChatResponse(
+                reply=_fitness_plan_text(plan) if plan else "目前还没有激活的结构化训练计划。",
+                memories_used=0,
+            )
+        if msg in {"开始今天训练", "开始今日训练", "开始训练"}:
+            current = _call_with_user(structured.latest_in_progress_session, user_id=ctx.uid)
+            if current:
+                return ChatResponse(reply=f"🏋️ 已有进行中的训练（#{current['id']}），继续记录训练组即可。", memories_used=0)
+            plan = _call_with_user(structured.get_active_plan, user_id=ctx.uid)
+            kwargs = {}
+            if plan:
+                kwargs["plan_id"] = plan["id"]
+                if plan.get("days"):
+                    kwargs["plan_day_id"] = plan["days"][0]["id"]
+            session = _call_with_user(structured.start_session, user_id=ctx.uid, **kwargs)
+            return ChatResponse(reply=f"🏋️ 训练已开始（#{session['id']}），记录组：卧推 60kg x 8", memories_used=0)
+        if msg in {"完成今天训练", "完成训练", "结束训练"}:
+            current = _call_with_user(structured.latest_in_progress_session, user_id=ctx.uid)
+            if not current:
+                return ChatResponse(reply="目前没有进行中的结构化训练。", memories_used=0)
+            session = _call_with_user(structured.complete_session, current["id"], user_id=ctx.uid)
+            return ChatResponse(reply=f"✅ 训练已完成（#{session['id']}），本次共记录 {session['set_count']} 组。", memories_used=0)
+        parsed = structured.parse_chat_set(msg)
+        if parsed and catalog is not None:
+            current = _call_with_user(structured.latest_in_progress_session, user_id=ctx.uid)
+            if not current:
+                return ChatResponse(reply="请先说「开始今天训练」，再记录训练组。", memories_used=0)
+            matches = catalog.list_exercises(query=parsed["exercise_name"], limit=5)
+            exact = [item for item in matches if item["name"] == parsed["exercise_name"]]
+            exercise = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
+            if exercise is None:
+                if not matches:
+                    return ChatResponse(reply=f"动作库里没有找到「{parsed['exercise_name']}」，请先导入动作或换个名称。", memories_used=0)
+                names = "、".join(item["name"] for item in matches[:5])
+                return ChatResponse(reply=f"「{parsed['exercise_name']}」可能对应：{names}。请说完整动作名。", memories_used=0)
+            _call_with_user(
+                structured.log_set,
+                current["id"],
+                exercise["id"],
+                reps=parsed["reps"],
+                weight_kg=parsed["weight_kg"],
+                rir=parsed["rir"],
+                user_id=ctx.uid,
+            )
+            return ChatResponse(
+                reply=f"🏋️ 已记录：{exercise['name']} {parsed['weight_kg']:g}kg × {parsed['reps']} 次 ✓",
+                memories_used=0,
+            )
     training = fitness.parse_training(msg)
     if training:
         _call_with_user(fitness.add_log, "training", None, training, user_id=ctx.uid)

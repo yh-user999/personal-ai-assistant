@@ -160,6 +160,19 @@ def test_timeout_switches_to_next_key(monkeypatch):
     assert llm.get_usage_details()["failures"] == {"0": {"timeout": 1}}
 
 
+def test_opencode_zen_adds_session_header(monkeypatch):
+    _set_keys(monkeypatch, 1)
+    monkeypatch.setattr(settings, "llm_base_url", "https://opencode.ai/zen/go/v1")
+    calls = []
+    monkeypatch.setattr(llm, "AsyncOpenAI", _factory({0: [_Response("ok")]}, calls))
+
+    assert asyncio.run(llm.chat([], request_id="qq-request-123")) == "ok"
+    headers = calls[0][1]["extra_headers"]
+    assert set(headers) == {"x-opencode-session"}
+    assert len(headers["x-opencode-session"]) == 36
+    assert "qq-request-123" not in headers["x-opencode-session"]
+
+
 def test_non_retryable_4xx_does_not_switch(monkeypatch):
     _set_keys(monkeypatch, 2)
     calls = []

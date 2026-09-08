@@ -448,6 +448,16 @@ def get_vision_model() -> str:
     return desired or str(settings.llm_model or "").strip()
 
 
+def _provider_extra_headers(request_id: str) -> dict[str, str]:
+    """为需要会话路由的兼容网关生成额外请求头。"""
+    base_url = str(settings.llm_base_url or "").casefold()
+    if "opencode.ai/zen/go" not in base_url:
+        return {}
+    session_seed = str(request_id or uuid.uuid4().hex)
+    session_id = uuid.uuid5(uuid.NAMESPACE_URL, session_seed)
+    return {"x-opencode-session": str(session_id)}
+
+
 def _set_effective_novel_model(model: str) -> None:
     global _model_check_signature, _effective_novel_model
     with _model_lock:
@@ -554,6 +564,9 @@ async def chat(
         retry_budget = 0
     max_attempts = retry_budget + 1
     request_id = str(request_id or uuid.uuid4().hex)[:160]
+    extra_headers = _provider_extra_headers(request_id)
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
 
     order = _candidate_key_indices(keys)
     last_exc: BaseException | None = None
@@ -658,6 +671,9 @@ async def chat_stream(
         retry_budget = 0
     max_attempts = retry_budget + 1
     request_id = str(request_id or uuid.uuid4().hex)[:160]
+    extra_headers = _provider_extra_headers(request_id)
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
 
     order = _candidate_key_indices(keys)
     last_exc: BaseException | None = None

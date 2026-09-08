@@ -1,4 +1,7 @@
 """聊天命令路由层测试：注册顺序契约、访客门禁、快捷命令零 LLM。"""
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from app.chat import routing
@@ -96,3 +99,85 @@ def test_legacy_handler_signature_still_supported():
 
     reply = pytest.importorskip("asyncio").run(run())
     assert reply is not None and "现在是" in reply.reply
+
+
+def _fitness_context(message: str, *, request_id: str | None = None) -> ChatContext:
+    return ChatContext(
+        request=type("Request", (), {"state": type("State", (), {})()})(),
+        request_model=ChatRequest(message=message, request_id=request_id),
+        message=message,
+        uid="owner",
+        is_owner=True,
+    )
+
+
+def _fitness_runtime(nutrition):
+    return SimpleNamespace(
+        services=SimpleNamespace(
+            fitness=SimpleNamespace(
+                parse_weight=lambda _msg: None,
+                parse_training=lambda _msg: None,
+                PROGRESS_WORDS=(),
+            ),
+            fitness_training=None,
+            fitness_catalog=None,
+            fitness_nutrition=nutrition,
+        )
+    )
+
+
+def test_fitness_chat_records_food_with_request_id_idempotency_key():
+    calls = {}
+
+    class Nutrition:
+        def parse_food_log_command(self, message):
+            return {"food_name": "燕麦", "grams": 50} if message.startswith("记录饮食") else None
+
+        def list_foods(self, *, query, limit):
+            assert query == "燕麦" and limit == 5
+            return [{"id": 7, "name": "燕麦", "calories_kcal": 389}]
+
+        def log_food(self, food_id, *, grams, source, external_id, user_id):
+            calls.update(food_id=food_id, grams=grams, source=source, external_id=external_id, user_id=user_id)
+            return {"food_name": "燕麦", "grams": grams, "calories_kcal": 194.5}
+
+        def format_food_log_reply(self, food, nutrition):
+            return f"{food['name']} {nutrition['grams']}g 已记录"
+
+    reply = asyncio.run(
+        routing._fitness(
+            _fitness_context("记录饮食：燕麦 50g", request_id="qq-request-1"),
+            _fitness_runtime(Nutrition()),
+        )
+    )
+    assert reply is not None and reply.reply == "燕麦 50g 已记录"
+    assert calls == {
+        "food_id": 7,
+        "grams": 50,
+        "source": "chat",
+        "external_id": "chat:qq-request-1",
+        "user_id": "owner",
+    }
+
+
+def test_fitness_chat_returns_nutrition_summary_without_llm():
+    class Nutrition:
+        NUTRITION_SUMMARY_WORDS = {"今日营养"}
+
+        def parse_food_log_command(self, _message):
+            return None
+
+        def nutrition_summary(self, *, user_id):
+            assert user_id == "owner"
+            return {"date": "2026-09-08", "calories_kcal": 500}
+
+        def list_food_logs(self, *, date, limit, user_id):
+            assert (date, limit, user_id) == ("2026-09-08", 10, "owner")
+            return []
+
+        def format_nutrition_summary(self, summary, logs):
+            assert summary["calories_kcal"] == 500 and logs == []
+            return "今日营养汇总"
+
+    reply = asyncio.run(routing._fitness(_fitness_context("今日营养"), _fitness_runtime(Nutrition())))
+    assert reply is not None and reply.reply == "今日营养汇总"

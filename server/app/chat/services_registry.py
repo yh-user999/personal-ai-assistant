@@ -24,6 +24,7 @@ SERVICE_MODULES = (
     "fitness",
     "fitness_catalog",
     "fitness_coach",
+    "fitness_nutrition",
     "fitness_training",
     "few_shot",
     "goals",

@@ -285,7 +285,62 @@ async def _fitness(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
     fitness = runtime.services.fitness
     structured = getattr(runtime.services, "fitness_training", None)
     catalog = getattr(runtime.services, "fitness_catalog", None)
+    nutrition = getattr(runtime.services, "fitness_nutrition", None)
     msg = ctx.message.strip()
+    if nutrition is not None and hasattr(nutrition, "parse_food_log_command"):
+        food_command = nutrition.parse_food_log_command(msg)
+        if food_command is not None:
+            if food_command.get("error"):
+                return ChatResponse(reply=str(food_command["error"]), memories_used=0)
+            food_name = str(food_command["food_name"])
+            matches = _call_with_user(
+                nutrition.list_foods,
+                query=food_name,
+                limit=5,
+                user_id=ctx.uid,
+            )
+            exact = [
+                item for item in matches
+                if str(item.get("name", "")).casefold() == food_name.casefold()
+            ]
+            food = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
+            if food is None:
+                if not matches:
+                    return ChatResponse(
+                        reply=f"食品目录里没有找到「{food_name}」，请先导入食品数据或换个名称。",
+                        memories_used=0,
+                    )
+                names = "、".join(str(item.get("name", "食品")) for item in matches[:5])
+                return ChatResponse(
+                    reply=f"「{food_name}」可能对应：{names}。请说完整食品名。",
+                    memories_used=0,
+                )
+            external_id = f"chat:{ctx.request_id}" if ctx.request_id else None
+            logged = _call_with_user(
+                nutrition.log_food,
+                food["id"],
+                grams=food_command["grams"],
+                source="chat",
+                external_id=external_id,
+                user_id=ctx.uid,
+            )
+            return ChatResponse(
+                reply=nutrition.format_food_log_reply(food, logged),
+                memories_used=0,
+            )
+        summary_words = getattr(nutrition, "NUTRITION_SUMMARY_WORDS", ())
+        if msg in summary_words:
+            summary = _call_with_user(nutrition.nutrition_summary, user_id=ctx.uid)
+            logs = _call_with_user(
+                nutrition.list_food_logs,
+                date=summary.get("date"),
+                limit=10,
+                user_id=ctx.uid,
+            )
+            return ChatResponse(
+                reply=nutrition.format_nutrition_summary(summary, logs),
+                memories_used=0,
+            )
     weight = fitness.parse_weight(msg)
     if weight is not None:
         if structured is not None and hasattr(structured, "record_measurement"):

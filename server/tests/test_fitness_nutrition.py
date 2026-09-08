@@ -21,6 +21,7 @@ def usda_oats():
 
 def test_load_food_records_accepts_common_wrappers():
     assert len(fitness_nutrition.load_food_records({"foods": [usda_oats()]})) == 1
+    assert len(fitness_nutrition.load_food_records({"FoundationFoods": [usda_oats()]})) == 1
     assert len(fitness_nutrition.load_food_records({"products": [{"id": "p", "name": "食品"}]})) == 1
     with pytest.raises(ValueError, match="食品 JSON"):
         fitness_nutrition.load_food_records({"unexpected": []})
@@ -64,6 +65,31 @@ def test_normalize_open_food_facts_shape():
     assert item["calories_kcal"] == 62
     assert item["protein_g"] == 3.8
     assert item["sodium_mg"] == 50
+
+
+def test_normalize_usda_foundation_foods_shape():
+    item = fitness_nutrition.normalize_food_record(
+        {
+            "fdcId": 321358,
+            "description": "Foundation 食品",
+            "foodNutrients": [
+                {"nutrient": {"number": "208", "name": "Energy"}, "amount": 120},
+                {"nutrient": {"number": "203", "name": "Protein"}, "amount": 6.5},
+                {"nutrient": {"number": "204", "name": "Total lipid (fat)"}, "amount": 4.0},
+                {"nutrient": {"number": "205", "name": "Carbohydrate"}, "amount": 15.0},
+                {"nutrient": {"number": "291", "name": "Fiber"}, "amount": 3.0},
+                {"nutrient": {"number": "307", "name": "Sodium"}, "amount": 80},
+            ],
+        },
+        source="usda-fdc",
+        license_name="CC0",
+        attribution="USDA FoodData Central",
+    )
+    assert item["source_id"] == "321358"
+    assert item["calories_kcal"] == 120
+    assert item["protein_g"] == 6.5
+    assert item["fat_g"] == 4
+    assert item["sodium_mg"] == 80
 
 
 def test_import_is_idempotent_searchable_and_calculates(db):
@@ -147,3 +173,35 @@ def test_food_log_validation_and_missing_food(db):
         fitness_nutrition.list_food_logs("owner", date="2026/09/08")
     with pytest.raises(ValueError, match="克数"):
         fitness_nutrition.calculate_nutrition({"calories_kcal": 100}, 0)
+
+
+def test_parse_food_log_command_requires_explicit_grams():
+    assert fitness_nutrition.parse_food_log_command("记录饮食：燕麦 50g") == {
+        "food_name": "燕麦",
+        "grams": 50.0,
+    }
+    assert fitness_nutrition.parse_food_log_command("吃了 鸡蛋 100克") == {
+        "food_name": "鸡蛋",
+        "grams": 100.0,
+    }
+    assert fitness_nutrition.parse_food_log_command("今天吃了什么") is None
+    invalid = fitness_nutrition.parse_food_log_command("记录饮食：一碗米饭")
+    assert invalid and "明确克数" in invalid["error"]
+    assert "食品名称和克数" in fitness_nutrition.parse_food_log_command("记录饮食：")["error"]
+
+
+def test_format_nutrition_summary_includes_recent_logs():
+    text = fitness_nutrition.format_nutrition_summary(
+        {
+            "date": "2026-09-08",
+            "calories_kcal": 500,
+            "protein_g": 30,
+            "fat_g": 12,
+            "carbs_g": 60,
+            "fiber_g": 8,
+        },
+        [{"food_name": "燕麦", "grams": 50, "calories_kcal": 194.5, "meal": "早餐"}],
+    )
+    assert "2026-09-08 饮食汇总" in text
+    assert "早餐：燕麦 50g" in text
+    assert "194.5 kcal" in text

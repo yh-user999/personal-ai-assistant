@@ -29,8 +29,14 @@ MAX_NUTRIENTS = 80
 MAX_IMPORT_RECORDS = 50000
 MAX_GRAMS = 5000.0
 MAX_DATE_CHARS = 10
+MAX_CHAT_FOOD_CHARS = 120
+
+FOOD_LOG_PREFIX_RE = re.compile(r"^(?:记录饮食|饮食记录|吃了|记录吃了)\s*[:：]?\s*", re.IGNORECASE)
+FOOD_AMOUNT_RE = re.compile(r"^(?P<name>.+?)\s*(?P<grams>\d+(?:\.\d+)?)\s*(?:克|g)$", re.IGNORECASE)
+NUTRITION_SUMMARY_WORDS = frozenset({"今日营养", "今天营养", "营养汇总", "饮食进度", "今日饮食", "今天饮食"})
 
 _NUTRIENT_IDS = {
+    # FoodData Central API nutrient IDs.
     "1003": "protein_g",
     "1004": "fat_g",
     "1005": "carbs_g",
@@ -39,6 +45,13 @@ _NUTRIENT_IDS = {
     "1093": "sodium_mg",
     "2047": "calories_kcal",
     "2048": "calories_kcal",
+    # Foundation Foods JSON uses legacy nutrient numbers.
+    "203": "protein_g",
+    "204": "fat_g",
+    "205": "carbs_g",
+    "208": "calories_kcal",
+    "291": "fiber_g",
+    "307": "sodium_mg",
 }
 _NUTRIENT_ALIASES = {
     "calories_kcal": (
@@ -101,6 +114,17 @@ def _number(value: Any, *, name: str, maximum: float) -> float | None:
     return round(result, 4)
 
 
+def _nutrient_number(value: Any, *, name: str, maximum: float) -> float | None:
+    """解析营养数值；对 USDA 的负数 by-difference 异常按 0 处理。"""
+    candidate = value.get("value") if isinstance(value, Mapping) else value
+    try:
+        if candidate not in (None, "") and float(str(candidate).replace(",", "").strip()) < 0:
+            return 0.0
+    except (TypeError, ValueError):
+        pass
+    return _number(candidate, name=name, maximum=maximum)
+
+
 def _first(record: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         value = record.get(key)
@@ -124,7 +148,7 @@ def _food_nutrient_values(record: Mapping[str, Any]) -> tuple[dict[str, float], 
     extras: dict[str, float] = {}
 
     def add(key: str, raw: Any, *, maximum: float = 100000.0) -> None:
-        number = _number(raw, name=key, maximum=maximum)
+        number = _nutrient_number(raw, name=key, maximum=maximum)
         if number is not None:
             extras[key[:80]] = number
 
@@ -133,7 +157,7 @@ def _food_nutrient_values(record: Mapping[str, Any]) -> tuple[dict[str, float], 
             raw = record.get(alias)
             if raw not in (None, ""):
                 maximum = 10000.0 if key == "calories_kcal" else (100000.0 if key == "sodium_mg" else 1000.0)
-                parsed = _number(raw, name=key, maximum=maximum)
+                parsed = _nutrient_number(raw, name=key, maximum=maximum)
                 if parsed is not None:
                     values[key] = parsed
                     break
@@ -148,7 +172,7 @@ def _food_nutrient_values(record: Mapping[str, Any]) -> tuple[dict[str, float], 
             for target, aliases in _NUTRIENT_ALIASES.items():
                 if key in aliases:
                     maximum = 10000.0 if target == "calories_kcal" else (100000.0 if target == "sodium_mg" else 1000.0)
-                    parsed = _number(raw_value, name=target, maximum=maximum)
+                    parsed = _nutrient_number(raw_value, name=target, maximum=maximum)
                     if parsed is not None:
                         if target == "sodium_mg" and key in {"sodium_100g", "sodium_serving"}:
                             parsed = round(parsed * 1000, 4)
@@ -159,32 +183,43 @@ def _food_nutrient_values(record: Mapping[str, Any]) -> tuple[dict[str, float], 
         for nutrient in food_nutrients[:MAX_NUTRIENTS]:
             if not isinstance(nutrient, Mapping):
                 continue
+            nested = nutrient.get("nutrient")
+            nested = nested if isinstance(nested, Mapping) else {}
             identifier = str(
                 nutrient.get("nutrientNumber")
                 or nutrient.get("nutrientId")
                 or nutrient.get("number")
+                or nested.get("number")
+                or nested.get("id")
                 or nutrient.get("nutrientName")
+                or nested.get("name")
                 or ""
             ).strip().casefold()
             target = _NUTRIENT_IDS.get(identifier)
+            nutrient_name = str(
+                nutrient.get("nutrientName") or nested.get("name") or ""
+            ).casefold()
             if not target:
-                name = str(nutrient.get("nutrientName") or "").casefold()
-                if "protein" in name:
+                if "protein" in nutrient_name:
                     target = "protein_g"
-                elif "carbohydrate" in name:
+                elif "carbohydrate" in nutrient_name:
                     target = "carbs_g"
-                elif "fiber" in name:
+                elif "fiber" in nutrient_name:
                     target = "fiber_g"
-                elif "sodium" in name:
+                elif "sodium" in nutrient_name:
                     target = "sodium_mg"
-                elif "energy" in name and "kj" not in name:
+                elif "energy" in nutrient_name and "kj" not in nutrient_name:
                     target = "calories_kcal"
-                elif "fat" in name:
+                elif "fat" in nutrient_name or "lipid" in nutrient_name:
                     target = "fat_g"
             raw_value = nutrient.get("value")
+            if raw_value in (None, ""):
+                raw_value = nutrient.get("amount")
+            if raw_value in (None, ""):
+                raw_value = nutrient.get("median")
             if target:
                 maximum = 10000.0 if target == "calories_kcal" else (100000.0 if target == "sodium_mg" else 1000.0)
-                parsed = _number(raw_value, name=target, maximum=maximum)
+                parsed = _nutrient_number(raw_value, name=target, maximum=maximum)
                 if parsed is not None:
                     values[target] = parsed
             if identifier:
@@ -205,7 +240,7 @@ def _food_nutrient_values(record: Mapping[str, Any]) -> tuple[dict[str, float], 
         for raw_key, target in label_aliases.items():
             if target not in values and raw_key in label:
                 raw = label[raw_key]
-                parsed = _number(raw, name=target, maximum=100000.0)
+                parsed = _nutrient_number(raw, name=target, maximum=100000.0)
                 if parsed is not None:
                     values[target] = round(parsed * scale, 4)
 
@@ -279,10 +314,14 @@ def _food_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def load_food_records(payload: Any) -> list[Mapping[str, Any]]:
+def load_food_records(
+    payload: Any,
+    *,
+    max_records: int | None = MAX_IMPORT_RECORDS,
+) -> list[Mapping[str, Any]]:
     """读取 USDA/Open Food Facts 常见 JSON 顶层结构，不负责联网下载。"""
     if isinstance(payload, Mapping):
-        for key in ("foods", "products", "data", "results"):
+        for key in ("foods", "FoundationFoods", "products", "data", "results"):
             candidate = payload.get(key)
             if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
                 payload = candidate
@@ -290,8 +329,12 @@ def load_food_records(payload: Any) -> list[Mapping[str, Any]]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray)):
         raise ValueError("食品 JSON 必须是数组或包含 foods/products/data/results 数组的对象")
     records = list(payload)
-    if len(records) > MAX_IMPORT_RECORDS:
-        raise ValueError(f"单次最多导入 {MAX_IMPORT_RECORDS} 条食品")
+    if max_records is not None:
+        max_records = int(max_records)
+        if max_records < 1:
+            raise ValueError("max_records 必须大于 0")
+        if len(records) > max_records:
+            raise ValueError(f"单次最多导入 {max_records} 条食品")
     if not all(isinstance(item, Mapping) for item in records):
         raise ValueError("食品数组中的每一项必须是对象")
     return records
@@ -440,6 +483,28 @@ def _grams(value: Any) -> float:
     if not math.isfinite(result) or result <= 0 or result > MAX_GRAMS:
         raise ValueError(f"食用克数必须在0到{MAX_GRAMS}之间")
     return round(result, 2)
+
+
+def parse_food_log_command(message: str) -> dict[str, Any] | None:
+    """保守解析聊天饮食命令；命令必须明确写出食品名称和克数。"""
+    text = str(message or "").strip()
+    prefix = FOOD_LOG_PREFIX_RE.match(text)
+    if not prefix:
+        return None
+    body = text[prefix.end():].strip()
+    if not body:
+        return {"error": "请写食品名称和克数，例如：记录饮食：燕麦 50g"}
+    match = FOOD_AMOUNT_RE.fullmatch(body)
+    if not match:
+        return {"error": "饮食记录必须包含明确克数，例如：记录饮食：燕麦 50g；不按“一碗/一份”猜重量。"}
+    food_name = sanitize(match.group("name")).strip(" ：:，,")[:MAX_CHAT_FOOD_CHARS]
+    if not food_name:
+        return {"error": "请提供食品名称。"}
+    try:
+        grams = _grams(match.group("grams"))
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"food_name": food_name, "grams": grams}
 
 
 def calculate_nutrition(food: Mapping[str, Any], grams: Any) -> dict[str, Any]:
@@ -605,6 +670,47 @@ def nutrition_summary(user_id: str | None, *, date: str | None = None) -> dict[s
         result[key] = round(float(result.get(key) or 0), 2)
     result["date"] = date_value
     return result
+
+
+def _display_number(value: Any) -> str:
+    try:
+        return f"{float(value or 0):g}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def format_food_log_reply(food: Mapping[str, Any], nutrition: Mapping[str, Any]) -> str:
+    """格式化一次饮食记录的确定性回复，不引入模型猜测。"""
+    return (
+        f"🍽️ 已记录：{food.get('name', '食品')} {nutrition.get('grams', 0):g}g ✓\n"
+        f"热量 {_display_number(nutrition.get('calories_kcal'))} kcal，"
+        f"蛋白质 {_display_number(nutrition.get('protein_g'))}g，"
+        f"脂肪 {_display_number(nutrition.get('fat_g'))}g，"
+        f"碳水 {_display_number(nutrition.get('carbs_g'))}g"
+    )
+
+
+def format_nutrition_summary(summary: Mapping[str, Any], logs: Sequence[Mapping[str, Any]] = ()) -> str:
+    """格式化某日饮食汇总和最近记录。"""
+    lines = [
+        f"🍽️ {summary.get('date', '今日')} 饮食汇总："
+        f"{_display_number(summary.get('calories_kcal'))} kcal，"
+        f"蛋白质 {_display_number(summary.get('protein_g'))}g，"
+        f"脂肪 {_display_number(summary.get('fat_g'))}g，"
+        f"碳水 {_display_number(summary.get('carbs_g'))}g，"
+        f"纤维 {_display_number(summary.get('fiber_g'))}g",
+    ]
+    if not logs:
+        lines.append("今天还没有饮食记录。")
+        return "\\n".join(lines)
+    lines.append("最近记录：")
+    for log in list(logs)[:10]:
+        meal = f"{log.get('meal')}：" if log.get("meal") else ""
+        lines.append(
+            f"- {meal}{log.get('food_name', '食品')} {log.get('grams', 0):g}g，"
+            f"{_display_number(log.get('calories_kcal'))} kcal"
+        )
+    return "\\n".join(lines)
 
 
 def delete_food_log(user_id: str | None, log_id: int) -> None:

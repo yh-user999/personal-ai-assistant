@@ -13,15 +13,36 @@
 
 项目不把 `ExerciseDB`、`wger` 或研究型知识图谱直接打包进仓库。它们可以用于比较字段和设计导入适配器，但原始数据、图片、代码许可证需要逐项审核。
 
+## 可复现下载
+
+下载脚本只负责获取公开原始文件，不会启动服务、修改个人记录或直接写入健身数据库。默认输出到已被 `.gitignore` 排除的 `server/data/fitness-datasets/`，并生成 `manifest.json`，记录来源、许可证、文件大小和 SHA-256。
+
+```bash
+server/.venv/bin/python server/scripts/download_fitness_datasets.py
+```
+
+只下载一个数据集时可显式指定：
+
+```bash
+server/.venv/bin/python server/scripts/download_fitness_datasets.py \
+  --dataset free-exercise-db
+server/.venv/bin/python server/scripts/download_fitness_datasets.py \
+  --dataset usda-foundation-foods
+```
+
+截至 **2026 年 9 月 8 日**，USDA 官方下载页列出的 Foundation Foods JSON 文件为 **2025 年 4 月 24 日**版本；脚本固定该 URL，保证重复执行得到可追溯文件。官网发布新版本后，应先更新脚本默认版本并重新核对许可证、哈希和导入测试。脚本不会下载动作图片/GIF，也不会自动拉取 Open Food Facts 全量巨型导出。
+
 ## 动作库导入
 
 下载或整理本地 JSON 后执行：
 
 ```bash
-python server/scripts/import_fitness_catalog.py exercises.json \
+server/.venv/bin/python server/scripts/import_fitness_catalog.py \
+  server/data/fitness-datasets/free-exercise-db-exercises.json \
   --source free-exercise-db \
   --license Unlicense \
-  --attribution "free-exercise-db"
+  --attribution "yuhonas/free-exercise-db" \
+  --external-id free-exercise-db-main
 ```
 
 支持：
@@ -34,14 +55,28 @@ python server/scripts/import_fitness_catalog.py exercises.json \
 
 ## 食品营养导入
 
-USDA 或 Open Food Facts 数据需要先下载到本地，再执行：
+USDA 或 Open Food Facts 数据需要先下载到本地，再执行。USDA Foundation Foods ZIP 可以直接导入，脚本会在内存中读取 JSON，不会把压缩包解压到仓库：
 
 ```bash
-python server/scripts/import_fitness_foods.py foods.json \
+server/.venv/bin/python server/scripts/import_fitness_foods.py \
+  server/data/fitness-datasets/FoodData_Central_foundation_food_json_2025-04-24.zip \
+  --source usda-fdc \
+  --license CC0 \
+  --attribution "USDA FoodData Central" \
+  --external-id foundation-foods-2025-04-24 \
+  --batch-size 1000
+```
+
+小型 JSON 仍可直接导入：
+
+```bash
+server/.venv/bin/python server/scripts/import_fitness_foods.py foods.json \
   --source usda-fdc \
   --license CC0 \
   --attribution "USDA FoodData Central"
 ```
+
+`--max-records` 控制单次允许读取的上限，`--batch-size` 控制分批写入大小；默认上限为 50000 条。导入器会先校验整批记录，未使用 `--skip-invalid` 时格式错误不会写入前面的批次。
 
 Open Food Facts 示例：
 
@@ -57,6 +92,7 @@ python server/scripts/import_fitness_foods.py products.json \
 
 - 顶层数组；
 - `{"foods": [...]}`：常见 USDA 数据结构；
+- `{"FoundationFoods": [...]}`：USDA Foundation Foods 官方 JSON 结构；
 - `{"products": [...]}`：常见 Open Food Facts 数据结构；
 - `{"data": [...]}` 或 `{"results": [...]}`：便于处理经过筛选的本地导出。
 

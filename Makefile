@@ -4,9 +4,9 @@
 .PHONY: help server test lint clean
 
 ifeq ($(OS),Windows_NT)
-	VENV_BIN := server/.venv/Scripts
+VENV_BIN := server/.venv/Scripts
 else
-	VENV_BIN := server/.venv/bin
+VENV_BIN := server/.venv/bin
 endif
 
 SERVER_PYTHON := $(CURDIR)/$(VENV_BIN)/python

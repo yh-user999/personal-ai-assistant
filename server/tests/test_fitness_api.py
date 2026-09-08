@@ -101,3 +101,48 @@ def test_fitness_api_rejects_collector_when_tokenized(tmp_path, monkeypatch):
             headers={"Authorization": "Bearer owner-test-token"},
         )
         assert allowed.status_code == 200
+
+
+def test_fitness_nutrition_api_import_log_summary_and_delete(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        imported = client.post(
+            "/api/fitness/foods/import",
+            json={
+                "source": "usda-fdc",
+                "license_name": "CC0",
+                "attribution": "USDA FoodData Central",
+                "records": [{
+                    "fdcId": "api-oats",
+                    "description": "API 燕麦",
+                    "foodNutrients": [
+                        {"nutrientId": 1008, "value": 389},
+                        {"nutrientId": 1003, "value": 16.9},
+                        {"nutrientId": 1004, "value": 6.9},
+                        {"nutrientId": 1005, "value": 66.3},
+                    ],
+                }],
+            },
+        )
+        assert imported.status_code == 200
+        food = client.get("/api/fitness/foods", params={"q": "API 燕麦"}).json()["results"][0]
+        logged = client.post(
+            "/api/fitness/nutrition/logs",
+            json={
+                "food_id": food["id"],
+                "grams": 50,
+                "meal": "早餐",
+                "eaten_at": "2026-09-08T08:00:00+00:00",
+            },
+        )
+        assert logged.status_code == 200
+        assert logged.json()["calories_kcal"] == 194.5
+        summary = client.get("/api/fitness/nutrition/summary", params={"date": "2026-09-08"})
+        assert summary.status_code == 200
+        assert summary.json()["log_count"] == 1
+        assert summary.json()["protein_g"] == 8.45
+        logs = client.get("/api/fitness/nutrition/logs", params={"date": "2026-09-08"})
+        assert len(logs.json()["results"]) == 1
+        deleted = client.delete(f"/api/fitness/nutrition/logs/{logged.json()['id']}")
+        assert deleted.status_code == 200
+        assert client.get("/api/fitness/nutrition/summary", params={"date": "2026-09-08"}).json()["log_count"] == 0

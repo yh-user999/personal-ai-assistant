@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_roles
 from app.core.memory import owner_user_id
-from app.services import fitness_catalog, fitness_coach, fitness_training
+from app.services import fitness_catalog, fitness_coach, fitness_nutrition, fitness_training
 
 router = APIRouter()
 
@@ -37,6 +37,24 @@ class PreviewRequest(BaseModel):
     source: str = Field("external", min_length=1, max_length=80)
     license_name: str = Field("", max_length=160)
     attribution: str = Field("", max_length=160)
+
+
+class FoodImportRequest(BaseModel):
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
+    source: str = Field("external", min_length=1, max_length=80)
+    license_name: str = Field("", max_length=160)
+    attribution: str = Field("", max_length=300)
+    skip_invalid: bool = False
+
+
+class NutritionLogRequest(BaseModel):
+    food_id: int = Field(..., ge=1)
+    grams: float = Field(..., gt=0, le=5000)
+    meal: str = Field("", max_length=40)
+    source: str = Field("local", min_length=1, max_length=80)
+    external_id: str | None = Field(None, max_length=200)
+    eaten_at: str | None = Field(None, max_length=80)
+    note: str = Field("", max_length=500)
 
 
 class PlanExerciseRequest(BaseModel):
@@ -221,6 +239,113 @@ async def preview_fitness_import(req: PreviewRequest, request: Request) -> dict[
         "content_hash": fitness_catalog.content_hash(normalized),
         "preview": normalized[:10],
     }
+
+
+@router.get("/fitness/foods")
+async def list_fitness_foods(
+    request: Request,
+    q: str = Query("", max_length=200),
+    brand: str = Query("", max_length=160),
+    source: str = Query("", max_length=80),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    _uid(request)
+    results = await asyncio.to_thread(
+        fitness_nutrition.list_foods,
+        query=q,
+        brand=brand,
+        source=source,
+        limit=limit,
+    )
+    return {"query": q, "brand": brand, "source": source, "results": results}
+
+
+@router.get("/fitness/foods/{food_id}")
+async def get_fitness_food(food_id: int, request: Request) -> dict[str, Any]:
+    _uid(request)
+    food = await asyncio.to_thread(fitness_nutrition.get_food, food_id)
+    if not food:
+        raise HTTPException(status_code=404, detail="食品不存在")
+    return food
+
+
+@router.post("/fitness/foods/import")
+async def import_fitness_foods(req: FoodImportRequest, request: Request) -> dict[str, Any]:
+    uid = _uid(request)
+    if not req.records:
+        raise HTTPException(status_code=422, detail="records 不能为空")
+    try:
+        result = await asyncio.to_thread(
+            fitness_nutrition.import_foods,
+            req.records,
+            source=req.source,
+            license_name=req.license_name,
+            attribution=req.attribution,
+            skip_invalid=req.skip_invalid,
+        )
+        audit = await asyncio.to_thread(
+            fitness_catalog.record_import,
+            uid,
+            source=req.source,
+            external_id=None,
+            content_hash=fitness_catalog.content_hash(req.records),
+            status="imported",
+            imported_count=result["imported"],
+        )
+    except (KeyError, ValueError) as exc:
+        _raise_domain(exc)
+    return {**result, "import_id": audit["id"]}
+
+
+@router.post("/fitness/nutrition/logs")
+async def create_fitness_nutrition_log(req: NutritionLogRequest, request: Request) -> dict[str, Any]:
+    uid = _uid(request)
+    try:
+        result = await asyncio.to_thread(
+            fitness_nutrition.log_food,
+            uid,
+            req.food_id,
+            **req.model_dump(exclude={"food_id"}, exclude_none=True),
+        )
+    except (KeyError, ValueError) as exc:
+        _raise_domain(exc)
+    return result
+
+
+@router.get("/fitness/nutrition/logs")
+async def list_fitness_nutrition_logs(
+    request: Request,
+    date: str | None = Query(None, max_length=10),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    uid = _uid(request)
+    try:
+        results = await asyncio.to_thread(fitness_nutrition.list_food_logs, uid, date=date, limit=limit)
+    except ValueError as exc:
+        _raise_domain(exc)
+    return {"date": date, "results": results}
+
+
+@router.get("/fitness/nutrition/summary")
+async def fitness_nutrition_summary(
+    request: Request,
+    date: str | None = Query(None, max_length=10),
+) -> dict[str, Any]:
+    uid = _uid(request)
+    try:
+        return await asyncio.to_thread(fitness_nutrition.nutrition_summary, uid, date=date)
+    except ValueError as exc:
+        _raise_domain(exc)
+
+
+@router.delete("/fitness/nutrition/logs/{log_id}")
+async def delete_fitness_nutrition_log(log_id: int, request: Request) -> dict[str, Any]:
+    uid = _uid(request)
+    try:
+        await asyncio.to_thread(fitness_nutrition.delete_food_log, uid, log_id)
+    except (KeyError, ValueError) as exc:
+        _raise_domain(exc)
+    return {"deleted": True, "id": log_id}
 
 
 @router.get("/fitness/plans")

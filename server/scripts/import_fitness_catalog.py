@@ -1,5 +1,8 @@
 """从本地 JSON 导入健身动作目录，不联网、不导入个人训练记录。
 
+支持 Free Exercise DB 风格的顶层数组或 {"exercises": [...]} 包装；
+wrkout/exercises.json 等数据集导入前请先核对仓库 LICENSE 和媒体授权。
+
 用法：
   python server/scripts/import_fitness_catalog.py path/to/exercises.json \
       --source free-exercise-db --license Unlicense --attribution "..."

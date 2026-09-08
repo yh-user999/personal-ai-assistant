@@ -79,6 +79,8 @@
 - 训练记录：开始训练、记录重量/次数/RPE/RIR、完成训练；外部导入预留幂等字段，但本轮不连接第三方账号。
 - 分析：训练次数、完成率、训练组数、总训练量、肌群容量、估算 1RM、近期高重量动作和体重趋势。
 - AI 私教：`POST /api/fitness/plans/generate` 只生成经过校验的计划草案，不会自动写入；保存和激活必须由用户明确确认。
+- 营养目录：支持本地导入 USDA FoodData Central/Open Food Facts 风格 JSON，按来源、许可证和署名保存元数据；不在服务运行时联网下载。
+- 饮食记录：按食品克数计算热量、蛋白质、脂肪、碳水、膳食纤维和钠，并提供按日汇总；历史记录保存食品快照。
 
 聊天入口兼容以下命令：
 
@@ -98,6 +100,8 @@
 python server/scripts/import_fitness_catalog.py exercises.json \\
   --source free-exercise-db --license Unlicense --attribution "数据源署名"
 ```
+
+食品营养导入命令和许可证边界见 [健身数据集与营养数据导入说明](docs/FITNESS_DATASETS.md)。
 
 本轮只实现本地优先核心和标准化导入边界，不复制 SparkyFitness、GymCoach、LiftTrace 或 wger 的完整应用，不自动下载第三方数据，也不实现 Hevy/wger 双向同步。外部项目的代码、数据和许可证必须在实际部署前单独审核。
 

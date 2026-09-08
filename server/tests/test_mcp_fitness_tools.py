@@ -5,6 +5,7 @@ from app.mcp.context import McpContext
 from app.mcp.permissions import McpPermissionError
 from app.mcp.tools import fitness as fitness_tools
 from app.models.database import connect
+from app.services import fitness_nutrition
 
 
 def owner_ctx() -> McpContext:
@@ -62,3 +63,36 @@ async def test_fitness_session_tools_flow(db):
         ctx=owner_ctx(),
     )
     assert completed["session"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_fitness_nutrition_tools_require_confirmation_and_return_summary(db):
+    fitness_nutrition.import_foods(
+        [{
+            "id": "mcp-rice",
+            "name": "米饭",
+            "calories": 116,
+            "protein": 2.6,
+            "fat": 0.3,
+            "carbohydrates": 25.9,
+        }],
+        source="test",
+    )
+    food = (await fitness_tools.search_fitness_foods(query="米饭", ctx=owner_ctx()))["results"][0]
+    with pytest.raises(McpPermissionError, match="需要显式确认"):
+        await fitness_tools.record_fitness_food(
+            food_id=food["id"],
+            grams=150,
+            ctx=owner_ctx(),
+        )
+    recorded = await fitness_tools.record_fitness_food(
+        food_id=food["id"],
+        grams=150,
+        meal="午餐",
+        confirmed=True,
+        ctx=owner_ctx(),
+    )
+    assert recorded["recorded"] is True
+    summary = await fitness_tools.get_fitness_nutrition_summary(ctx=owner_ctx())
+    assert summary["log_count"] == 1
+    assert summary["calories_kcal"] == 174

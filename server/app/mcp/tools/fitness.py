@@ -5,7 +5,7 @@ from typing import Any
 
 from mcp.server.mcpserver.context import Context
 
-from app.services import fitness_catalog, fitness_training
+from app.services import fitness_catalog, fitness_nutrition, fitness_training
 
 from ..audit import audited_tool
 from ..permissions import require_confirmed_action, require_read
@@ -44,6 +44,67 @@ async def search_fitness_exercises(
         limit=limit,
     )
     return cap_payload({"query": query, "muscle": muscle, "equipment": equipment, "results": rows})
+
+
+@audited_tool
+async def search_fitness_foods(
+    query: str = "",
+    brand: str = "",
+    source: str = "",
+    limit: int = 20,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    require_read(ctx)
+    query = text(query or "", "query", max_chars=200) if query else ""
+    brand = text(brand or "", "brand", max_chars=160) if brand else ""
+    source = text(source or "", "source", max_chars=80) if source else ""
+    limit = bounded_limit(limit, name="limit", default=20, maximum=50)
+    rows = await _to_thread(
+        fitness_nutrition.list_foods,
+        query=query,
+        brand=brand,
+        source=source,
+        limit=limit,
+    )
+    return cap_payload({"query": query, "brand": brand, "source": source, "results": rows})
+
+
+@audited_tool
+async def get_fitness_nutrition_summary(
+    date: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    identity = require_read(ctx)
+    date = text(date, "date", max_chars=10) if date else None
+    result = await _to_thread(fitness_nutrition.nutrition_summary, identity.uid, date=date)
+    return cap_payload(result)
+
+
+@audited_tool
+async def record_fitness_food(
+    food_id: int,
+    grams: float,
+    meal: str = "",
+    source: str = "local",
+    external_id: str | None = None,
+    eaten_at: str | None = None,
+    note: str = "",
+    confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    identity = require_confirmed_action(ctx, confirmed=confirmed)
+    result = await _to_thread(
+        fitness_nutrition.log_food,
+        identity.uid,
+        food_id,
+        grams=grams,
+        meal=text(meal, "meal", max_chars=40) if meal else "",
+        source=text(source, "source", max_chars=80),
+        external_id=text(external_id, "external_id", max_chars=200) if external_id else None,
+        eaten_at=text(eaten_at, "eaten_at", max_chars=80) if eaten_at else None,
+        note=text(note, "note", max_chars=500) if note else "",
+    )
+    return cap_payload({"recorded": True, "food_log": result})
 
 
 @audited_tool

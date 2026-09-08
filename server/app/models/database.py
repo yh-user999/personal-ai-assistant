@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -452,6 +452,60 @@ CREATE TABLE IF NOT EXISTS fitness_imports (
   UNIQUE(user_id, source, external_id, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_fitness_imports_user_created ON fitness_imports(user_id, created_at DESC, id DESC);
+
+-- ㉚ 食品营养目录：只保存已审核导入的公开营养元数据，不在服务启动时联网。
+CREATE TABLE IF NOT EXISTS fitness_foods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL DEFAULT 'local',
+  source_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  aliases TEXT NOT NULL DEFAULT '[]',
+  brand TEXT NOT NULL DEFAULT '',
+  barcode TEXT NOT NULL DEFAULT '',
+  serving_size_g REAL,
+  calories_kcal REAL NOT NULL DEFAULT 0,
+  protein_g REAL NOT NULL DEFAULT 0,
+  fat_g REAL NOT NULL DEFAULT 0,
+  carbs_g REAL NOT NULL DEFAULT 0,
+  fiber_g REAL NOT NULL DEFAULT 0,
+  sodium_mg REAL NOT NULL DEFAULT 0,
+  nutrients TEXT NOT NULL DEFAULT '{}',
+  license TEXT NOT NULL DEFAULT '',
+  attribution TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_foods_name ON fitness_foods(name);
+CREATE INDEX IF NOT EXISTS idx_fitness_foods_brand ON fitness_foods(brand);
+CREATE INDEX IF NOT EXISTS idx_fitness_foods_barcode ON fitness_foods(barcode);
+CREATE INDEX IF NOT EXISTS idx_fitness_foods_source ON fitness_foods(source, source_id);
+
+-- ㉛ 用户饮食记录：保存记录时的食品快照，避免以后更新目录影响历史统计。
+CREATE TABLE IF NOT EXISTS fitness_food_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  food_id INTEGER,
+  source TEXT NOT NULL DEFAULT 'local',
+  external_id TEXT,
+  food_name TEXT NOT NULL,
+  brand TEXT NOT NULL DEFAULT '',
+  grams REAL NOT NULL,
+  meal TEXT NOT NULL DEFAULT '',
+  calories_kcal REAL NOT NULL DEFAULT 0,
+  protein_g REAL NOT NULL DEFAULT 0,
+  fat_g REAL NOT NULL DEFAULT 0,
+  carbs_g REAL NOT NULL DEFAULT 0,
+  fiber_g REAL NOT NULL DEFAULT 0,
+  sodium_mg REAL NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  eaten_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(food_id) REFERENCES fitness_foods(id) ON DELETE SET NULL,
+  UNIQUE(user_id, source, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fitness_food_logs_user_eaten ON fitness_food_logs(user_id, eaten_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_fitness_food_logs_user_meal ON fitness_food_logs(user_id, meal, eaten_at DESC);
 
 -- ㉔ 动态类名词表（检索自愈一期）：用户问过的、硬编码词表未覆盖的体系类名。
 -- domain='novel' 的词会并入域路由的小说类名表；'' 表示仅登记不参与路由

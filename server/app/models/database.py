@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -541,6 +541,7 @@ CREATE TABLE IF NOT EXISTS request_traces (
   injection_bytes TEXT DEFAULT '{}',
   stages TEXT DEFAULT '{}',
   reflection TEXT DEFAULT '{}',
+  response_plan TEXT DEFAULT '{}',
   search_ms INTEGER DEFAULT 0,
   total_latency_ms INTEGER DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ok',
@@ -819,6 +820,7 @@ _MIGRATIONS = [
     "ALTER TABLE request_traces ADD COLUMN retrieval TEXT DEFAULT '{}'",
     "ALTER TABLE request_traces ADD COLUMN stages TEXT DEFAULT '{}'",
     "ALTER TABLE request_traces ADD COLUMN reflection TEXT DEFAULT '{}'",
+    "ALTER TABLE request_traces ADD COLUMN response_plan TEXT DEFAULT '{}'",
     "ALTER TABLE request_traces ADD COLUMN total_latency_ms INTEGER DEFAULT 0",
     "ALTER TABLE request_traces ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'",
     "ALTER TABLE request_traces ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
@@ -840,6 +842,7 @@ def _migrate_request_traces(conn: sqlite3.Connection) -> None:
         "retrieval": "TEXT DEFAULT '{}'",
         "stages": "TEXT DEFAULT '{}'",
         "reflection": "TEXT DEFAULT '{}'",
+        "response_plan": "TEXT DEFAULT '{}'",
         "total_latency_ms": "INTEGER DEFAULT 0",
         "status": "TEXT NOT NULL DEFAULT 'ok'",
         "error_code": "TEXT NOT NULL DEFAULT ''",

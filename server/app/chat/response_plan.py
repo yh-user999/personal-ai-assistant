@@ -7,6 +7,9 @@ from typing import Any
 
 from app.common.timeutil import now_local
 
+_ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator"})
+_HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
+
 MODES = frozenset({
     "direct_fact", "retrieve_then_answer", "reasoning", "creative",
     "emotional_support", "action", "clarify", "refuse_or_confirm", "casual_chat",
@@ -33,6 +36,12 @@ class ResponsePlan:
     constraints: list[str] = field(default_factory=list)
     source: str = "fallback"
     fact_result: dict[str, Any] | None = None
+    provider: str | None = None
+    query: str | None = None
+    action: str | None = None
+    risk: str = "low"
+    needs_clarification: bool = False
+    reason: str = ""
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -43,6 +52,10 @@ class ResponsePlan:
             "retrieval_required": self.retrieval_required,
             "tool_required": self.tool_required,
             "confirmation_required": self.confirmation_required,
+            "needs_clarification": self.needs_clarification,
+            "provider": self.provider,
+            "action": self.action,
+            "risk": self.risk,
             "tone": self.tone,
             "source": self.source,
         }
@@ -89,6 +102,134 @@ def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
             constraints=["区分已知事实与推断，给出判断依据"], source="rule",
         )
     return ResponsePlan(mode="casual_chat", intent="general_chat", confidence=0.55, source="fallback")
+
+
+def _text_list(value: Any, limit: int = 6) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:160] for item in value if str(item).strip()][:limit]
+
+
+def parse_llm_plan(text: str, *, is_owner: bool = True, min_confidence: float = 0.60) -> ResponsePlan:
+    """解析 LLM 策略 JSON；非法或低置信计划安全回退，不执行动作。"""
+    import json
+
+    try:
+        raw = json.loads(text or "")
+        if not isinstance(raw, dict):
+            raise ValueError("plan is not object")
+        mode = str(raw.get("mode") or "").strip()
+        intent = str(raw.get("intent") or "general_chat").strip()[:80]
+        confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
+        if mode not in MODES or confidence < min_confidence:
+            return ResponsePlan(mode="clarify" if confidence > 0.3 else "casual_chat", intent="uncertain", confidence=confidence, source="fallback", needs_clarification=confidence > 0.3)
+        provider = str(raw.get("provider") or "").strip() or None
+        if provider not in _ALLOWED_PROVIDERS:
+            provider = None
+        risk = str(raw.get("risk") or "low").strip().lower()
+        if risk not in {"low", "medium", "high"}:
+            risk = "low"
+        action = str(raw.get("action") or "").strip()[:80] or None
+        if any(word in (intent + " " + (action or "")) for word in _HIGH_RISK_WORDS):
+            risk = "high"
+        plan = ResponsePlan(
+            mode=mode,
+            intent=intent,
+            confidence=confidence,
+            evidence_required=bool(raw.get("evidence_required")),
+            retrieval_required=bool(raw.get("retrieval_required")),
+            tool_required=bool(raw.get("tool_required")),
+            confirmation_required=bool(raw.get("confirmation_required")),
+            needs_clarification=bool(raw.get("needs_clarification")),
+            tone=str(raw.get("tone") or "natural").strip()[:40] or "natural",
+            constraints=_text_list(raw.get("constraints")),
+            source="llm",
+            provider=provider,
+            query=str(raw.get("query") or "").strip()[:500] or None,
+            action=action,
+            risk=risk,
+            reason=str(raw.get("reason") or "").strip()[:120],
+        )
+        return validate_plan(plan, is_owner=is_owner)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ResponsePlan(mode="casual_chat", intent="planner_fallback", source="fallback")
+
+
+def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
+    """代码强制安全边界：planner 不能授予权限或执行未知工具。"""
+    if plan.provider and plan.provider not in _ALLOWED_PROVIDERS:
+        plan.provider = None
+        plan.tool_required = False
+    if plan.mode == "action":
+        if not is_owner:
+            return ResponsePlan(mode="refuse_or_confirm", intent=plan.intent, confidence=plan.confidence, source="fallback", risk="high", confirmation_required=True)
+        plan.confirmation_required = True
+    if plan.risk == "high":
+        plan.confirmation_required = True
+        if plan.mode != "action":
+            plan.mode = "refuse_or_confirm"
+    if plan.tool_required and not plan.provider and plan.mode == "direct_fact":
+        plan.mode = "clarify"
+        plan.needs_clarification = True
+    if plan.mode == "direct_fact" and not plan.provider:
+        plan.mode = "clarify"
+        plan.needs_clarification = True
+    if plan.mode == "clarify":
+        plan.confirmation_required = False
+    return plan
+
+
+def build_planner_messages(message: str, history: list[dict[str, Any]], rule_hint: ResponsePlan) -> list[dict[str, str]]:
+    import json
+
+    schema = {
+        "intent": "general_chat",
+        "mode": "casual_chat",
+        "confidence": 0.0,
+        "evidence_required": False,
+        "retrieval_required": False,
+        "tool_required": False,
+        "confirmation_required": False,
+        "needs_clarification": False,
+        "provider": None,
+        "query": None,
+        "action": None,
+        "risk": "low",
+        "tone": "natural",
+        "constraints": [],
+    }
+    context = [{"role": item.get("role", "user"), "content": str(item.get("content", ""))[:500]} for item in history[-4:]]
+    return [
+        {"role": "system", "content": "你是私人助手的响应策略规划器。不要回答用户，只返回 JSON。自主判断用户意图和最佳响应模式，但不能授予权限、执行动作或编造事实。可选 mode: " + ", ".join(sorted(MODES)) + "。确定性时间/计算问题可选择 provider=current_datetime/calculator。无法判断时选择 clarify 或 casual_chat。JSON 示例：" + json.dumps(schema, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps({"message": message[:8000], "recent_history": context, "rule_hint": rule_hint.summary()}, ensure_ascii=False)},
+    ]
+
+
+async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | None = None) -> ResponsePlan:
+    """LLM 自主选择响应模式；失败时回退到规则安全计划。"""
+    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner)
+    if hint.intent == "current_datetime":
+        hint.provider = "current_datetime"
+        return hint
+    if not getattr(runtime.settings, "semantic_planner_enabled", False):
+        return hint
+    model = str(getattr(runtime.settings, "response_plan_model", "") or "").strip() or runtime.settings.llm_model
+    try:
+        text = await runtime.llm.chat(
+            build_planner_messages(ctx.message, history or [], hint),
+            temperature=0.0,
+            max_tokens=max(120, int(runtime.settings.response_plan_max_tokens)),
+            response_format={"type": "json_object"},
+            timeout=max(1.0, float(runtime.settings.response_plan_timeout)),
+            model=model,
+            request_id=ctx.request_id,
+            user_id=ctx.uid,
+        )
+        return parse_llm_plan(text, is_owner=ctx.is_owner, min_confidence=float(runtime.settings.response_plan_min_confidence))
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger("assistant.chat.response_plan").warning("响应 planner 失败，回退规则计划: %s", type(exc).__name__)
+        return hint
 
 
 def plan_datetime(message: str) -> dict[str, Any] | None:

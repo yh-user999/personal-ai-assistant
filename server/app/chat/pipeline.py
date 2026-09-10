@@ -241,6 +241,7 @@ async def _record_request_trace(
         retrieval=ctx.trace.retrieval,
         stages=ctx.trace.stages,
         reflection=ctx.trace.reflection,
+        response_plan=ctx.trace.response_plan,
         total_latency_ms=ctx.trace.total_latency_ms,
         status=ctx.trace.status,
         error_code=ctx.trace.error_code,
@@ -425,11 +426,20 @@ async def _run_chat(
     if routed is not None:
         return routed
 
-    plan = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner)
-    if plan.mode == "direct_fact":
+    planner_history = await asyncio.to_thread(
+        memory.get_recent_history,
+        getattr(settings, "response_plan_max_history", 4),
+        user_id=ctx.uid,
+    )
+    planned = await response_plan.plan_response(ctx, runtime, planner_history)
+    hint = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner)
+    plan = hint if getattr(settings, "semantic_planner_shadow_only", True) else planned
+    if plan.mode == "direct_fact" and plan.provider == "current_datetime":
         plan.fact_result = providers.current_datetime(msg)
     ctx.trace.response_plan = {
-        **plan.summary(),
+        **planned.summary(),
+        "shadow_only": bool(getattr(settings, "semantic_planner_shadow_only", True)),
+        "effective_mode": plan.mode,
         "fact_result": plan.fact_result,
     }
 

@@ -94,6 +94,7 @@ def record(
     retrieval: dict | None = None,
     stages: dict | None = None,
     reflection: dict | None = None,
+    response_plan: dict | None = None,
     total_latency_ms: int = 0,
     status: str = "ok",
     error_code: str = "",
@@ -132,6 +133,10 @@ def record(
             allowed={"status", "review_ms", "revise_ms", "quality", "revision_count", "triggers"},
             numeric={"review_ms", "revise_ms", "revision_count"},
         )
+        safe_plan = _summary_map(
+            response_plan,
+            allowed={"mode", "intent", "confidence", "source", "risk", "provider", "fallback"},
+        )
         safe_trace_id = _safe_text(trace_id, 160)
         safe_request_id = _safe_text(request_id, 160)
         safe_channel = _safe_text(channel or "chat", 40)
@@ -144,8 +149,8 @@ def record(
                 """INSERT INTO request_traces
                    (trace_id, request_id, user_id, channel, route_name, query, ts,
                     routing, retrieval, retrieval_path, vector_degraded, healer,
-                    injection_bytes, stages, reflection, search_ms, total_latency_ms, status, error_code)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    injection_bytes, stages, reflection, response_plan, search_ms, total_latency_ms, status, error_code)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     safe_trace_id,
                     safe_request_id,
@@ -162,6 +167,7 @@ def record(
                     json.dumps(safe_injection, ensure_ascii=False),
                     json.dumps(safe_stages, ensure_ascii=False),
                     json.dumps(safe_reflection, ensure_ascii=False),
+                    json.dumps(safe_plan, ensure_ascii=False),
                     max(0, int(search_ms or 0)),
                     max(0, int(total_latency_ms or 0)),
                     safe_status,

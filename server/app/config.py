@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     reflection_long_reply_chars: int = 500
     reflection_max_revisions_per_turn: int = 1
 
+    # ── LLM 自主响应规划（普通非流式聊天）───────────────
+    semantic_planner_enabled: bool = False
+    semantic_planner_shadow_only: bool = True
+    response_plan_model: str = ""
+    response_plan_timeout: float = 12.0
+    response_plan_max_tokens: int = 400
+    response_plan_min_confidence: float = 0.60
+    response_plan_max_history: int = 4
+
     # ── Embedding ───────────────────────────────────────────
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_api_key: str = ""

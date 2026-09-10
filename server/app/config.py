@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     # GDELT 全球新闻事件库（第二检索源，走代理，与国内直连隔离）
     gdelt_enabled: bool = True
     gdelt_proxy: str = "http://127.0.0.1:7890"   # 留空则不走代理
-    gdelt_timeout: float = 15.0
+    gdelt_timeout: float = 4.0   # 锦上添花，不值得让聊天等更久；超时即降级
     gdelt_max_results: int = 10
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────

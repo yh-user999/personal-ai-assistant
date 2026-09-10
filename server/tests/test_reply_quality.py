@@ -137,18 +137,21 @@ def test_system_prompt_proactive_judgement():
 
 
 def test_system_prompt_anchors_persona_identity():
-    """身份锚点必须在提示词首段——首段只写"私人 AI 助手"就会被她当成自我定义。
+    """身份锚点必须在提示词首段，且要求"报出名字"而不是"禁止某个字面串"。
 
     线上事故：问"你是谁"时模型照第一句答"我是你的 AI 助手"，紧接着问"你的名字
-    是什么"就升级成"直接叫我助手就行"，等于自己给自己改了名。首段没有名字，
-    模型只能拿角色描述当身份，越答越远。
+    是什么"就升级成"直接叫我助手就行"，等于自己给自己改了名；旧提示词只禁
+    "AI 助手"这个字面串，模型改用"私人助手"就绕过去了（端到端实测复现过一次）。
+    所以约束必须写成"必须说出「小月」"，而不是"不许说 XX"。
     """
     from app.api.chat import SYSTEM_PROMPT
 
     head = SYSTEM_PROMPT.splitlines()[0]
     assert "小月" in head, f"首句未建立「小月」身份: {head!r}"
-    assert "通用自我介绍" in SYSTEM_PROMPT, "缺「禁止用通用自我介绍应付」的显式约束"
-    # 注入区可能夹带冲突自述，必须显式规定以身份段为准
+    assert "必须直接报出" in SYSTEM_PROMPT, "缺「必须报出名字」的正面要求"
+    assert "不说名字" in SYSTEM_PROMPT, "缺「只描述角色算没答」的判定"
+    # 历史记忆里的错误自述会被模仿，必须显式禁止
+    assert "不要模仿" in SYSTEM_PROMPT, "缺「不要模仿历史里的错误自述」"
     assert "以本段为准" in SYSTEM_PROMPT, "缺「与注入内容冲突时以身份段为准」"
 
 

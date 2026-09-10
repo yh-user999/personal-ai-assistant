@@ -217,6 +217,17 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
     else:
         system = system.replace("{older}", "（无更早对话）")
 
+    plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
+    if plan:
+        mode = plan.get("mode", "casual_chat")
+        constraints = plan.get("constraints") or []
+        fact = plan.get("fact_result")
+        block = [f"【本轮响应策略】{mode}"]
+        if constraints:
+            block.append("约束：" + "；".join(str(item) for item in constraints))
+        if fact:
+            block.append("确定性事实结果：" + str(fact.get("value", fact)))
+        system = system + "\n\n" + "\n".join(block)
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)
     return system

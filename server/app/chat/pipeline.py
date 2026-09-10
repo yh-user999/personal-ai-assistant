@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 
 from openai import OpenAIError
 
-from app.chat import prompting, retrieval, routing, review
+from app.chat import prompting, providers, response_plan, retrieval, routing, review
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
     OWNER_MAX_MSG_CHARS,
@@ -424,6 +424,14 @@ async def _run_chat(
         routed = await routing.dispatch(ctx, runtime)
     if routed is not None:
         return routed
+
+    plan = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner)
+    if plan.mode == "direct_fact":
+        plan.fact_result = providers.current_datetime(msg)
+    ctx.trace.response_plan = {
+        **plan.summary(),
+        "fact_result": plan.fact_result,
+    }
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
     if ctx.is_owner and settings.healer_enabled:

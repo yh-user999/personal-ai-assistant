@@ -133,9 +133,17 @@ def record(
             allowed={"status", "review_ms", "revise_ms", "quality", "revision_count", "triggers"},
             numeric={"review_ms", "revise_ms", "revision_count"},
         )
+        # 这些字段是排障依据：只看 mode/provider 无法区分"检索为空"与
+        # "检索分支根本没执行"，而这两者的处理方式完全不同。
         safe_plan = _summary_map(
             response_plan,
-            allowed={"mode", "intent", "confidence", "source", "risk", "provider", "fallback"},
+            allowed={
+                "mode", "intent", "confidence", "source", "risk", "provider", "fallback",
+                "effective_mode", "planned_mode", "planned_source", "shadow_only",
+                "web_has_sources", "web_no_sources", "web_unavailable",
+                "web_report_count", "web_event_count",
+            },
+            numeric={"web_report_count", "web_event_count"},
         )
         safe_trace_id = _safe_text(trace_id, 160)
         safe_request_id = _safe_text(request_id, 160)

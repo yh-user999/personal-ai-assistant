@@ -124,9 +124,12 @@ class Settings(BaseSettings):
     # （那个被审校/planner 共用），改这个只影响声明抽取。
     claim_analysis_model: str = ""
     # GDELT 全球新闻事件库（第二检索源，走代理，与国内直连隔离）
-    gdelt_enabled: bool = True
+    # 默认关闭：实测本机代理到 GDELT 的往返需 8 秒以上，与"不拖慢聊天"冲突——
+    # 给足超时能命中但拖到 40~60 秒，压到 4 秒则连接建不起来。等有更快/专用
+    # 出口时把此项改 true 即可启用，代码与去重/核查链路已就绪。
+    gdelt_enabled: bool = False
     gdelt_proxy: str = "http://127.0.0.1:7890"   # 留空则不走代理
-    gdelt_timeout: float = 4.0   # 锦上添花，不值得让聊天等更久；超时即降级
+    gdelt_timeout: float = 8.0
     gdelt_max_results: int = 10
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────

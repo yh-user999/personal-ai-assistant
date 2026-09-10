@@ -449,7 +449,7 @@ async def _run_chat(
         user_id=ctx.uid,
     )
     planned = await response_plan.plan_response(ctx, runtime, planner_history)
-    hint = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner)
+    hint = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner, history=planner_history)
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":

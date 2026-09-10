@@ -33,12 +33,58 @@ TIME_RANGES = frozenset({"day", "week", "month", "year"})
 # 时效词：命中即要求联网，且禁止无来源作答
 _FRESHNESS_RE = re.compile(
     r"最近|最新|近期|这几天|这两天|今天|昨天|前天|本周|这周|上午|下午|"
-    r"刚发生|刚刚|实时|现在.*(?:新闻|情况|进展)"
+    r"晚上|今晚|中午|眼下|目前|近来|日前|如今|到哪了|怎么样了|如何了|进展如何|"
+    r"刚发生|刚刚|实时|现在.*(?:新闻|情况|进展|怎么样|如何|什么|多少)"
 )
 # 事件名词：足以单独判定为事件查询（"…事件/案件/事故/通报"）
 _EVENT_NOUN_RE = re.compile(r"事件|案件|事故|通报")
 # 新闻类名词：与时效词组合才算联网查询，避免"最近的进展"这类自指误判
 _NEWS_NOUN_RE = re.compile(r"新闻|消息|报道|时事|热搜|事件|案件|事故|通报")
+# 求信息标记：在问"是什么/怎么样/多少"，而不是在陈述或下指令。
+_INFO_SEEKING_RE = re.compile(
+    r"[?？]|什么|哪些|哪个|怎么样|怎样|如何|多少|为什么|为啥|是否|吗|到哪|"
+    r"情况|进展|动态|近况|现状|消息"
+)
+# 常见新闻主体：国家/地区与高频公共议题。是**安全网**不是穷举——主判在
+# planner（其提示词已写明 web_search 的适用条件），这里只收高置信度信号。
+_COMMON_ENTITIES = (
+    "中国|美国|日本|俄罗斯|乌克兰|韩国|朝鲜|印度|英国|法国|德国|意大利|西班牙|"
+    "加拿大|澳大利亚|巴西|伊朗|以色列|巴勒斯坦|土耳其|沙特|欧盟|北约|联合国|"
+    "泰国|越南|菲律宾|新加坡|马来西亚|印尼|阿富汗|叙利亚|伊拉克|巴基斯坦|"
+    "墨西哥|阿根廷|台湾|香港|澳门|中美|俄乌|中日|中欧"
+)
+_PUBLIC_TOPICS = (
+    "台风|地震|洪水|暴雨|疫情|火灾|爆炸|空难|塌方|矿难|"
+    "股市|A股|房价|物价|油价|金价|黄金|汇率|利率|关税|通胀|"
+    "政策|法案|选举|峰会|谈判|制裁|停火|和谈"
+)
+# 音译外来名（"特朗普""泽连斯基""内塔尼亚胡"）：纯正则无法枚举人名，
+# 但音译用字是个很小的封闭集合。要求**连续两个**音译字，因为单个音译字
+# （"顺利""特别""价格"）在普通词里太常见，连用两字才基本只可能是外来专名。
+_TRANSLIT_CHARS = (
+    "斯尔夫维奇纳勒姆普朗特伯格拉德利凯温霍布赖森敦塔林顿逊罗巴马尼克亚基"
+    "穆萨佩洛莎蕾蒂迪杰迈桑谢乔蒙蓬希登拜"
+)
+# 外部主体：命中说明在谈外部世界，而不是用户或助手自身的事务。
+# 误判的代价很实在——闲聊被迫联网，还会因"无来源只能说未查到"而答非所问，
+# 所以每条都是结构信号，不含裸英文串（"最近 API 有什么变化"这类项目内
+# 问法不该被拖去搜网）。
+_EXTERNAL_SUBJECT_RE = re.compile(
+    rf"(?:{_COMMON_ENTITIES})|(?:{_PUBLIC_TOPICS})|"
+    r"[\u4e00-\u9fa5]{2,4}(?:省|市|县|区|镇|村|国|州|岛)|"
+    r"[\u4e00-\u9fa5]{2,6}(?:大学|医院|公司|集团|银行|政府|法院|警方|军队|组织|协会|部门|研究院|委员会|管理局)|"
+    r"(?:男童|女童|幼童|男孩|女孩|男子|女子|老人|学生|明星|网红|博主|官员|总统|总理|主席|部长|市长|省长|记者|专家)|"
+    rf"[\u4e00-\u9fa5]{{1,3}}[{_TRANSLIT_CHARS}]{{2,}}"
+)
+# 指代式追问："现在呢""后来呢"——本身没有主体，靠上一轮语境。
+# 用 fullmatch 语义（^...$）以免吃掉"继续写第三章"这类创作指令。
+_FOLLOWUP_RE = re.compile(
+    r"^(?:那|再|还|又|接着|然后)?\s*"
+    r"(?:现在呢|然后呢|后来呢|还有呢|还有吗|最新的呢|继续|接着说|再说说|"
+    r"真的吗|为什么|怎么说|展开|详细说|多说点|怎么样了|现在怎么样)"
+    r"[?？。！!～~\s]*$"
+)
+_FOLLOWUP_MAX_CHARS = 12
 
 _SCRIPT_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -87,15 +133,51 @@ def looks_like_event_query(text: str) -> bool:
 
 
 def needs_web_search(text: str) -> bool:
-    """是否需要联网取证。
+    """是否需要联网取证。任一通道命中即联网。
 
-    判据：命中新闻/事件名词，且（有时效词 或 是明确事件名词）。
-    单纯的"最近的进展"不命中，交给 planner 或普通聊天处理。
+    通道 1（原有）：新闻/事件名词 +（时效词 或 明确事件名词）。
+    "最近的进展"这类自指不命中，交给 planner 或普通聊天处理。
+
+    通道 2（新增）：时效词 + 求信息 + 外部主体。
+    兜住"特朗普最近有什么动作""日本核污水排海最新情况"这类**有主体、有时效
+    诉求，但用词不在名词表里**的问法。实测原判据对 13 条真实新闻问法只命中
+    3 条，漏掉的全是这一类。
+
+    通道 2 是安全网而非穷举：主判在 planner，这里宁可漏也不误判。
     """
     value = text or ""
-    if not _NEWS_NOUN_RE.search(value):
+    if _NEWS_NOUN_RE.search(value) and (
+        has_freshness_intent(value) or looks_like_event_query(value)
+    ):
+        return True
+    return bool(
+        has_freshness_intent(value)
+        and _INFO_SEEKING_RE.search(value)
+        and _EXTERNAL_SUBJECT_RE.search(value)
+    )
+
+
+def looks_like_followup(text: str) -> bool:
+    """是否指代式追问（"现在呢""后来呢"）——自身无主体，靠上一轮语境。"""
+    value = (text or "").strip()
+    if not value or len(value) > _FOLLOWUP_MAX_CHARS:
         return False
-    return has_freshness_intent(value) or looks_like_event_query(value)
+    return bool(_FOLLOWUP_RE.match(value))
+
+
+def needs_web_search_after_followup(text: str, previous_user_text: str) -> bool:
+    """追问是否应继承上一轮的检索需求。
+
+    新闻是**会变的事实**：用户刚看完成果问"现在呢"，要的是新进展，不是把上
+    一轮的报道复述一遍。实测这一问的 provider 为空，直接跳过了检索。
+    只在上一轮确实查过新闻/热榜时继承，避免把普通闲聊的追问也拖去联网。
+    """
+    if not looks_like_followup(text):
+        return False
+    previous = previous_user_text or ""
+    return bool(
+        needs_web_search(previous) or looks_like_hot_browsing(previous)
+    )
 
 
 def _now_iso() -> str:
@@ -562,14 +644,28 @@ async def search_and_cluster(
     # （过程细节/各方说法/后续反转/定性争议）。并入去重，不影响主结果。
     angle_added = 0
     if deep_dive and cleaned:
-        seen_urls = {r.get("url") for r in results}
-        for aq in build_angle_queries(cleaned):
-            extra = await web_search(aq, category="general", time_range="", limit=limit)
-            for it in extra:
-                if it.get("url") not in seen_urls:
-                    seen_urls.add(it.get("url"))
-                    results.append(it)
-                    angle_added += 1
+        angles = build_angle_queries(cleaned)
+        if angles:
+            # 角度查询彼此正交、互不依赖，并行发起。串行时实测深挖 6.6s
+            # （多次放宽尝试 + 各角度全部排队），而热榜在同目录早就用了
+            # asyncio.gather。return_exceptions 保证单个角度失败不牵连整体——
+            # 深挖只是加料，绝不能让它把主结果一起弄丢。
+            gathered = await asyncio.gather(
+                *(
+                    web_search(aq, category="general", time_range="", limit=limit)
+                    for aq in angles
+                ),
+                return_exceptions=True,
+            )
+            seen_urls = {r.get("url") for r in results}
+            for extra in gathered:
+                if not isinstance(extra, list):
+                    continue
+                for it in extra:
+                    if it.get("url") not in seen_urls:
+                        seen_urls.add(it.get("url"))
+                        results.append(it)
+                        angle_added += 1
 
     # 第二检索源 GDELT（走代理）：并入结果、按 URL 去重。
     # GDELT 失败/限流返回空，不影响 SearXNG 已有结果。

@@ -113,7 +113,23 @@ class ResponsePlan:
         }
 
 
-def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
+def _previous_user_text(history: list[dict[str, Any]] | None) -> str:
+    """历史里最近一条用户消息（本轮不在其中）。"""
+    for item in reversed(history or []):
+        if str(item.get("role") or "") != "user":
+            continue
+        text = str(item.get("content") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def build_rule_plan(
+    message: str,
+    *,
+    is_owner: bool = True,
+    history: list[dict[str, Any]] | None = None,
+) -> ResponsePlan:
     text = (message or "").strip()
     if not text:
         return ResponsePlan()
@@ -147,6 +163,20 @@ def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
             confidence=0.9,
             evidence_required=True, retrieval_required=True, tool_required=True,
             provider="web_search", query=text[:400],
+            constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
+            source="rule",
+        )
+    # 指代式追问（"现在呢""后来呢"）：新闻是**会变的事实**，用户要的是新进展，
+    # 不是把上一轮的报道复述一遍。实测这一问的 provider 为空、直接跳过检索。
+    # query 用上一轮的话题词——追问本身（"现在呢"）当检索词毫无价值。
+    previous = _previous_user_text(history)
+    if web_provider.needs_web_search_after_followup(text, previous):
+        return ResponsePlan(
+            mode="retrieve_then_answer",
+            intent="latest_news",
+            confidence=0.8,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=previous[:400],
             constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
             source="rule",
         )
@@ -378,14 +408,28 @@ def build_planner_messages(message: str, history: list[dict[str, Any]], rule_hin
     }
     context = [{"role": item.get("role", "user"), "content": str(item.get("content", ""))[:500]} for item in history[-4:]]
     return [
-        {"role": "system", "content": "你是私人助手的响应策略规划器。不要回答用户，只返回 JSON。自主判断用户意图和最佳响应模式，但不能授予权限、执行动作或编造事实。可选 mode: " + ", ".join(sorted(MODES)) + "。确定性时间/计算问题可选择 provider=current_datetime/calculator。无法判断时选择 clarify 或 casual_chat。JSON 示例：" + json.dumps(schema, ensure_ascii=False)},
+        {"role": "system", "content": (
+            "你是私人助手的响应策略规划器。不要回答用户，只返回 JSON。"
+            "自主判断用户意图和最佳响应模式，但不能授予权限、执行动作或编造事实。"
+            "可选 mode: " + ", ".join(sorted(MODES)) + "。"
+            "确定性时间/计算问题可选择 provider=current_datetime/calculator。"
+            "只要问题涉及外部世界的时效信息——新闻、事件、公共人物/机构/地区/"
+            "公司的近况与进展、政策或数据的当前值——provider 就填 web_search，"
+            "query 填用户原话（原话比改写命中更多）。"
+            "用户想看当下热议话题而不是查具体事件时（如「最近有什么大事」），"
+            "provider 填 hotboard。"
+            "你自己的模型记忆不是时效信息的来源，拿不准时倾向 web_search，"
+            "不要凭记忆直接作答。"
+            "无法判断时选择 clarify 或 casual_chat。JSON 示例："
+            + json.dumps(schema, ensure_ascii=False)
+        )},
         {"role": "user", "content": json.dumps({"message": message[:8000], "recent_history": context, "rule_hint": rule_hint.summary()}, ensure_ascii=False)},
     ]
 
 
 async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | None = None) -> ResponsePlan:
     """LLM 自主选择响应模式；失败时回退到规则安全计划。"""
-    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner)
+    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner, history=history)
     if hint.intent == "current_datetime":
         hint.provider = "current_datetime"
         return hint

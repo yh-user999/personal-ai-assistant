@@ -559,7 +559,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             from app.chat import hotboard_provider
 
             if hotboard_provider.configured():
-                items = await hotboard_provider.fetch_hotboard()
+                # 联网与热榜都在聊天关键路径上，各自计时才能回答"到底慢在哪"。
+                # search_ms 量的是本地知识库检索，覆盖不到这两处。
+                with ctx.trace.stage("hotboard"):
+                    items = await hotboard_provider.fetch_hotboard()
                 plan["hotboard_count"] = len(items)
                 if items:
                     board = hotboard_provider.format_hotboard(items)
@@ -578,8 +581,12 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             else:
                 # 主检索词用用户原话（provider 会剥掉口语包装），planner 的
                 # 改写只作备用：改写可能收窄成生僻词，原话反而更全。
-                query = str(msg or plan.get("query") or "").strip()
+                query = str(msg or "").strip()
                 alt = str(plan.get("query") or "").strip()
+                # 指代式追问（"现在呢"）本身没有检索价值，拿它当主检索词只会
+                # 白跑一轮。规则层已把上一轮的话题词放进 plan.query，改用它。
+                if web_provider.looks_like_followup(query) and alt and alt != query:
+                    query, alt = alt, ""
                 plan["web_query"] = query[:200]
                 # 深挖：事件核查/道德判断类问题多搜几组正交角度，主动找可能
                 # 推翻当前印象的信息。不按 intent 名判断——planner 会改写 intent
@@ -591,12 +598,13 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     or "event" in str(plan.get("intent") or "")
                     or "moral" in str(plan.get("intent") or "")
                 )
-                data = await web_provider.search_and_cluster(
-                    query,
-                    time_range=web_provider.time_range_default(),
-                    alt_query=alt if alt and alt != query else None,
-                    deep_dive=deep,
-                )
+                with ctx.trace.stage("web_search"):
+                    data = await web_provider.search_and_cluster(
+                        query,
+                        time_range=web_provider.time_range_default(),
+                        alt_query=alt if alt and alt != query else None,
+                        deep_dive=deep,
+                    )
                 if deep:
                     plan["web_deep_dive"] = True
                     plan["web_angle_added"] = int(data.get("angle_added") or 0)

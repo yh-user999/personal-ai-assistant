@@ -42,6 +42,14 @@ def _vision_model(runtime: ChatRuntime) -> str | None:
     )
 
 
+def _mark_retryable(ctx: ChatContext) -> None:
+    """标记本轮为可重试失败：聊天幂等层会释放租约，客户端可安全重发。"""
+    try:
+        ctx.request.state.chat_retryable_failure = True
+    except AttributeError:
+        pass
+
+
 async def _call_llm_with_fallback(
     ctx: ChatContext,
     runtime: ChatRuntime,
@@ -68,10 +76,7 @@ async def _call_llm_with_fallback(
                 )
             ).strip()
             if not reply:
-                try:
-                    ctx.request.state.chat_retryable_failure = True
-                except AttributeError:
-                    pass
+                _mark_retryable(ctx)
                 return None, False
             if plain_text.has_markdown(reply):
                 reply = plain_text.strip_markdown(reply)
@@ -99,6 +104,13 @@ async def _call_llm_with_fallback(
         if plain_text.has_markdown(reply):
             runtime.logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
             reply = plain_text.strip_markdown(reply)
+        if not reply:
+            # 空回复必须按失败处理：思考型模型有时把 token 全花在推理上、
+            # content 为空（图片路径早有此检查，文本路径漏了）。
+            # 不拦的话会把空串发给用户，还会当成 assistant 回复写进记忆。
+            runtime.logger.warning("LLM 返回空内容，按失败处理")
+            _mark_retryable(ctx)
+            return None, False
         return reply, False
     except (OpenAIError, TimeoutError, RuntimeError, AttributeError):
         if not assembly.gen_profile:
@@ -187,6 +199,11 @@ async def _stream_llm_with_fallback(
     if plain_text.has_markdown(reply):
         runtime.logger.debug("回复含 Markdown，已转纯文本（%d 字）", len(reply))
         reply = plain_text.strip_markdown(reply)
+    if not reply:
+        # 流式零增量同样按失败处理，避免把空串发出去
+        runtime.logger.warning("LLM 流式返回空内容，按失败处理")
+        _mark_retryable(ctx)
+        return None, False
     return reply, False
 
 

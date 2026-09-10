@@ -38,7 +38,12 @@ _pool_lock = threading.RLock()
 _key_states: dict[int, _KeyState] = {}
 _next_key_index = 0
 
-_RETRYABLE_STATUS_CODES = frozenset({402, 429})
+# 402 额度用尽 / 429 限流 / 401 密钥无效 / 403 权限不足：这四类都是**Key 级**
+# 故障——换一个 Key 通常就能成功，因此必须触发切换而不是直接抛错。
+# 实测教训：池里两个 Key 有一个余额耗尽时，401 被当成"不可切换错误"直接抛出，
+# 结果正好一半的请求失败，而另一个 Key 完全可用。切换后该 Key 会进入冷却，
+# 后续请求自动绕开它。
+_RETRYABLE_STATUS_CODES = frozenset({401, 402, 403, 429})
 _semaphore_lock = threading.Lock()
 _loop_semaphores: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 

@@ -328,3 +328,23 @@ def test_message_length_limit_owner(db_env, monkeypatch):
     resp = asyncio.run(run_chat(ctx, runtime))
     assert "消息太长啦" in resp.reply
     assert llm.calls == []
+
+
+def test_empty_llm_reply_is_treated_as_failure(db_env, monkeypatch):
+    """LLM 返回空串必须按失败处理：不能发空消息，也不能写进 assistant 记忆。
+
+    思考型模型有时把 token 全花在推理上、content 为空；文本路径原先没有
+    空值检查（图片路径有），会把空串直接返回给用户。
+    """
+    llm = _LLM(reply="   ")
+    runtime = make_runtime(llm=llm)
+    ctx = make_ctx("你好")
+    resp = asyncio.run(run_chat(ctx, runtime))
+    assert "连不上大脑" in resp.reply
+
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT content FROM memories WHERE sender='assistant'").fetchall()
+        assert rows == [], "空回复不得入库"
+    finally:
+        conn.close()

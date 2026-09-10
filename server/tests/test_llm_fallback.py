@@ -234,3 +234,28 @@ def test_novel_model_check_keeps_available_model(monkeypatch):
 
     assert asyncio.run(llm.validate_novel_model()) == "novel-model"
     assert llm.get_novel_model() == "novel-model"
+
+
+# ── Key 级故障必须触发切换 ──────────────────────────────────
+
+class _AuthError(Exception):
+    """模拟 openai 的 AuthenticationError（带 status_code）。"""
+
+    def __init__(self, status_code):
+        super().__init__(f"http {status_code}")
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 429])
+def test_key_level_errors_are_retryable(status):
+    """401/402/403/429 都是 Key 级故障，必须切换到下一个 Key。
+
+    池里一个 Key 余额耗尽时若直接抛错，会导致正好一半的请求失败。
+    """
+    assert llm.is_retryable_error(_AuthError(status)) is True
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_request_level_errors_are_not_retryable(status):
+    """参数类错误换 Key 也没用，不该浪费重试预算。"""
+    assert llm.is_retryable_error(_AuthError(status)) is False

@@ -42,6 +42,21 @@ SENSITIVE_CONSTRAINTS = (
     "不推测当事人动机，以官方通报为准",
 )
 
+# 外部事件线索：道德评价里出现具体主体（地名/年龄/称谓/"这件事/这起"），
+# 说明是在评价一个真实事件而非抽象伦理，应先检索取证。
+_EXTERNAL_EVENT_RE = re.compile(
+    r"[\u4e00-\u9fa5]{2,3}(?:省|市|县|区|镇|村)|"          # 地名
+    r"\d{1,3}\s*岁|"                                        # 年龄
+    r"(?:男童|女童|幼童|男孩|女孩|小孩|男子|女子|老人|学生|网红|博主)|"  # 称谓
+    r"这(?:个|名)?(?:男的|女的|人)|"                        # 口语称谓
+    r"这(?:件|起|条|个)事|该事件|此事|这事"                  # 指代具体事件
+)
+
+
+def _refers_external_event(text: str) -> bool:
+    return bool(_EXTERNAL_EVENT_RE.search(text or ""))
+
+
 _TIME_RE = re.compile(r"(?:几点|现在时间|当前时间|什么时间|现在是几号|今天(?:是)?(?:星期|周|礼拜)[一二三四五六日天几]|今天(?:是)?(?:几号|几月几号)|当前日期(?:是什么)?|今天日期)")
 _CREATIVE_RE = re.compile(r"继续写|接着写|续写|改写|润色|写一段|设计剧情|头脑风暴|起个名字")
 _EMOTION_RE = re.compile(r"焦虑|难受|崩溃|烦|累|沮丧|生气|压力|睡不着|没劲|撑不住")
@@ -140,9 +155,21 @@ def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
         constraints = list(MORAL_CONSTRAINTS)
         if sensitive:
             constraints.extend(SENSITIVE_CONSTRAINTS)
+        # 若这是"对某个外部事件的道德评价"（提到新闻/事件/具体主体），
+        # 必须先检索取证再判断——否则会像这次一样凭旧记忆下结论、漏掉关键事实
+        # （"勒颈""后退"都是没检索就说不出的）。纯抽象伦理问题（该不该惩罚）
+        # 不联网，保持 provider 为空。
+        about_event = (
+            web_provider.needs_web_search(text)
+            or web_provider.looks_like_event_query(text)
+            or _refers_external_event(text)
+        )
         return ResponsePlan(
             mode="moral_assessment", intent="moral_judgment", confidence=0.85,
             evidence_required=True, retrieval_required=True,
+            tool_required=about_event,
+            provider="web_search" if about_event else None,
+            query=text[:400] if about_event else "",
             needs_moral_judgment=True, sensitive_subject=sensitive,
             constraints=constraints, source="rule",
         )

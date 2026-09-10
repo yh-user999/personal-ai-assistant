@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 8  # 全局 LLM 请求并发上限
     llm_key_cooldown_seconds: float = 30.0  # Key 临时失败后的冷却时间
 
+    # ── 回复审校（默认关闭：先在测试环境显式开启）────────────
+    reflection_enabled: bool = False
+    reflection_review_model: str = ""
+    reflection_review_timeout: float = 20.0
+    reflection_max_tokens: int = 700
+    reflection_min_quality_score: float = 0.78
+    reflection_long_reply_chars: int = 500
+    reflection_max_revisions_per_turn: int = 1
+
     # ── Embedding ───────────────────────────────────────────
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_api_key: str = ""

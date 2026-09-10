@@ -216,7 +216,7 @@ async def ready(request: Request):
                 "daily_summaries", "weekly_reports",
                 "fitness_profile", "fitness_exercises", "fitness_plans",
                 "fitness_plan_days", "fitness_plan_exercises", "fitness_sessions",
-                "fitness_sets", "fitness_measurements", "fitness_imports",
+                "fitness_sets", "fitness_measurements", "fitness_imports", "reply_reviews",
             }
             rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"

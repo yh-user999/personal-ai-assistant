@@ -63,6 +63,7 @@ class TraceContext:
     retrieval: dict[str, Any] = field(default_factory=dict)
     retrieval_trace: dict[str, Any] = field(default_factory=dict)
     injection_bytes: dict[str, Any] = field(default_factory=dict)
+    reflection: dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
     error_code: str = ""
 

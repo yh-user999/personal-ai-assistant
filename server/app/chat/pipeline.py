@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 
 from openai import OpenAIError
 
-from app.chat import prompting, retrieval, routing
+from app.chat import prompting, retrieval, routing, review
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
     OWNER_MAX_MSG_CHARS,
@@ -240,11 +240,68 @@ async def _record_request_trace(
         route_name=ctx.trace.route_name,
         retrieval=ctx.trace.retrieval,
         stages=ctx.trace.stages,
+        reflection=ctx.trace.reflection,
         total_latency_ms=ctx.trace.total_latency_ms,
         status=ctx.trace.status,
         error_code=ctx.trace.error_code,
     )
     retrieval.track_background(runtime, runtime_task)
+
+
+async def _reflect_and_finalize_reply(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    bundle: retrieval.RetrievalBundle,
+    draft: str,
+) -> str:
+    """对候选回复做一次结构化审校，必要时最多重写一次。"""
+    reasons = review.should_reflect(
+        ctx,
+        bundle,
+        draft,
+        long_reply_chars=getattr(runtime.settings, "reflection_long_reply_chars", 500),
+    )
+    if not reasons:
+        ctx.trace.reflection = {"status": "skipped", "triggers": []}
+        return draft
+
+    checked, review_ms = await review.review_reply(ctx, runtime, bundle, draft)
+    model = str(getattr(runtime.settings, "reflection_review_model", "") or "").strip() or runtime.settings.llm_model
+    min_quality = float(getattr(runtime.settings, "reflection_min_quality_score", 0.78))
+    if not review.should_revise(checked, ctx, min_quality=min_quality):
+        ctx.trace.reflection = {
+            "status": "passed" if checked.status != "failed" else "failed",
+            "triggers": reasons,
+            "review_ms": review_ms,
+            "quality": round(checked.quality, 3),
+            "revision_count": 0,
+        }
+        review.persist_review(
+            ctx, reasons, checked,
+            status="passed" if checked.status != "failed" else "failed",
+            model=model,
+            latency_ms=review_ms,
+        )
+        return draft
+
+    final, changed, revise_ms = await review.revise_reply(ctx, runtime, bundle, draft, checked)
+    status = "revised" if changed else "fallback"
+    ctx.trace.reflection = {
+        "status": status,
+        "triggers": reasons,
+        "review_ms": review_ms,
+        "revise_ms": revise_ms,
+        "quality": round(checked.quality, 3),
+        "revision_count": 1 if changed else 0,
+    }
+    review.persist_review(
+        ctx, reasons, checked,
+        status=status,
+        model=model,
+        latency_ms=review_ms + revise_ms,
+        revision_count=1 if changed else 0,
+    )
+    return final
 
 
 def _maybe_capture_chapter(
@@ -436,6 +493,10 @@ async def _run_chat(
             ),
             memories_used=0,
         )
+
+    if settings.reflection_enabled:
+        with ctx.trace.stage("reflection"):
+            reply = await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
 
     with ctx.trace.stage("persistence.assistant"):
         await memory.write_message("assistant", reply, user_id=ctx.uid)

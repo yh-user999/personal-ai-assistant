@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -540,12 +540,33 @@ CREATE TABLE IF NOT EXISTS request_traces (
   healer TEXT DEFAULT '',
   injection_bytes TEXT DEFAULT '{}',
   stages TEXT DEFAULT '{}',
+  reflection TEXT DEFAULT '{}',
   search_ms INTEGER DEFAULT 0,
   total_latency_ms INTEGER DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ok',
   error_code TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_traces_ts ON request_traces(ts);
+
+-- ㉖ 回复审校记录：只保存结构化评分和触发元数据，不保存候选全文。
+CREATE TABLE IF NOT EXISTS reply_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  request_id TEXT NOT NULL DEFAULT '',
+  trace_id TEXT NOT NULL DEFAULT '',
+  route_name TEXT NOT NULL DEFAULT '',
+  trigger TEXT NOT NULL DEFAULT '[]',
+  review_status TEXT NOT NULL DEFAULT 'skipped',
+  needs_revision INTEGER NOT NULL DEFAULT 0,
+  scores TEXT NOT NULL DEFAULT '{}',
+  issues TEXT NOT NULL DEFAULT '[]',
+  revision_count INTEGER NOT NULL DEFAULT 0,
+  review_model TEXT NOT NULL DEFAULT '',
+  review_latency_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reply_reviews_user_created ON reply_reviews(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reply_reviews_status_created ON reply_reviews(review_status, created_at);
 
 -- ㉖ 聊天请求幂等：跨线程/进程/重启保留 request_id 的最终状态。
 CREATE TABLE IF NOT EXISTS chat_request_dedup (
@@ -797,6 +818,7 @@ _MIGRATIONS = [
     "ALTER TABLE request_traces ADD COLUMN route_name TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE request_traces ADD COLUMN retrieval TEXT DEFAULT '{}'",
     "ALTER TABLE request_traces ADD COLUMN stages TEXT DEFAULT '{}'",
+    "ALTER TABLE request_traces ADD COLUMN reflection TEXT DEFAULT '{}'",
     "ALTER TABLE request_traces ADD COLUMN total_latency_ms INTEGER DEFAULT 0",
     "ALTER TABLE request_traces ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'",
     "ALTER TABLE request_traces ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
@@ -817,6 +839,7 @@ def _migrate_request_traces(conn: sqlite3.Connection) -> None:
         "route_name": "TEXT NOT NULL DEFAULT ''",
         "retrieval": "TEXT DEFAULT '{}'",
         "stages": "TEXT DEFAULT '{}'",
+        "reflection": "TEXT DEFAULT '{}'",
         "total_latency_ms": "INTEGER DEFAULT 0",
         "status": "TEXT NOT NULL DEFAULT 'ok'",
         "error_code": "TEXT NOT NULL DEFAULT ''",

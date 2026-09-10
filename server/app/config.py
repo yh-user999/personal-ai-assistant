@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     # 轻量模型对结构化抽取返回不稳定，在预算内重试；总预算适当放宽
     claim_analysis_retries: int = 2
     claim_analysis_budget: float = 20.0
+    # 声明抽取专用模型：留空则回退到主模型。独立于 reflection_review_model
+    # （那个被审校/planner 共用），改这个只影响声明抽取。
+    claim_analysis_model: str = ""
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

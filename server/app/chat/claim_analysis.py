@@ -455,7 +455,9 @@ async def extract_claims_llm(results: list[dict[str, Any]], runtime: Any) -> Cla
     if not results:
         return ClaimSet()
     budget = max(1.0, float(getattr(settings, "claim_analysis_budget", 12.0)))
-    model = str(getattr(settings, "reflection_review_model", "") or "").strip() or settings.llm_model
+    # 声明抽取专用模型（独立配置）；留空回退主模型。不复用 review_model，
+    # 否则会连带改掉审校和 planner 的模型。
+    model = str(getattr(settings, "claim_analysis_model", "") or "").strip() or settings.llm_model
 
     prompt = build_extraction_prompt(results)
     max_tokens = max(200, int(getattr(settings, "claim_analysis_max_tokens", 1200)))

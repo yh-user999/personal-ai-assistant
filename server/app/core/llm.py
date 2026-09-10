@@ -55,6 +55,16 @@ class _KeyState:
     last_error: str = ""
 
 
+class LLMEmptyContentError(RuntimeError):
+    """上游返回 200 但正文为空。
+
+    实测 opencode/zen 会偶发这种情况：同一请求几秒后重发就正常。它不是 Key 的
+    问题（不触发冷却），但必须按可重试失败处理——否则 chat() 的原写法直接
+    ``return ""``，三次重试预算一次没用上就把用户推到"连不上大脑"的兜底话术，
+    还把这笔记成成功用量，这类故障在监控里完全看不见。
+    """
+
+
 # ── token 用量记账（进程内累计）──────────────────────────────
 _usage_lock = threading.Lock()
 _usage = {"calls": 0, "prompt": 0, "completion": 0, "cached": 0}
@@ -224,11 +234,37 @@ def _failure_reason(exc: BaseException) -> str:
     status = _status_code(exc)
     if status is not None:
         return f"http_{status}"
+    if isinstance(exc, LLMEmptyContentError):
+        return "empty_content"
     if isinstance(exc, (APITimeoutError, httpx.TimeoutException, TimeoutError)):
         return "timeout"
     if isinstance(exc, (APIConnectionError, httpx.NetworkError, ConnectionError)):
         return "connection"
     return type(exc).__name__
+
+
+def _first_choice_content(resp) -> str:
+    """安全取首个 choice 的正文；choices 为空或正文为 None 都按空正文处理。
+
+    直接写 ``resp.choices[0].message.content`` 时，上游返回 200 但 choices 为
+    空列表会抛 IndexError——它不在 chat() 的重试 except 里，也不在 pipeline 的
+    捕获元组里，会一路冒到 API 层变成 500。
+    """
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    return getattr(message, "content", None) or ""
+
+
+async def _async_retry_backoff(attempt: int) -> None:
+    """按配置做指数退避；退避值非法时按 0 处理，不阻断重试。"""
+    try:
+        backoff = max(0.0, float(settings.llm_retry_backoff_seconds))
+    except (TypeError, ValueError):
+        backoff = 0.0
+    if backoff:
+        await asyncio.sleep(backoff * min(2 ** attempt, 8))
 
 
 def _key_bucket(index: int) -> dict:
@@ -609,12 +645,34 @@ async def chat(
                     attempt + 1,
                     max_attempts,
                 )
-                try:
-                    backoff = max(0.0, float(settings.llm_retry_backoff_seconds))
-                except (TypeError, ValueError):
-                    backoff = 0.0
-                if backoff:
-                    await asyncio.sleep(backoff * min(2 ** attempt, 8))
+                await _async_retry_backoff(attempt)
+                continue
+
+            content = _first_choice_content(resp)
+            if not content.strip():
+                # 200 但正文为空：按可重试失败处理，但**不冷却 Key**——空正文未必
+                # 是 Key 的问题，生产只有单 Key 时冷却唯一 Key 只会让紧随其后的
+                # 请求更难成功。这里只登记失败原因，好让监控能看见这类故障。
+                reason = _mark_failure(
+                    key_index, LLMEmptyContentError(), cooldown=False
+                )
+                if attempt + 1 >= max_attempts:
+                    logger.warning(
+                        "LLM 连续 %d 次返回空正文（model=%s，原因=%s），交上层兜底",
+                        max_attempts,
+                        selected_model,
+                        reason,
+                    )
+                    return ""
+                logger.warning(
+                    "LLM %s 返回空正文（model=%s，原因=%s），按可重试失败重试（第 %d/%d 次）",
+                    mask_api_key(keys[key_index], index=key_index),
+                    selected_model,
+                    reason,
+                    attempt + 1,
+                    max_attempts,
+                )
+                await _async_retry_backoff(attempt)
                 continue
 
             _mark_success(key_index)
@@ -635,7 +693,7 @@ async def chat(
                 )
             except Exception:
                 logger.debug("LLM 用量/路由记账失败", exc_info=True)
-            return resp.choices[0].message.content or ""
+            return content
 
     if last_exc is not None:
         raise last_exc

@@ -259,3 +259,80 @@ def test_key_level_errors_are_retryable(status):
 def test_request_level_errors_are_not_retryable(status):
     """参数类错误换 Key 也没用，不该浪费重试预算。"""
     assert llm.is_retryable_error(_AuthError(status)) is False
+
+
+# ── 200 但正文为空：上游偶发故障 ────────────────────────────────
+# 线上实测：opencode/zen 会返回 200 + 空正文，几秒后同一请求就正常。原写法
+# 直接 return ""，三次重试预算一次没用上，还把这笔记成成功用量——用户看到的
+# 是"连不上大脑"，监控里却一条故障都没有。
+
+def _empty_script(monkeypatch, *actions, backoff=0.0):
+    """单 Key 池 + 零退避，让多轮重试跑得快；返回调用记录列表。"""
+    _set_keys(monkeypatch, 1)
+    monkeypatch.setattr(settings, "llm_retry_backoff_seconds", backoff)
+    calls = []
+    monkeypatch.setattr(llm, "AsyncOpenAI", _factory({0: list(actions)}, calls))
+    return calls
+
+
+def test_empty_content_retries_instead_of_giving_up(monkeypatch):
+    """空正文要触发重试——上游打一次喷嚏不该直接推用户去兜底话术。"""
+    calls = _empty_script(monkeypatch, _Response(""), _Response("恢复后的回答"))
+
+    result = asyncio.run(llm.chat([{"role": "user", "content": "hi"}]))
+
+    assert result == "恢复后的回答"
+    assert len(calls) == 2, "空正文应当重试"
+
+
+def test_empty_content_recorded_as_failure_not_success(monkeypatch):
+    """空正文不能记成成功用量，否则这类故障在监控里完全看不见。"""
+    calls = _empty_script(
+        monkeypatch, _Response(""), _Response("ok", _Usage(prompt=20, completion=5))
+    )
+
+    asyncio.run(llm.chat([{"role": "user", "content": "hi"}]))
+
+    details = llm.get_usage_details()
+    assert details["failures"] == {"0": {"empty_content": 1}}
+    assert details["usage"]["calls"] == 1, "只有真正成功那次计入 calls"
+    assert len(calls) == 2
+
+
+def test_empty_content_does_not_cooldown_the_only_key(monkeypatch):
+    """空正文不冷却 Key：生产只有单 Key，冷却唯一 Key 会让后续请求更难成功。"""
+    monkeypatch.setattr(settings, "llm_key_cooldown_seconds", 30.0)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+    _empty_script(monkeypatch, _Response(""))
+
+    assert asyncio.run(llm.chat([{"role": "user", "content": "hi"}])) == ""
+
+    status = llm.get_usage_details()["key_status"][0]
+    assert status["cooldown_remaining"] == 0.0, "空正文不应把唯一 Key 打进冷却"
+    assert status["consecutive_failures"] == 0
+    assert status["last_error"] == "empty_content", "仍要留下可观测记录"
+
+
+def test_all_attempts_empty_returns_empty_for_upper_fallback(monkeypatch):
+    """连续空正文时保持"返回空串"的既有契约，由上层兜底。"""
+    monkeypatch.setattr(settings, "llm_max_retries", 2)
+    calls = _empty_script(monkeypatch, _Response(""), _Response(""), _Response(""))
+
+    assert asyncio.run(llm.chat([{"role": "user", "content": "hi"}])) == ""
+
+    assert len(calls) == 3, "应当用满 LLM_MAX_RETRIES+1 次尝试"
+    assert llm.get_usage_details()["failures"] == {"0": {"empty_content": 3}}
+
+
+def test_empty_choices_does_not_raise_index_error(monkeypatch):
+    """200 但 choices 为空不能抛 IndexError。
+
+    它既不在 chat() 的重试 except 里，也不在 pipeline 的捕获元组里，
+    会一路冒到 API 层变成 500。
+    """
+    calls = _empty_script(
+        monkeypatch, SimpleNamespace(choices=[], usage=None), _Response("ok")
+    )
+
+    assert asyncio.run(llm.chat([{"role": "user", "content": "hi"}])) == "ok"
+    assert len(calls) == 2

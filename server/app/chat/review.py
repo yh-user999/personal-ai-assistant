@@ -68,10 +68,20 @@ def _score(value: Any, default: float = 0.0) -> float:
 
 def parse_review_result(text: str) -> ReplyReview:
     """严格解析模型 JSON；任何格式问题都回退为需要保守处理的低置信结果。"""
+    from app.chat import llm_json
+
+    raw = llm_json.extract_json_object(text)
+    if raw is None:
+        llm_json.log_unparsed("回复审校", text)
+        return ReplyReview(
+            needs_revision=False,
+            scores={key: 0.0 for key in _SCORE_KEYS},
+            issues=["审校结果格式无效，保留候选回复"],
+            revision_plan=[],
+            confidence=0.0,
+            status="failed",
+        )
     try:
-        raw = json.loads(text or "")
-        if not isinstance(raw, dict):
-            raise ValueError("review result is not object")
         scores_raw = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
         scores = {key: _score(scores_raw.get(key), 0.0) for key in _SCORE_KEYS}
         issues = [str(item)[:120] for item in raw.get("issues", []) if item][:8]
@@ -85,11 +95,14 @@ def parse_review_result(text: str) -> ReplyReview:
             status="passed",
             **{name: bool(raw.get(name)) for name in _MORAL_FLAGS},
         )
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError, KeyError) as exc:
+        from app.chat import llm_json
+
+        llm_json.log_unparsed("回复审校字段", f"{type(exc).__name__}: {text}")
         return ReplyReview(
             needs_revision=False,
             scores={key: 0.0 for key in _SCORE_KEYS},
-            issues=["审校结果格式无效，保留候选回复"],
+            issues=["审校结果字段非法，保留候选回复"],
             revision_plan=[],
             confidence=0.0,
             status="failed",
@@ -232,6 +245,8 @@ async def review_reply(ctx: Any, runtime: Any, bundle: Any, draft: str) -> tuple
             build_review_messages(ctx, bundle, draft),
             temperature=0.0,
             max_tokens=max(100, int(settings.reflection_max_tokens)),
+            # 强制 JSON 输出：模型带思考前缀时，纯文本解析会失败并静默降级
+            response_format={"type": "json_object"},
             timeout=max(1.0, float(settings.reflection_review_timeout)),
             model=model,
             request_id=ctx.request_id,

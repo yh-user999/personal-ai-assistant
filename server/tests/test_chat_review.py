@@ -182,3 +182,28 @@ def test_review_prompt_requires_moral_judgement_fields():
     joined = "\n".join(item["content"] for item in messages)
     assert "noise_used_as_reason" in joined
     assert "empty_neutrality" in joined
+
+
+# ── 审校输出容错：模型常带围栏或思考前缀 ─────────────────────
+
+def test_parse_review_tolerates_fenced_json():
+    result = review.parse_review_result(
+        '```json\n{"needs_revision": false, "scores": {"safety": 1.0}, "issues": []}\n```'
+    )
+    assert result.status == "passed"
+    assert result.scores["safety"] == 1.0
+
+
+def test_parse_review_tolerates_preamble():
+    result = review.parse_review_result(
+        '我先审一下：\n{"needs_revision": true, "scores": {"relevance": 0.3}}\n完毕。'
+    )
+    assert result.status == "passed"
+    assert result.needs_revision is True
+
+
+def test_truncated_review_marks_failed_and_is_logged(caplog):
+    """被 max_tokens 截断时必须是显式 failed，而不是静默通过。"""
+    result = review.parse_review_result('{"needs_revision": false, "scores": {"safety": 1.0')
+    assert result.status == "failed"
+    assert any("无法解析" in record.message for record in caplog.records)

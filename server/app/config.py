@@ -77,8 +77,10 @@ class Settings(BaseSettings):
     # ── 回复审校（按需触发：命中风险/事实/情绪/道德信号才多调一次）──
     reflection_enabled: bool = True
     reflection_review_model: str = ""
-    reflection_review_timeout: float = 20.0
-    reflection_max_tokens: int = 700
+    reflection_review_timeout: float = 25.0
+    # 审校要输出 9 个分数 + 5 个布尔判定 + issues/revision_plan。
+    # 700 太小：实测撞上限被截断，JSON 不完整 → 解析失败 → 审校永远"无效"。
+    reflection_max_tokens: int = 1600
     reflection_min_quality_score: float = 0.78
     reflection_long_reply_chars: int = 500
     reflection_max_revisions_per_turn: int = 1
@@ -88,8 +90,9 @@ class Settings(BaseSettings):
     semantic_planner_enabled: bool = True
     semantic_planner_shadow_only: bool = False
     response_plan_model: str = ""
-    response_plan_timeout: float = 12.0
-    response_plan_max_tokens: int = 400
+    response_plan_timeout: float = 15.0
+    # 400 实测会被截断（plan JSON + 模型思考前缀），导致计划解析失败并静默降级
+    response_plan_max_tokens: int = 1200
     response_plan_min_confidence: float = 0.60
     response_plan_max_history: int = 4
 

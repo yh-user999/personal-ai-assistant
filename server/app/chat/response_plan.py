@@ -162,14 +162,26 @@ def _text_list(value: Any, limit: int = 6) -> list[str]:
     return [str(item).strip()[:160] for item in value if str(item).strip()][:limit]
 
 
-def parse_llm_plan(text: str, *, is_owner: bool = True, min_confidence: float = 0.60) -> ResponsePlan:
-    """解析 LLM 策略 JSON；非法或低置信计划安全回退，不执行动作。"""
-    import json
+def parse_llm_plan(
+    text: str,
+    *,
+    is_owner: bool = True,
+    min_confidence: float = 0.60,
+    fallback: ResponsePlan | None = None,
+) -> ResponsePlan:
+    """解析 LLM 策略 JSON；非法或低置信计划安全回退，不执行动作。
 
+    ``fallback`` 应传规则计划：解析失败时退回它，而不是退成裸的 casual_chat——
+    后者会把规则层已经判定的取证要求（如时效问题必须联网）一并丢掉，
+    表现为"模型没规划好，于是连该查的都不查了"。
+    """
+    from app.chat import llm_json
+
+    raw = llm_json.extract_json_object(text)
+    if raw is None:
+        llm_json.log_unparsed("响应 planner", text)
+        return fallback or ResponsePlan(mode="casual_chat", intent="planner_fallback", source="fallback")
     try:
-        raw = json.loads(text or "")
-        if not isinstance(raw, dict):
-            raise ValueError("plan is not object")
         mode = str(raw.get("mode") or "").strip()
         intent = str(raw.get("intent") or "general_chat").strip()[:80]
         confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
@@ -203,8 +215,46 @@ def parse_llm_plan(text: str, *, is_owner: bool = True, min_confidence: float = 
             reason=str(raw.get("reason") or "").strip()[:120],
         )
         return validate_plan(plan, is_owner=is_owner)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return ResponsePlan(mode="casual_chat", intent="planner_fallback", source="fallback")
+    except (TypeError, ValueError, KeyError) as exc:
+        import logging
+
+        logging.getLogger("assistant.chat.response_plan").warning(
+            "响应计划字段非法（%s），退回规则计划", type(exc).__name__
+        )
+        return fallback or ResponsePlan(mode="casual_chat", intent="planner_fallback", source="fallback")
+
+
+def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
+    """把规则层判定的**取证要求**并回 planner 的计划。
+
+    规则与 planner 分工不同：planner 决定"怎么答更合适"，规则决定"什么必须
+    核实"。时效/事件类问题必须联网取证属于后者，不能被 planner 的
+    casual_chat 或低置信结果取消——生产上就是这样漏掉了一次该做的检索。
+
+    只合并强制项，不把规则的全部约束无差别叠加，避免把 planner 的判断
+    覆盖成规则模板。
+    """
+    if hint.provider == "web_search":
+        plan.provider = "web_search"
+        plan.tool_required = True
+        plan.evidence_required = True
+        plan.retrieval_required = True
+        if plan.mode in {"casual_chat", "clarify"}:
+            plan.mode = "retrieve_then_answer"
+            plan.intent = hint.intent
+        if not plan.query:
+            plan.query = hint.query
+        for item in hint.constraints:
+            if item not in plan.constraints:
+                plan.constraints.append(item)
+    if hint.needs_moral_judgment:
+        plan.needs_moral_judgment = True
+        plan.evidence_required = True
+        plan.sensitive_subject = plan.sensitive_subject or hint.sensitive_subject
+        for item in hint.constraints:
+            if item not in plan.constraints:
+                plan.constraints.append(item)
+    return validate_plan(plan, is_owner=is_owner)
 
 
 def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
@@ -290,7 +340,13 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             user_id=ctx.uid,
             purpose="planner",
         )
-        return parse_llm_plan(text, is_owner=ctx.is_owner, min_confidence=float(runtime.settings.response_plan_min_confidence))
+        planned = parse_llm_plan(
+            text,
+            is_owner=ctx.is_owner,
+            min_confidence=float(runtime.settings.response_plan_min_confidence),
+            fallback=hint,
+        )
+        return apply_rule_requirements(planned, hint, is_owner=ctx.is_owner)
     except Exception as exc:  # noqa: BLE001
         import logging
         logging.getLogger("assistant.chat.response_plan").warning("响应 planner 失败，回退规则计划: %s", type(exc).__name__)

@@ -25,7 +25,6 @@ from app.chat import response_plan, web_provider
 # ── 通道 2：时效词 + 求信息 + 外部主体 ──────────────────────
 
 @pytest.mark.parametrize("text", [
-    "特朗普最近有什么动作",
     "日本核污水排海最新情况",
     "中美关系现在怎么样了",
     "现在黄金多少钱一克",
@@ -35,6 +34,24 @@ from app.chat import response_plan, web_provider
 def test_timeliness_question_with_external_subject_triggers_search(text):
     """有时效诉求、有外部主体，即使不含"新闻/事件"字样也要联网。"""
     assert web_provider.needs_web_search(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "最近斯拉夫语学得怎么样",
+    "最近蒙特卡洛跑得怎么样",
+    "最近伯克利怎么样",
+    "最近维尔纳怎么样",
+    "最近尔尔怎么样",
+])
+def test_translit_lookalikes_are_not_news_subjects(text):
+    """外来语/技术术语不是新闻主体。
+
+    曾试过按"音译用字连用"识别外来人名，结果既误判又漏判：同样是
+    "汉字+音译字"，"斯拉夫语""蒙特卡洛""伯克利"被算成新闻主体，而
+    "泽连斯基""普京"照样漏掉——字符级正则区分不了专名和普通词。
+    该信号已移除，人名交给 planner 判定。这些用例锁住它不会被重新引入。
+    """
+    assert web_provider.needs_web_search(text) is False
 
 
 @pytest.mark.parametrize("text", [
@@ -67,7 +84,7 @@ def test_existing_news_noun_channel_still_works():
 # ── 指代式追问继承上一轮检索需求 ────────────────────────────
 
 _NEWS_TURN = [
-    {"role": "user", "content": "特朗普最近有什么动作"},
+    {"role": "user", "content": "俄乌局势最新消息"},
     {"role": "assistant", "content": "我看到几条报道……"},
 ]
 _CASUAL_TURN = [
@@ -87,7 +104,23 @@ def test_followup_inherits_search_from_news_turn():
 def test_followup_uses_previous_topic_as_query():
     """追问本身当检索词毫无价值（"现在呢"），要用上一轮的话题词。"""
     plan = response_plan.build_rule_plan("现在呢", is_owner=True, history=_NEWS_TURN)
-    assert plan.query == "特朗普最近有什么动作"
+    assert plan.query == "俄乌局势最新消息"
+
+
+def test_followup_inheritance_is_limited_to_rule_recognized_topics():
+    """已知局限：继承判据是规则层的 needs_web_search。
+
+    上一轮若是 planner 认出来的新闻（规则层不认，如"特朗普最近有什么动作"
+    这种依赖人名识别的问法），规则层的追问继承就不会触发。这不是缺陷而是
+    分层的必然结果——记录在此，避免以后误以为继承覆盖了所有新闻场景。
+    真实链路里这一轮仍会由 planner 自己判定，不是必然漏检索。
+    """
+    planner_only = [
+        {"role": "user", "content": "特朗普最近有什么动作"},
+        {"role": "assistant", "content": "……"},
+    ]
+    plan = response_plan.build_rule_plan("现在呢", is_owner=True, history=planner_only)
+    assert plan.provider != "web_search"
 
 
 def test_followup_does_not_inherit_from_casual_turn():

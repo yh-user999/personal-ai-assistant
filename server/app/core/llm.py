@@ -538,6 +538,7 @@ async def chat(
     request_id: str | None = None,
     user_id: str | None = None,
     purpose: str = "",
+    retry_budget: int | None = None,
 ) -> str:
     """通用对话调用，按 Key 池执行一次有限轮故障切换。
 
@@ -547,6 +548,10 @@ async def chat(
     ``purpose`` 标记这次调用的用途（如 planner / review / revise），只用于
     内部可观测性与测试区分，不会传给服务商。没有它时，调用方无法从若干次
     ``chat()`` 中分辨哪一次是真正的回复生成——测试断言与链路排查都会踩坑。
+
+    ``retry_budget`` 覆盖全局重试次数。planner/审校这类"失败可安全跳过"的
+    内部调用应传 0：重试会让它们的最坏耗时按倍数增长（实测一次审校重试后
+    累计 31 秒），而它们的失败本来就不影响主回复。
     """
     selected_model = (model or settings.llm_model or "").strip()
     kwargs = {
@@ -563,11 +568,12 @@ async def chat(
     keys = _api_keys()
     if not keys:
         raise RuntimeError("未配置 LLM_API_KEY 或 LLM_API_KEYS，无法调用 LLM")
-    try:
-        retry_budget = max(0, int(settings.llm_max_retries))
-    except (TypeError, ValueError):
-        retry_budget = 0
-    max_attempts = retry_budget + 1
+    if retry_budget is None:
+        try:
+            retry_budget = max(0, int(settings.llm_max_retries))
+        except (TypeError, ValueError):
+            retry_budget = 0
+    max_attempts = max(1, int(retry_budget) + 1)
     request_id = str(request_id or uuid.uuid4().hex)[:160]
     extra_headers = _provider_extra_headers(request_id)
     if extra_headers:

@@ -77,10 +77,14 @@ class Settings(BaseSettings):
     # ── 回复审校（按需触发：命中风险/事实/情绪/道德信号才多调一次）──
     reflection_enabled: bool = True
     reflection_review_model: str = ""
-    reflection_review_timeout: float = 25.0
+    reflection_review_timeout: float = 10.0
+    # 审校整体时间预算（秒）。审校是"锦上添花"的检查，不该拖慢聊天——
+    # 实测一次审校曾占 31 秒；超预算就放弃审校、保留候选回复。
+    reflection_review_budget: float = 14.0
     # 审校要输出 9 个分数 + 5 个布尔判定 + issues/revision_plan。
     # 700 太小：实测撞上限被截断，JSON 不完整 → 解析失败 → 审校永远"无效"。
-    reflection_max_tokens: int = 1600
+    # 2000 给思考型模型留出余量（截断比多花 token 更糟）。
+    reflection_max_tokens: int = 2000
     reflection_min_quality_score: float = 0.78
     reflection_long_reply_chars: int = 500
     reflection_max_revisions_per_turn: int = 1
@@ -90,7 +94,7 @@ class Settings(BaseSettings):
     semantic_planner_enabled: bool = True
     semantic_planner_shadow_only: bool = False
     response_plan_model: str = ""
-    response_plan_timeout: float = 15.0
+    response_plan_timeout: float = 10.0
     # 400 实测会被截断（plan JSON + 模型思考前缀），导致计划解析失败并静默降级
     response_plan_max_tokens: int = 1200
     response_plan_min_confidence: float = 0.60

@@ -207,3 +207,55 @@ def test_truncated_review_marks_failed_and_is_logged(caplog):
     result = review.parse_review_result('{"needs_revision": false, "scores": {"safety": 1.0')
     assert result.status == "failed"
     assert any("无法解析" in record.message for record in caplog.records)
+
+
+# ── 审校时间预算：慢审校不得拖垮聊天 ────────────────────────
+
+def test_review_timeout_keeps_draft_and_skips_revision(monkeypatch):
+    """审校超预算 → 保留候选回复，且不触发重写。"""
+    import asyncio as _asyncio
+    from types import SimpleNamespace as _SN
+
+    async def slow_chat(messages, **kwargs):
+        await _asyncio.sleep(5)
+        return "{}"
+
+    runtime = _SN(
+        settings=_SN(
+            reflection_review_model="", llm_model="m",
+            reflection_max_tokens=100, reflection_review_timeout=1.0,
+            reflection_review_budget=0.05,
+        ),
+        llm=_SN(chat=slow_chat),
+    )
+    ctx = _ctx("李羽的能力是什么")
+    bundle = _SN(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    checked, elapsed = _asyncio.run(review.review_reply(ctx, runtime, bundle, "草稿"))
+    assert checked.status == "timeout"
+    assert review.should_revise(checked, ctx, draft="草稿") is False
+
+
+def test_internal_calls_do_not_retry(monkeypatch):
+    """审校/规划失败可安全跳过，不应带重试（重试会把最坏耗时翻倍）。"""
+    captured = {}
+
+    async def fake_chat(messages, **kwargs):
+        captured.update(kwargs)
+        return '{"needs_revision": false, "scores": {"safety": 1.0}, "issues": []}'
+
+    from types import SimpleNamespace as _SN
+
+    runtime = _SN(
+        settings=_SN(
+            reflection_review_model="", llm_model="m", reflection_max_tokens=100,
+            reflection_review_timeout=2.0, reflection_review_budget=5.0,
+        ),
+        llm=_SN(chat=fake_chat),
+    )
+    ctx = _ctx("李羽的能力是什么")
+    bundle = _SN(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    import asyncio as _asyncio
+
+    _asyncio.run(review.review_reply(ctx, runtime, bundle, "草稿"))
+    assert captured["retry_budget"] == 0
+    assert captured["purpose"] == "review"

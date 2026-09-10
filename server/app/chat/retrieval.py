@@ -560,7 +560,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             if not web_provider.configured():
                 plan["web_unavailable"] = True
             else:
-                query = str(plan.get("query") or msg or "").strip()
+                # 优先用用户原话检索：planner 的改写可能收窄成生僻词，
+                # 实测出现过改写后只命中 1 条、原话能命中 10 条的情况。
+                query = str(msg or plan.get("query") or "").strip()
+                plan["web_query"] = query[:200]
                 data = await web_provider.search_and_cluster(
                     query, time_range=web_provider.time_range_default()
                 )

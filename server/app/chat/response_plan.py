@@ -339,6 +339,8 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             request_id=ctx.request_id,
             user_id=ctx.uid,
             purpose="planner",
+            # 规划失败可安全退回规则计划，不必重试（重试只会叠加首字延迟）
+            retry_budget=0,
         )
         planned = parse_llm_plan(
             text,

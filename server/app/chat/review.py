@@ -1,6 +1,7 @@
 """候选回复的结构化审校与一次性重写。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -209,7 +210,8 @@ def build_review_messages(ctx: Any, bundle: Any, draft: str) -> list[dict[str, s
 def should_revise(review: ReplyReview, ctx: Any, min_quality: float = 0.78, draft: str = "") -> bool:
     message = str(getattr(ctx, "message", "") or "")
     fact_question = any(x in message for x in _FACT_QUERY_HINTS)
-    if review.status == "failed":
+    # 审校没给出结论（调用失败/超时）时不重写：没有依据就不动用户看到的回复
+    if review.status != "passed":
         return False
 
     # 道德类硬门槛：安全与是非项不被平均分掩盖
@@ -240,8 +242,10 @@ async def review_reply(ctx: Any, runtime: Any, bundle: Any, draft: str) -> tuple
     started = time.monotonic()
     settings = runtime.settings
     model = str(getattr(settings, "reflection_review_model", "") or "").strip() or settings.llm_model
-    try:
-        text = await runtime.llm.chat(
+    budget = max(1.0, float(getattr(settings, "reflection_review_budget", 14.0)))
+
+    async def _call() -> str:
+        return await runtime.llm.chat(
             build_review_messages(ctx, bundle, draft),
             temperature=0.0,
             max_tokens=max(100, int(settings.reflection_max_tokens)),
@@ -252,12 +256,25 @@ async def review_reply(ctx: Any, runtime: Any, bundle: Any, draft: str) -> tuple
             request_id=ctx.request_id,
             user_id=ctx.uid,
             purpose="review",
+            # 审校失败可安全跳过，重试只会把最坏耗时翻倍
+            retry_budget=0,
         )
-        review = parse_review_result(text)
+
+    try:
+        text = await asyncio.wait_for(_call(), timeout=budget)
+    except asyncio.TimeoutError:
+        logger.warning("回复审校超预算（%.1fs），保留候选回复", budget)
+        return (
+            ReplyReview(status="timeout", issues=["审校超时，保留候选回复"]),
+            max(0, int((time.monotonic() - started) * 1000)),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("回复审校失败，保留候选回复: %s", type(exc).__name__)
-        review = ReplyReview(status="failed", issues=["审校调用失败"])
-    return review, max(0, int((time.monotonic() - started) * 1000))
+        return (
+            ReplyReview(status="failed", issues=["审校调用失败"]),
+            max(0, int((time.monotonic() - started) * 1000)),
+        )
+    return parse_review_result(text), max(0, int((time.monotonic() - started) * 1000))
 
 
 async def revise_reply(ctx: Any, runtime: Any, bundle: Any, draft: str, review: ReplyReview) -> tuple[str, bool, int]:
@@ -293,6 +310,8 @@ async def revise_reply(ctx: Any, runtime: Any, bundle: Any, draft: str, review: 
             request_id=ctx.request_id,
             user_id=ctx.uid,
             purpose="revise",
+            # 重写失败会退回候选回复，同样不需要重试
+            retry_budget=0,
         )).strip()
         return (final or draft), bool(final), max(0, int((time.monotonic() - started) * 1000))
     except Exception as exc:  # noqa: BLE001

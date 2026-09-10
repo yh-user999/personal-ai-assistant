@@ -554,7 +554,23 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         # 实时检索通道：仅在响应计划要求联网时触发。
         # 无来源时不注入任何内容，并在计划里打标记，由提示词强制"未查到"口径。
         plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
-        if ctx.is_owner and plan.get("provider") == "web_search":
+        if ctx.is_owner and plan.get("provider") == "hotboard":
+            # 热点浏览：拉热榜（直连），注入为"当下热议话题清单"
+            from app.chat import hotboard_provider
+
+            if hotboard_provider.configured():
+                items = await hotboard_provider.fetch_hotboard()
+                plan["hotboard_count"] = len(items)
+                if items:
+                    board = hotboard_provider.format_hotboard(items)
+                    knowledge_text = board + "\n\n" + knowledge_text
+                    plan["hotboard_ok"] = True
+                else:
+                    plan["hotboard_empty"] = True
+            else:
+                plan["hotboard_unavailable"] = True
+            ctx.trace.response_plan = plan
+        elif ctx.is_owner and plan.get("provider") == "web_search":
             from app.chat import web_provider
 
             if not web_provider.configured():

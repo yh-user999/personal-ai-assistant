@@ -49,9 +49,33 @@ _PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".home", ".lan")
 _BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "data", "javascript"})
 
 
+# 热点浏览：问"最近有什么大事/热点/新鲜事"这类，要的是热榜而非具体事件检索
+_HOT_BROWSING_RE = re.compile(
+    r"(?:最近|近期|今天|这几天|这两天|现在|有|)?"
+    r"(?:什么|哪些|啥)?"
+    r"(?:大事|热点|热搜|新鲜事|新闻热点|热门(?:话题|新闻|事件)?|大家(?:在)?(?:讨论|聊|关注))"
+)
+# 具体事件线索：出现具体主体/事件名词时，应走关键词检索而非热榜
+_SPECIFIC_HINT_RE = re.compile(r"事件|案件|事故|通报|进展|怎么样|怎么回事|详情|具体")
+
+
 def has_freshness_intent(text: str) -> bool:
     """是否要求实时信息（最近/最新/今天…）。"""
     return bool(_FRESHNESS_RE.search(text or ""))
+
+
+def looks_like_hot_browsing(text: str) -> bool:
+    """是否"看看最近有什么热点"这类浏览型问题（要热榜，不是查具体事件）。
+
+    命中热点词、且不含具体事件线索时才算——"湖南那个事件怎么样了"有具体
+    指向，应走关键词检索，不能用热榜糊弄。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    if _SPECIFIC_HINT_RE.search(t):
+        return False
+    return bool(_HOT_BROWSING_RE.search(t))
 
 
 def looks_like_event_query(text: str) -> bool:

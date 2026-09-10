@@ -254,6 +254,14 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
             )
         if plan.get("web_unavailable"):
             block.append("检索能力当前不可用：必须说明无法核实，不得凭模型记忆作答。")
+        if plan.get("hotboard_ok"):
+            block.append(
+                "本轮已取得当前热点话题清单（见下方资料）：可据此概述最近大家在关注什么，"
+                "但这些是热议话题、不是已核实事实——涉及具体经过/结论时须说明需进一步核实，"
+                "不得把热榜标题当成已证实的事件。"
+            )
+        if plan.get("hotboard_empty") or plan.get("hotboard_unavailable"):
+            block.append("热榜暂时取不到：如实说明当前拿不到热点清单，不要凭记忆编造。")
         if plan.get("web_has_sources"):
             block.append(
                 "本轮已取得实时检索资料（见下方不可信参考块）："

@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     gdelt_proxy: str = "http://127.0.0.1:7890"   # 留空则不走代理
     gdelt_timeout: float = 8.0
     gdelt_max_results: int = 10
+    # 国内热榜（今日头条+百度热搜，直连，答"最近有什么热点"这类浏览型问题）
+    hotboard_enabled: bool = True
+    hotboard_timeout: float = 6.0
+    hotboard_max_items: int = 15
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

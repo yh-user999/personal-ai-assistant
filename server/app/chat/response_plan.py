@@ -100,6 +100,19 @@ def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
         )
     from app.chat import web_provider
 
+    if web_provider.looks_like_hot_browsing(text):
+        # 浏览型："最近有什么大事" → 热榜（当下热议话题清单），非关键词检索
+        return ResponsePlan(
+            mode="retrieve_then_answer",
+            intent="hot_browsing",
+            confidence=0.85,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="hotboard", query=text[:120],
+            constraints=[
+                "热榜是当下热议话题清单，不是已核实事实，概述时须说明具体情况需进一步核实",
+            ],
+            source="rule",
+        )
     if web_provider.needs_web_search(text):
         # 时效/事件类问题必须联网取证；没有来源时只能说"未查到"。
         event = web_provider.looks_like_event_query(text)

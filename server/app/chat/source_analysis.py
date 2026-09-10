@@ -103,6 +103,33 @@ _DOMAIN_ORIGINS: tuple[tuple[str, str], ...] = (
 _SIGNATURE_CHARS = 120
 _SIMILARITY_THRESHOLD = 0.72
 
+# 载体类型：同样是"无法判定出处"，自媒体评论与门户转载的可信度并不相同。
+# 公众号搜索结果不带账号名（实测确认），只能判到"自媒体平台"这一层，
+# 但这层已经够提醒模型：那是评论，不是采访报道。
+_CARRIER_SELF_MEDIA = (
+    "weixin.sogou.com", "mp.weixin.qq.com", "baijiahao.baidu.com",
+    "toutiao.com", "zhihu.com", "jianshu.com", "xueqiu.com",
+)
+_CARRIER_PORTAL = (
+    "sina.com.cn", "qq.com", "sohu.com", "ifeng.com", "163.com", "msn.cn",
+)
+
+
+def classify_carrier(domain: str) -> str:
+    """载体类型：原创媒体 / 门户转载 / 自媒体平台 / 其他。"""
+    host = (domain or "").strip().lower()
+    if not host:
+        return "其他"
+    if origin_from_domain(host):
+        return "原创媒体"
+    for suffix in _CARRIER_SELF_MEDIA:
+        if host == suffix or host.endswith("." + suffix):
+            return "自媒体平台"
+    for suffix in _CARRIER_PORTAL:
+        if host == suffix or host.endswith("." + suffix):
+            return "门户转载"
+    return "其他"
+
 
 def normalize_origin(name: str) -> str:
     """媒体名归一：别名 → 规范名；不认识就原样返回（不丢信息）。"""
@@ -239,11 +266,22 @@ class SourceAnalysis:
                 f"  · {cluster['origin']}：{cluster['count']} 条"
                 f"（{('、'.join(cluster['domains'][:4]))}）{suffix}"
             )
+        by_carrier: dict[str, int] = {}
+        for entry in self.unknown:
+            host = entry["domains"][0] if entry["domains"] else ""
+            kind = classify_carrier(host)
+            by_carrier[kind] = by_carrier.get(kind, 0) + entry["count"]
         if self.unknown:
-            hosts = "、".join(u["domains"][0] for u in self.unknown[:4] if u["domains"])
-            lines.append(
-                f"  · 无法判定原始出处：{self.unknown_count} 条（{hosts}）"
+            detail = "、".join(
+                f"{kind} {count} 条"
+                for kind, count in sorted(by_carrier.items(), key=lambda kv: -kv[1])
             )
+            lines.append(f"  · 无法判定原始出处：{self.unknown_count} 条（{detail}）")
+            if by_carrier.get("自媒体平台", 0) >= max(1, self.unknown_count // 2):
+                lines.append(
+                    "  注意：其中多数来自自媒体平台，是观点表达而非采访报道，"
+                    "不能当作事实依据。"
+                )
         if self.max_reprint >= 2:
             lines.append(
                 f"  注意：有 {self.max_reprint} 条来自同一信源，"

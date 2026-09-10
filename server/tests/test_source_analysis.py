@@ -145,3 +145,29 @@ def test_render_avoids_fake_precision():
 
 def test_render_empty_for_no_results():
     assert sa.analyze_sources([]).render() == ""
+
+
+# ── 载体类型：同是"无法判定"，性质不同 ──────────────────────
+
+@pytest.mark.parametrize("domain,expected", [
+    ("people.com.cn", "原创媒体"),
+    ("www.zaobao.com.sg", "原创媒体"),
+    ("finance.sina.com.cn", "门户转载"),
+    ("news.qq.com", "门户转载"),
+    ("weixin.sogou.com", "自媒体平台"),
+    ("mp.weixin.qq.com", "自媒体平台"),
+    ("some-random-blog.com", "其他"),
+])
+def test_classify_carrier(domain, expected):
+    assert sa.classify_carrier(domain) == expected
+
+
+def test_render_flags_self_media_majority():
+    """自媒体评论不能被当作事实依据，渲染要说出来。"""
+    a = sa.analyze_sources([
+        _item("某事件的法律分析", "四岁儿童无性别意识，无意触碰难以构成故意侵权", "weixin.sogou.com"),
+        _item("别让流量绑架正义", "2026年8月26日，湖南长沙一家普通餐厅里，一场微不足道的孩童意外触碰", "weixin.sogou.com"),
+    ])
+    text = a.render()
+    assert "自媒体平台" in text
+    assert "不能当作事实依据" in text

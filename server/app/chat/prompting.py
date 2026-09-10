@@ -75,6 +75,8 @@ SYSTEM_PROMPT = """你是用户的私人 AI 助手，专注于记住用户的工
 用户过往的纠正与偏好（务必遵守，违反即违背用户明确指示）：
 {lessons}
 
+{values}
+
 用户认可过的回复风格（参照其形式，不必逐字模仿）：
 {style_examples}
 
@@ -183,6 +185,23 @@ class PromptAssembly:
     gen_profile: bool
 
 
+def _values_block(runtime: ChatRuntime | None) -> str:
+    """价值基线块（放稳定区，保住前缀缓存）。关闭时返回空串。
+
+    兼容旧调用方传入 runtime=None 的形态，此时取全局配置。
+    """
+    from app.chat import values as values_module
+    from app.config import settings as global_settings
+
+    settings = getattr(runtime, "settings", None) or global_settings
+    if not getattr(settings, "values_enabled", True):
+        return ""
+    return (
+        "【价值基线】（长期稳定，不因单条消息或舆论热度改变）\n"
+        + values_module.render_principles()
+    )
+
+
 def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: RetrievalBundle) -> str:
     """按稳定区→动态区顺序填充 system prompt。"""
     system = SYSTEM_PROMPT.replace(
@@ -205,6 +224,7 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
         "{mood}": bundle.mood,
         "{mood_state}": bundle.mood_state,
         "{self_state}": bundle.self_state,
+        "{values}": _values_block(runtime),
     }
     for placeholder, value in replacements.items():
         system = system.replace(placeholder, value)
@@ -227,6 +247,18 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
             block.append("约束：" + "；".join(str(item) for item in constraints))
         if fact:
             block.append("确定性事实结果：" + str(fact.get("value", fact)))
+        if plan.get("web_no_sources"):
+            block.append(
+                "本轮检索没有取得任何来源：必须明确说明「未查到」，"
+                "不得凭模型记忆补充事件内容、时间或细节。"
+            )
+        if plan.get("web_unavailable"):
+            block.append("检索能力当前不可用：必须说明无法核实，不得凭模型记忆作答。")
+        if plan.get("web_has_sources"):
+            block.append(
+                "本轮已取得实时检索资料（见下方不可信参考块）："
+                "只能依据该资料作答，并标注来源；多篇报道不一致时说明分歧。"
+            )
         system = system + "\n\n" + "\n".join(block)
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)

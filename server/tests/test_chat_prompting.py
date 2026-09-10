@@ -156,3 +156,43 @@ def test_generation_profile_owner_only():
     bundle = base_bundle(last_ai="前文" * 400)
     assembly = prompting.build_messages(ctx, bundle, "SYS")
     assert assembly.gen_profile is False
+
+
+# ── 实时检索的无来源口径 ────────────────────────────────────
+
+def _runtime_stub():
+    import logging
+    from types import SimpleNamespace
+    return SimpleNamespace(settings=SimpleNamespace(), logger=logging.getLogger("t"))
+
+
+def test_prompt_forces_no_source_wording_when_search_empty():
+    ctx = make_ctx("最近有什么新闻")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
+                               "web_no_sources": True}
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "未查到" in system
+    assert "不得凭模型记忆" in system
+
+
+def test_prompt_forces_unavailable_wording_when_backend_down():
+    ctx = make_ctx("最近有什么新闻")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
+                               "web_unavailable": True}
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "无法核实" in system
+
+
+def test_prompt_requires_source_citation_when_results_present():
+    ctx = make_ctx("湖南四岁幼童事件")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
+                               "web_has_sources": True}
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "标注来源" in system
+
+
+def test_prompt_without_plan_has_no_search_wording():
+    ctx = make_ctx("你好")
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "未查到" not in system
+    assert "无法核实" not in system

@@ -299,6 +299,114 @@ def test_guest_retrieve_skips_owner_knowledge_and_lessons(db_env, monkeypatch):
     assert bundle.trace["routing"] == {}
 
 
+class _EmptyKnowledge:
+    async def search_knowledge(self, *a, **k):
+        return []
+
+    def last_vector_degraded(self):
+        return False
+
+    def expand_chunks(self, hits, **k):
+        return hits
+
+    def format_knowledge_injection(self, hits):
+        return ""
+
+    def get_alias_note(self, *a, **k):
+        return ""
+
+    def get_novel_facts(self, *a, **k):
+        return []
+
+
+def _web_retrieval_env(monkeypatch, *, configured=True, results=None, unavailable=False):
+    from app.chat import web_provider
+
+    calls = {"search": 0}
+
+    async def fake_search_and_cluster(query, *, time_range="week", limit=10):
+        calls["search"] += 1
+        return {
+            "query": query,
+            "has_sources": bool(results),
+            "results": results or [],
+            "events": web_provider.cluster_events(results or []),
+            "observed_at": "2026-09-10T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(web_provider, "configured", lambda: configured)
+    monkeypatch.setattr(web_provider, "search_and_cluster", fake_search_and_cluster)
+    monkeypatch.setattr(web_provider, "time_range_default", lambda: "week")
+    services_map = {name: _OwnerSafe() for name in ALL_SERVICE_NAMES}
+    return calls, make_runtime(services_map, knowledge=_EmptyKnowledge())
+
+
+def _sources():
+    return [{
+        "title": "湖南四岁幼童走失事件",
+        "url": "https://news.example.com/1",
+        "source": "媒体A",
+        "published_at": "2026-09-10T00:00:00+00:00",
+        "summary": "摘要",
+        "language": "zh",
+    }]
+
+
+def test_web_search_runs_only_when_plan_requires_it(db_env, monkeypatch):
+    calls, runtime = _web_retrieval_env(monkeypatch)
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx("湖南四岁幼童事件")
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+    assert calls["search"] == 0, "未声明联网计划时不得发起检索"
+
+
+def test_web_sources_injected_into_knowledge(db_env, monkeypatch):
+    calls, runtime = _web_retrieval_env(monkeypatch, results=_sources())
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx("湖南四岁幼童事件")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
+                               "query": "湖南四岁幼童事件"}
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 1
+    assert "实时检索资料" in bundle.knowledge_text
+    assert "媒体A" in bundle.knowledge_text
+    assert ctx.trace.response_plan["web_has_sources"] is True
+    assert ctx.trace.response_plan["web_report_count"] == 1
+
+
+def test_web_no_sources_marks_plan_for_no_source_answer(db_env, monkeypatch):
+    calls, runtime = _web_retrieval_env(monkeypatch, results=None)
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx("最近有什么新闻")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
+                               "query": "最近有什么新闻"}
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 1
+    assert "实时检索资料" not in bundle.knowledge_text
+    assert ctx.trace.response_plan["web_no_sources"] is True
+
+
+def test_web_backend_unavailable_marks_plan(db_env, monkeypatch):
+    calls, runtime = _web_retrieval_env(monkeypatch, configured=False)
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx("最近有什么新闻")
+    ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search"}
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 0
+    assert ctx.trace.response_plan["web_unavailable"] is True
+
+
 def test_healer_failure_does_not_break_main_flow(db_env, monkeypatch):
     """自愈诊断抛异常 → 只记日志，主回复链路照常拿到 bundle。"""
 

@@ -92,6 +92,22 @@ class Settings(BaseSettings):
     response_plan_min_confidence: float = 0.60
     response_plan_max_history: int = 4
 
+    # ── 实时信息检索（SearXNG 自托管；留空=整体关闭）─────────
+    # 未配置时检索能力关闭，助手对实时问题只能回答"无法核实"，
+    # 不会退回模型记忆作答。
+    search_backend_url: str = ""
+    search_timeout: float = 15.0
+    search_max_results: int = 10
+    search_max_page_bytes: int = 500_000
+    search_time_range: str = "week"
+    web_search_enabled: bool = True
+
+    # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
+    values_enabled: bool = True
+    values_strict_stance: bool = True
+    values_block_sensitive_details: bool = True
+    values_noise_gate: bool = True
+
     # ── Embedding ───────────────────────────────────────────
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_api_key: str = ""

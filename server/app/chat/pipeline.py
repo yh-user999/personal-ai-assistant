@@ -269,7 +269,7 @@ async def _reflect_and_finalize_reply(
     checked, review_ms = await review.review_reply(ctx, runtime, bundle, draft)
     model = str(getattr(runtime.settings, "reflection_review_model", "") or "").strip() or runtime.settings.llm_model
     min_quality = float(getattr(runtime.settings, "reflection_min_quality_score", 0.78))
-    if not review.should_revise(checked, ctx, min_quality=min_quality):
+    if not review.should_revise(checked, ctx, min_quality=min_quality, draft=draft):
         ctx.trace.reflection = {
             "status": "passed" if checked.status != "failed" else "failed",
             "triggers": reasons,

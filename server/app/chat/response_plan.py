@@ -5,15 +5,32 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.chat import values as values_module
 from app.common.timeutil import now_local
 
-_ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator"})
+_ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search"})
 _HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
+
+# 无来源不判断：价值层的安全底线，必须先于任何道德/事实结论生效
+NO_SOURCE_RULE = "本轮没有任何检索来源时必须回答「未查到」，不得凭模型记忆作答或补细节"
 
 MODES = frozenset({
     "direct_fact", "retrieve_then_answer", "reasoning", "creative",
     "emotional_support", "action", "clarify", "refuse_or_confirm", "casual_chat",
+    "moral_assessment",
 })
+
+# 道德评价模式的三条固定约束：事实与判断分离、必须表态、不越界定性
+MORAL_CONSTRAINTS = (
+    "按三层组织回答：已确认事实 / 说法不一致之处 / 我的判断",
+    "核心是非必须明确表态，不用「各有各的道理」回避",
+    "不得把传播量、情绪强度、措辞激烈程度当作依据",
+    "不得对未确认事实作定性，不代替司法定罪或医学诊断",
+)
+SENSITIVE_CONSTRAINTS = (
+    "涉及未成年人等敏感主体：不展开可识别身份细节",
+    "不推测当事人动机，以官方通报为准",
+)
 
 _TIME_RE = re.compile(r"(?:几点|现在时间|当前时间|什么时间|现在是几号|今天(?:是)?(?:星期|周|礼拜)[一二三四五六日天几]|今天(?:是)?(?:几号|几月几号)|当前日期(?:是什么)?|今天日期)")
 _CREATIVE_RE = re.compile(r"继续写|接着写|续写|改写|润色|写一段|设计剧情|头脑风暴|起个名字")
@@ -42,6 +59,9 @@ class ResponsePlan:
     risk: str = "low"
     needs_clarification: bool = False
     reason: str = ""
+    needs_moral_judgment: bool = False
+    sensitive_subject: bool = False
+    stance_required: bool = True
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -58,6 +78,10 @@ class ResponsePlan:
             "risk": self.risk,
             "tone": self.tone,
             "source": self.source,
+            "query": self.query,
+            "needs_moral_judgment": self.needs_moral_judgment,
+            "sensitive_subject": self.sensitive_subject,
+            "stance_required": self.stance_required,
         }
 
 
@@ -70,6 +94,31 @@ def build_rule_plan(message: str, *, is_owner: bool = True) -> ResponsePlan:
             mode="direct_fact", intent="current_datetime", confidence=0.99,
             evidence_required=True, tool_required=True, tone="brief",
             constraints=["必须使用当前时间 provider，不得凭模型记忆猜测"], source="rule",
+        )
+    from app.chat import web_provider
+
+    if web_provider.needs_web_search(text):
+        # 时效/事件类问题必须联网取证；没有来源时只能说"未查到"。
+        event = web_provider.looks_like_event_query(text)
+        return ResponsePlan(
+            mode="retrieve_then_answer",
+            intent="event_lookup" if event else "latest_news",
+            confidence=0.9,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=text[:400],
+            constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
+            source="rule",
+        )
+    if values_module.looks_like_judgment_request(text):
+        sensitive = values_module.is_sensitive_subject(text)
+        constraints = list(MORAL_CONSTRAINTS)
+        if sensitive:
+            constraints.extend(SENSITIVE_CONSTRAINTS)
+        return ResponsePlan(
+            mode="moral_assessment", intent="moral_judgment", confidence=0.85,
+            evidence_required=True, retrieval_required=True,
+            needs_moral_judgment=True, sensitive_subject=sensitive,
+            constraints=constraints, source="rule",
         )
     if _ACTION_RE.search(text):
         return ResponsePlan(
@@ -176,6 +225,18 @@ def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
         plan.needs_clarification = True
     if plan.mode == "clarify":
         plan.confirmation_required = False
+    if plan.mode == "moral_assessment":
+        # 道德判断必须建立在事实上，且核心是非必须表态
+        plan.needs_moral_judgment = True
+        plan.evidence_required = True
+        plan.stance_required = True
+        for item in MORAL_CONSTRAINTS:
+            if item not in plan.constraints:
+                plan.constraints.append(item)
+        if plan.sensitive_subject:
+            for item in SENSITIVE_CONSTRAINTS:
+                if item not in plan.constraints:
+                    plan.constraints.append(item)
     return plan
 
 

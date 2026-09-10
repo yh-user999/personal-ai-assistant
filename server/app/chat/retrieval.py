@@ -551,6 +551,35 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     + knowledge_text
                 )
 
+        # 实时检索通道：仅在响应计划要求联网时触发。
+        # 无来源时不注入任何内容，并在计划里打标记，由提示词强制"未查到"口径。
+        plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
+        if ctx.is_owner and plan.get("provider") == "web_search":
+            from app.chat import web_provider
+
+            if not web_provider.configured():
+                plan["web_unavailable"] = True
+            else:
+                query = str(plan.get("query") or msg or "").strip()
+                data = await web_provider.search_and_cluster(
+                    query, time_range=web_provider.time_range_default()
+                )
+                if data["has_sources"]:
+                    plan["web_has_sources"] = True
+                    plan["web_report_count"] = len(data["results"])
+                    plan["web_event_count"] = len(data["events"])
+                    plan["web_observed_at"] = data["observed_at"]
+                    sources_text = web_provider.format_sources(data["results"])
+                    events_text = web_provider.format_events(data["events"])
+                    block = "【实时检索资料（本轮新获取）】\n"
+                    if events_text:
+                        block += events_text + "\n\n"
+                    block += sources_text
+                    knowledge_text = block + "\n\n" + knowledge_text
+                else:
+                    plan["web_no_sources"] = True
+            ctx.trace.response_plan = plan
+
         from app.chat.prompting import _untrusted_reference
 
         if knowledge_text:

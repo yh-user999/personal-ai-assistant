@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.chat import review
 
 
@@ -64,3 +66,119 @@ def test_revision_keeps_natural_tone_requirement():
     joined = "\n".join(item["content"] for item in messages)
     assert "自然聊天口吻" in joined
     assert "固定开场" in joined
+
+
+# ── 价值基线：道德类硬门槛 ──────────────────────────────────
+
+def _moral_review(**flags):
+    base = {"relevance": 0.95, "state_fit": 0.95, "grounding": 0.95,
+            "tone": 0.95, "brevity": 0.95, "safety": 1.0,
+            "stance_clarity": 0.95, "noise_resistance": 0.95, "proportionality": 0.95}
+    return review.ReplyReview(needs_revision=False, scores=base, **flags)
+
+
+@pytest.mark.parametrize("flag", [
+    "noise_used_as_reason",
+    "moralizes_unverified",
+    "escalates_to_person",
+    "substitutes_authority",
+    "empty_neutrality",
+])
+def test_moral_flags_force_revision(flag):
+    checked = _moral_review(**{flag: True})
+    assert review.should_revise(checked, _ctx("这件事谁的错")) is True
+
+
+def test_high_scores_alone_do_not_bypass_moral_gate():
+    """平均分很高但道德判定命中时仍必须重写（硬门槛不被均分掩盖）。"""
+    checked = _moral_review(noise_used_as_reason=True)
+    assert checked.quality > 0.9
+    assert review.should_revise(checked, _ctx("这件事谁的错")) is True
+
+
+def test_clean_moral_review_passes():
+    checked = _moral_review()
+    assert review.should_revise(checked, _ctx("这件事谁的错")) is False
+
+
+def test_parse_reads_moral_flags_and_new_scores():
+    result = review.parse_review_result(
+        '{"needs_revision":false,"scores":{"stance_clarity":0.8,"noise_resistance":0.7,'
+        '"proportionality":0.6},"noise_used_as_reason":true,"empty_neutrality":false,'
+        '"issues":[],"revision_plan":[],"confidence":0.9}'
+    )
+    assert result.noise_used_as_reason is True
+    assert result.empty_neutrality is False
+    assert result.scores["stance_clarity"] == 0.8
+    assert "noise_used_as_reason" in result.moral_gates
+
+
+def test_parse_defaults_moral_flags_to_false():
+    result = review.parse_review_result('{"needs_revision":false,"scores":{}}')
+    assert result.moral_gates == []
+
+
+# ── 确定性兜底：审校器漏判也能拦住 ──────────────────────────
+
+def test_deterministic_gate_catches_person_attack():
+    checked = _moral_review()
+    assert review.should_revise(checked, _ctx("怎么评价"), draft="这种人就是垃圾") is True
+
+
+def test_deterministic_gate_catches_authority_substitute():
+    checked = _moral_review()
+    assert review.should_revise(checked, _ctx("怎么评价"), draft="他就是故意犯罪") is True
+
+
+def test_deterministic_gate_catches_noise_marker():
+    checked = _moral_review()
+    assert review.should_revise(checked, _ctx("怎么评价"), draft="网上都说他不对") is True
+
+
+def test_deterministic_gate_catches_empty_neutrality_on_clear_cut():
+    checked = _moral_review()
+    assert review.should_revise(
+        checked, _ctx("湖南幼童事件谁的错"), draft="双方都有道理"
+    ) is True
+
+
+def test_empty_neutrality_allowed_when_topic_is_contested_not_clear_cut():
+    """非明确是非的议题，保留分歧不算空洞中立。"""
+    checked = _moral_review()
+    assert review.should_revise(
+        checked, _ctx("这两个技术方案该怎么选"), draft="各有各的道理"
+    ) is False
+
+
+# ── 触发闸门 ────────────────────────────────────────────────
+
+def test_short_reply_still_reflects_when_plan_is_moral():
+    ctx = _ctx("这件事谁的错")
+    ctx.trace.response_plan = {"mode": "moral_assessment", "needs_moral_judgment": True}
+    bundle = SimpleNamespace(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    assert "moral_claim" in review.should_reflect(ctx, bundle, "不对。")
+
+
+def test_short_reply_still_reflects_when_noise_present():
+    ctx = _ctx("说说看")
+    bundle = SimpleNamespace(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    assert "public_opinion" in review.should_reflect(ctx, bundle, "网上都说他有错。")
+
+
+def test_short_plain_reply_still_skips():
+    ctx = _ctx("你好")
+    bundle = SimpleNamespace(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    assert review.should_reflect(ctx, bundle, "你好呀。") == []
+
+
+def test_review_prompt_requires_moral_judgement_fields():
+    ctx = _ctx("这件事谁的错")
+    ctx.trace.response_plan = {"mode": "moral_assessment"}
+    messages = review.build_review_messages(
+        ctx,
+        SimpleNamespace(facts="", lessons="", mood="", mood_state="", behavior="", self_state=""),
+        "草稿",
+    )
+    joined = "\n".join(item["content"] for item in messages)
+    assert "noise_used_as_reason" in joined
+    assert "empty_neutrality" in joined

@@ -1,0 +1,399 @@
+"""实时信息检索 provider：网页/新闻搜索、抓页与事件聚合。
+
+事实层来源。检索结果必须带 ``source`` 与 ``published_at``——没有来源的条目
+一律不进回复，因为"无来源不判断"是价值层的安全底线。
+
+设计要点：
+- 后端为 SearXNG 自托管（JSON API），未配置时整体降级为"未查到"，绝不
+  退回模型记忆作答；
+- 抓页做 SSRF 护栏：只允许 http(s)、拒绝内网与环回地址，避免搜索结果
+  把请求引向本机服务；
+- 不引入 HTML 解析依赖，用正则剥离 script/style 与标签；
+- 事件聚合按标题相似度 + 时间邻近归并，同一事件的多篇报道合成一条。
+"""
+from __future__ import annotations
+
+import asyncio
+import html
+import ipaddress
+import json
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+logger = logging.getLogger("assistant.web")
+
+# SearXNG time_range 取值
+TIME_RANGES = frozenset({"day", "week", "month", "year"})
+
+# 时效词：命中即要求联网，且禁止无来源作答
+_FRESHNESS_RE = re.compile(
+    r"最近|最新|近期|这几天|这两天|今天|昨天|前天|本周|这周|上午|下午|"
+    r"刚发生|刚刚|实时|现在.*(?:新闻|情况|进展)"
+)
+# 事件名词：足以单独判定为事件查询（"…事件/案件/事故/通报"）
+_EVENT_NOUN_RE = re.compile(r"事件|案件|事故|通报")
+# 新闻类名词：与时效词组合才算联网查询，避免"最近的进展"这类自指误判
+_NEWS_NOUN_RE = re.compile(r"新闻|消息|报道|时事|热搜|事件|案件|事故|通报")
+
+_SCRIPT_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t\r\f\v]+")
+_NL_RE = re.compile(r"\n{3,}")
+
+_PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".home", ".lan")
+_BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "data", "javascript"})
+
+
+def has_freshness_intent(text: str) -> bool:
+    """是否要求实时信息（最近/最新/今天…）。"""
+    return bool(_FRESHNESS_RE.search(text or ""))
+
+
+def looks_like_event_query(text: str) -> bool:
+    """是否事件型查询（区别于普通列表型新闻查询）。
+
+    只认明确事件名词。"最近项目进展"这类自指不在这里触发，否则会误联网。
+    """
+    return bool(_EVENT_NOUN_RE.search(text or ""))
+
+
+def needs_web_search(text: str) -> bool:
+    """是否需要联网取证。
+
+    判据：命中新闻/事件名词，且（有时效词 或 是明确事件名词）。
+    单纯的"最近的进展"不命中，交给 planner 或普通聊天处理。
+    """
+    value = text or ""
+    if not _NEWS_NOUN_RE.search(value):
+        return False
+    return has_freshness_intent(value) or looks_like_event_query(value)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _backend_url() -> str:
+    from app.config import settings
+
+    return str(getattr(settings, "search_backend_url", "") or "").strip().rstrip("/")
+
+
+def configured() -> bool:
+    """是否配置了检索后端。未配置时所有检索能力整体关闭。"""
+    return bool(_backend_url())
+
+
+def _is_safe_url(url: str) -> bool:
+    """抓页 SSRF 护栏：只允许公网 http(s) 地址。"""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(_PRIVATE_HOST_SUFFIXES):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # 域名：交由后续 DNS 解析，不做本地解析避免额外依赖
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
+def normalize_result(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """把后端结果规范化；缺来源或缺时间返回 None（不进事实层）。"""
+    if not isinstance(raw, dict):
+        return None
+    url = str(raw.get("url") or "").strip()
+    title = str(raw.get("title") or "").strip()
+    if not url or not title:
+        return None
+    source = str(raw.get("source") or raw.get("engine") or "").strip()
+    if not source:
+        source = urlparse(url).hostname or ""
+    published = str(
+        raw.get("publishedDate") or raw.get("published_at") or raw.get("published") or ""
+    ).strip()
+    if not source or not published:
+        return None
+    return {
+        "title": title[:300],
+        "url": url[:1000],
+        "source": source[:120],
+        "published_at": published[:40],
+        "summary": str(raw.get("content") or raw.get("summary") or "").strip()[:1000],
+        "language": str(raw.get("language") or "").strip()[:20],
+    }
+
+
+async def web_search(
+    query: str,
+    *,
+    category: str = "general",
+    time_range: str = "week",
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """检索网页/新闻。后端未配置、超时或返回异常一律返回空列表。"""
+    backend = _backend_url()
+    text = (query or "").strip()
+    if not backend or not text:
+        return []
+
+    from app.config import settings
+
+    window = time_range if time_range in TIME_RANGES else "week"
+    params = {
+        "q": text[:400],
+        "format": "json",
+        "language": "zh-CN",
+        "time_range": window,
+    }
+    if category and category != "general":
+        params["categories"] = category
+    timeout = float(getattr(settings, "search_timeout", 15.0))
+    cap = max(1, min(int(limit), int(getattr(settings, "search_max_results", 10))))
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.get(f"{backend}/search", params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.warning("检索后端不可用（%s），本轮按未查到处理", type(exc).__name__)
+        return []
+
+    raw_items = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw_items, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in raw_items:
+        item = normalize_result(raw)
+        if item is not None:
+            out.append(item)
+        if len(out) >= cap:
+            break
+    return out
+
+
+async def fetch_page(url: str) -> dict[str, Any] | None:
+    """抓取页面并抽取正文文本；护栏不通过或失败返回 None。"""
+    if not configured() or not _is_safe_url(url):
+        return None
+
+    from app.config import settings
+
+    timeout = float(getattr(settings, "search_timeout", 15.0))
+    max_bytes = int(getattr(settings, "search_max_page_bytes", 500_000))
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            if "html" not in response.headers.get("content-type", "").lower():
+                return None
+            body = response.text[:max_bytes]
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.warning("抓页失败（%s）", type(exc).__name__)
+        return None
+    text = extract_text(body)
+    if not text:
+        return None
+    return {"url": url, "text": text, "fetched_at": _now_iso()}
+
+
+def extract_text(markup: str) -> str:
+    """HTML → 纯文本（无第三方解析依赖）。"""
+    body = _SCRIPT_RE.sub(" ", markup or "")
+    body = _TAG_RE.sub("\n", body)
+    body = html.unescape(body)
+    body = _WS_RE.sub(" ", body)
+    body = _NL_RE.sub("\n\n", body)
+    return body.strip()[:8000]
+
+
+def _title_features(title: str) -> set[str]:
+    """标题特征：中文 2-gram + 英文/数字词，用于相似度比较。"""
+    value = (title or "").strip()
+    if not value:
+        return set()
+    features = {value[i : i + 2] for i in range(len(value) - 1) if value[i].strip()}
+    features.update(token.lower() for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}", value))
+    return features
+
+
+def _parse_time(value: str) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _similar(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = left | right
+    if not union:
+        return 0.0
+    return len(left & right) / len(union)
+
+
+def cluster_events(
+    articles: list[dict[str, Any]],
+    *,
+    similarity: float = 0.34,
+    window_days: int = 7,
+) -> list[dict[str, Any]]:
+    """把同一事件的多篇报道归并；返回按首报时间排序的事件列表。
+
+    判据：标题相似度达阈值 + 发布时间相近。两者都不满足才算不同事件，
+    避免把"同一地点的两起不同事件"错误合并。
+    """
+    items = [item for item in (articles or []) if isinstance(item, dict)]
+    groups: list[dict[str, Any]] = []
+    for item in items:
+        features = _title_features(str(item.get("title") or ""))
+        published = _parse_time(str(item.get("published_at") or ""))
+        placed = False
+        for group in groups:
+            if _similar(features, group["_features"]) < similarity:
+                continue
+            other = group["_published"]
+            if published is not None and other is not None:
+                if abs((published - other).days) > window_days:
+                    continue
+            group["reports"].append(item)
+            group["_features"] |= features
+            if published is not None and (other is None or published < other):
+                group["_published"] = published
+                group["published_at"] = item.get("published_at", "")
+                group["title"] = item.get("title", group["title"])
+            placed = True
+            break
+        if not placed:
+            groups.append({
+                "title": item.get("title", ""),
+                "published_at": item.get("published_at", ""),
+                "reports": [item],
+                "_features": features,
+                "_published": published,
+            })
+
+    events = []
+    for group in groups:
+        sources = []
+        for report in group["reports"]:
+            name = str(report.get("source") or "")
+            if name and name not in sources:
+                sources.append(name)
+        events.append({
+            "title": group["title"],
+            "published_at": group["published_at"],
+            "sources": sources,
+            "report_count": len(group["reports"]),
+            "reports": group["reports"],
+        })
+    events.sort(key=lambda event: str(event.get("published_at") or ""))
+    return events
+
+
+def time_range_default() -> str:
+    """默认检索时间窗（配置项，非法值回退 week）。"""
+    from app.config import settings
+
+    value = str(getattr(settings, "search_time_range", "week") or "week").strip()
+    return value if value in TIME_RANGES else "week"
+
+
+def format_events(events: list[dict[str, Any]], limit: int = 5) -> str:
+    """事件聚合结果 → 文本（同一事件的多篇报道合成一条，附来源）。"""
+    lines = []
+    for event in (events or [])[:limit]:
+        title = str(event.get("title") or "").strip()
+        if not title:
+            continue
+        published = str(event.get("published_at") or "").strip()
+        sources = [str(name) for name in (event.get("sources") or []) if str(name).strip()]
+        count = int(event.get("report_count") or 1)
+        line = f"事件：{title}"
+        if published:
+            line += f"（首次报道 {published}）"
+        if count > 1:
+            line += f"，共 {count} 篇报道"
+        if sources:
+            line += f"，来源：{'、'.join(sources[:5])}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
+    """格式化为带来源与时间的参考资料块（供 prompt 注入）。"""
+    lines = []
+    for item in (results or [])[:limit]:
+        title = str(item.get("title") or "").strip()
+        source = str(item.get("source") or "").strip()
+        published = str(item.get("published_at") or "").strip()
+        if not title or not source or not published:
+            continue
+        summary = str(item.get("summary") or "").strip()[:200]
+        line = f"- {title}（{source}，{published}）"
+        if summary:
+            line += f"\n  {summary}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def search_and_cluster(
+    query: str,
+    *,
+    time_range: str = "week",
+    limit: int = 10,
+) -> dict[str, Any]:
+    """检索并按事件聚合；返回结果与是否取到来源。"""
+    results = await web_search(query, category="news", time_range=time_range, limit=limit)
+    events = cluster_events(results) if results else []
+    return {
+        "query": query,
+        "has_sources": bool(results),
+        "results": results,
+        "events": events,
+        "observed_at": _now_iso(),
+    }
+
+
+async def _demo() -> None:  # pragma: no cover - 手工排障入口
+    data = await search_and_cluster("测试")
+    print(len(data["results"]), len(data["events"]))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    asyncio.run(_demo())
+
+
+# 兼容旧调用方可能传入的同步上下文
+def remaining_days(published_at: str, days: int = 7) -> int | None:
+    """发布时间距现在的天数；解析失败返回 None。"""
+    parsed = _parse_time(published_at)
+    if parsed is None:
+        return None
+    delta = datetime.now(timezone.utc) - parsed
+    return max(0, delta.days) if delta <= timedelta(days=days) else None

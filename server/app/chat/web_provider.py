@@ -115,27 +115,59 @@ def _is_safe_url(url: str) -> bool:
     )
 
 
+# 新闻 URL 常见日期：/2026-09-10/ 与 /20260910A01/ 两类
+_URL_DATE_DASHED_RE = re.compile(r"/(\d{4})-(\d{2})-(\d{2})(?:/|$|[^0-9])")
+_URL_DATE_COMPACT_RE = re.compile(r"/(\d{4})(\d{2})(\d{2})(?:/|[^0-9])")
+
+
+def _date_from_url(url: str) -> str:
+    """从新闻 URL 路径提取发布日期；取不到返回空串。
+
+    Bing News 等引擎不返回 publishedDate，但新闻站 URL 普遍带日期。
+    这是**降级推断**而非权威时间，故调用方要保留 time_known 以便标注来源差别。
+    """
+    for pattern in (_URL_DATE_DASHED_RE, _URL_DATE_COMPACT_RE):
+        match = pattern.search(url or "")
+        if not match:
+            continue
+        year, month, day = (int(part) for part in match.groups())
+        if not 2000 <= year <= 2100 or not 1 <= month <= 12 or not 1 <= day <= 31:
+            continue
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return ""
+
+
 def normalize_result(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """把后端结果规范化；缺来源或缺时间返回 None（不进事实层）。"""
+    """把后端结果规范化。
+
+    来源是硬门槛：拿不到来源就不能进事实层（无法标注来源的报道不可引用）。
+    时间不是硬门槛，但必须诚实标注——后端没给就从新闻 URL 推断，
+    仍推断不出则留空并置 ``time_known=False``，由格式化层显式写成
+    「时间未见标注」，避免把无日期内容当成近期新闻。
+    """
     if not isinstance(raw, dict):
         return None
     url = str(raw.get("url") or "").strip()
     title = str(raw.get("title") or "").strip()
     if not url or not title:
         return None
-    source = str(raw.get("source") or raw.get("engine") or "").strip()
+    source = str(raw.get("source") or "").strip()
     if not source:
         source = urlparse(url).hostname or ""
     published = str(
         raw.get("publishedDate") or raw.get("published_at") or raw.get("published") or ""
     ).strip()
-    if not source or not published:
+    time_known = bool(published)
+    if not published:
+        published = _date_from_url(url)
+    if not source:
         return None
     return {
         "title": title[:300],
         "url": url[:1000],
         "source": source[:120],
         "published_at": published[:40],
+        "time_known": time_known,
         "summary": str(raw.get("content") or raw.get("summary") or "").strip()[:1000],
         "language": str(raw.get("language") or "").strip()[:20],
     }
@@ -346,16 +378,29 @@ def format_events(events: list[dict[str, Any]], limit: int = 5) -> str:
 
 
 def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
-    """格式化为带来源与时间的参考资料块（供 prompt 注入）。"""
+    """格式化为带来源与时间的参考资料块（供 prompt 注入）。
+
+    时间分三种写法，避免把推断时间或无日期内容当成权威事实：
+    - 后端给了发布时间 → 直接标注；
+    - 时间由链接推断 → 标注「据链接推断」；
+    - 完全拿不到时间 → 写「时间未见标注」，不得据此声称"最新"。
+    """
     lines = []
     for item in (results or [])[:limit]:
         title = str(item.get("title") or "").strip()
         source = str(item.get("source") or "").strip()
         published = str(item.get("published_at") or "").strip()
-        if not title or not source or not published:
+        if not title or not source:
             continue
+        time_known = item.get("time_known", True)
+        if not published:
+            stamp = "时间未见标注"
+        elif time_known:
+            stamp = published
+        else:
+            stamp = f"{published}（据链接推断）"
         summary = str(item.get("summary") or "").strip()[:200]
-        line = f"- {title}（{source}，{published}）"
+        line = f"- {title}（{source}，{stamp}）"
         if summary:
             line += f"\n  {summary}"
         lines.append(line)

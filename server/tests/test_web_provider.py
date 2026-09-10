@@ -68,15 +68,40 @@ def fake_http(monkeypatch):
 
 # ── 来源与时间缺失：不进事实层 ──────────────────────────────
 
-def test_normalize_result_requires_source_and_time():
-    assert web_provider.normalize_result({"title": "T", "url": "https://a.com/1"}) is None
-    assert web_provider.normalize_result({"title": "T", "url": "https://a.com/1", "source": "媒体"}) is None
+def test_normalize_result_requires_title_and_url():
+    assert web_provider.normalize_result({"title": "", "url": "https://a.com/1"}) is None
+    assert web_provider.normalize_result({"title": "T", "url": ""}) is None
+    assert web_provider.normalize_result("不是对象") is None
+
+
+def test_normalize_result_keeps_backend_published_time():
     item = web_provider.normalize_result({
         "title": "T", "url": "https://a.com/1", "source": "媒体",
         "publishedDate": "2026-09-10T00:00:00+00:00",
     })
     assert item["source"] == "媒体"
     assert item["published_at"].startswith("2026-09-10")
+    assert item["time_known"] is True
+
+
+def test_normalize_result_infers_time_from_news_url():
+    """Bing News 不给 publishedDate，但新闻 URL 普遍带日期。"""
+    item = web_provider.normalize_result({
+        "title": "T",
+        "url": "https://news.sina.com.cn/zx/gj/2026-09-10/doc-iniriaey.shtml",
+        "source": "news.sina.com.cn",
+    })
+    assert item["published_at"] == "2026-09-10"
+    assert item["time_known"] is False
+
+
+def test_normalize_result_marks_unknown_time_instead_of_dropping():
+    item = web_provider.normalize_result({
+        "title": "T", "url": "https://a.com/article/1", "source": "媒体",
+    })
+    assert item is not None
+    assert item["published_at"] == ""
+    assert item["time_known"] is False
 
 
 def test_normalize_result_falls_back_to_host_as_source():
@@ -145,16 +170,16 @@ def test_search_returns_empty_on_bad_json(fake_http):
     assert asyncio.run(web_provider.web_search("最近新闻")) == []
 
 
-def test_search_normalizes_and_drops_incomplete(fake_http):
+def test_search_normalizes_and_drops_malformed(fake_http):
     fake_http(lambda url, kwargs: _FakeResponse(payload={"results": [
         {"title": "有来源", "url": "https://a.com/1", "source": "媒体A",
          "publishedDate": "2026-09-10T00:00:00+00:00"},
-        {"title": "缺时间", "url": "https://a.com/2", "source": "媒体B"},
+        {"title": "时间未知", "url": "https://a.com/2", "source": "媒体B"},
         "不是对象",
     ]}))
     results = asyncio.run(web_provider.web_search("最近新闻"))
-    assert len(results) == 1
-    assert results[0]["title"] == "有来源"
+    assert [r["title"] for r in results] == ["有来源", "时间未知"]
+    assert results[1]["published_at"] == ""
 
 
 def test_search_passes_time_range_and_category(fake_http):
@@ -296,3 +321,14 @@ def test_search_and_cluster_reports_no_sources(fake_http):
     data = asyncio.run(web_provider.search_and_cluster("最近新闻"))
     assert data["has_sources"] is False
     assert data["results"] == [] and data["events"] == []
+
+
+def test_format_sources_marks_unknown_and_inferred_time():
+    text = web_provider.format_sources([
+        {"title": "有时间", "source": "媒体A", "published_at": "2026-09-10", "time_known": True},
+        {"title": "推断时间", "source": "媒体B", "published_at": "2026-09-09", "time_known": False},
+        {"title": "无时间", "source": "媒体C", "published_at": "", "time_known": False},
+    ])
+    assert "（媒体A，2026-09-10）" in text
+    assert "2026-09-09（据链接推断）" in text
+    assert "时间未见标注" in text

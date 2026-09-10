@@ -143,6 +143,7 @@ def record(
                 "web_has_sources", "web_no_sources", "web_unavailable",
                 "web_report_count", "web_event_count", "web_query", "web_query_used",
                 "web_fallback", "web_attempts",
+                "web_origin_count", "web_max_reprint", "web_unknown_count",
             },
             numeric={"web_report_count", "web_event_count"},
         )

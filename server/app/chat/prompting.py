@@ -259,6 +259,18 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                 "本轮已取得实时检索资料（见下方不可信参考块）："
                 "只能依据该资料作答，并标注来源；多篇报道不一致时说明分歧。"
             )
+            if int(plan.get("web_max_reprint") or 0) >= 2:
+                block.append(
+                    f"检索结果里有 {plan['web_max_reprint']} 条来自同一信源（多为转载），"
+                    "已确认原创信源 "
+                    f"{int(plan.get('web_origin_count') or 0)} 个。"
+                    "叙述时要说清这一点，不要把报道条数说成多方印证。"
+                )
+            if int(plan.get("web_unknown_count") or 0):
+                block.append(
+                    f"另有 {plan['web_unknown_count']} 条未标注原始出处，"
+                    "不得当成独立来源。"
+                )
         system = system + "\n\n" + "\n".join(block)
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)

@@ -578,9 +578,19 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     plan["web_report_count"] = len(data["results"])
                     plan["web_event_count"] = len(data["events"])
                     plan["web_observed_at"] = data["observed_at"]
+                    from app.chat import source_analysis
+
+                    analysis = source_analysis.analyze_sources(data["results"])
+                    plan["web_origin_count"] = analysis.confirmed_count
+                    plan["web_max_reprint"] = analysis.max_reprint
+                    plan["web_unknown_count"] = analysis.unknown_count
                     sources_text = web_provider.format_sources(data["results"])
                     events_text = web_provider.format_events(data["events"])
                     block = "【实时检索资料（本轮新获取）】\n"
+                    # 先给独立性核查：它决定"多条报道"能不能当作多方印证
+                    analysis_text = analysis.render()
+                    if analysis_text:
+                        block += analysis_text + "\n\n"
                     if events_text:
                         block += events_text + "\n\n"
                     block += sources_text

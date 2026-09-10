@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 8  # 全局 LLM 请求并发上限
     llm_key_cooldown_seconds: float = 30.0  # Key 临时失败后的冷却时间
 
-    # ── 回复审校（默认关闭：先在测试环境显式开启）────────────
-    reflection_enabled: bool = False
+    # ── 回复审校（按需触发：命中风险/事实/情绪/道德信号才多调一次）──
+    reflection_enabled: bool = True
     reflection_review_model: str = ""
     reflection_review_timeout: float = 20.0
     reflection_max_tokens: int = 700
@@ -84,8 +84,9 @@ class Settings(BaseSettings):
     reflection_max_revisions_per_turn: int = 1
 
     # ── LLM 自主响应规划（普通非流式聊天）───────────────
-    semantic_planner_enabled: bool = False
-    semantic_planner_shadow_only: bool = True
+    # shadow_only=True 时只记录计划不改行为；默认全量生效。
+    semantic_planner_enabled: bool = True
+    semantic_planner_shadow_only: bool = False
     response_plan_model: str = ""
     response_plan_timeout: float = 12.0
     response_plan_max_tokens: int = 400

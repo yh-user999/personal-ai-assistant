@@ -537,11 +537,16 @@ async def chat(
     model: str | None = None,
     request_id: str | None = None,
     user_id: str | None = None,
+    purpose: str = "",
 ) -> str:
     """通用对话调用，按 Key 池执行一次有限轮故障切换。
 
     ``model`` 为空时使用全局 ``LLM_MODEL``；小说链路应显式传入
     ``get_novel_model()``。同一请求最多尝试所有候选 Key 一轮。
+
+    ``purpose`` 标记这次调用的用途（如 planner / review / revise），只用于
+    内部可观测性与测试区分，不会传给服务商。没有它时，调用方无法从若干次
+    ``chat()`` 中分辨哪一次是真正的回复生成——测试断言与链路排查都会踩坑。
     """
     selected_model = (model or settings.llm_model or "").strip()
     kwargs = {

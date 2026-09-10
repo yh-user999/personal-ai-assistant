@@ -433,13 +433,18 @@ async def _run_chat(
     )
     planned = await response_plan.plan_response(ctx, runtime, planner_history)
     hint = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner)
-    plan = hint if getattr(settings, "semantic_planner_shadow_only", True) else planned
+    shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
+    plan = hint if shadow_only else planned
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
         plan.fact_result = providers.current_datetime(msg)
+    # 提示词与检索只读「生效计划」；planner 的判断另存 planned_* 供观察。
+    # 若把 planned 直接铺进这份 dict，shadow 模式下模型的约束照样会进 prompt，
+    # 那就不是"只观察不改行为"了。
     ctx.trace.response_plan = {
-        **planned.summary(),
-        "shadow_only": bool(getattr(settings, "semantic_planner_shadow_only", True)),
-        "effective_mode": plan.mode,
+        **plan.summary(),
+        "shadow_only": shadow_only,
+        "planned_mode": planned.mode,
+        "planned_source": planned.source,
         "fact_result": plan.fact_result,
     }
 

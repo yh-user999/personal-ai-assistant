@@ -82,6 +82,9 @@ class ResponsePlan:
             "needs_moral_judgment": self.needs_moral_judgment,
             "sensitive_subject": self.sensitive_subject,
             "stance_required": self.stance_required,
+            # constraints 必须带上：提示词靠它注入模式约束。
+            # 漏掉会让道德/无来源/动作等约束全部静默失效。
+            "constraints": list(self.constraints),
         }
 
 
@@ -285,6 +288,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             model=model,
             request_id=ctx.request_id,
             user_id=ctx.uid,
+            purpose="planner",
         )
         return parse_llm_plan(text, is_owner=ctx.is_owner, min_confidence=float(runtime.settings.response_plan_min_confidence))
     except Exception as exc:  # noqa: BLE001

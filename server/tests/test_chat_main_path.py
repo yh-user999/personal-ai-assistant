@@ -10,6 +10,7 @@ import pytest
 
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
+from tests.llm_doubles import internal_call_response
 
 
 @pytest.fixture
@@ -29,6 +30,10 @@ def captured(monkeypatch):
     reply = "好的，记下了。"
 
     async def fake_chat(messages, **kwargs):
+        # planner / 审校是内部调用，不计入回复捕获
+        stub = internal_call_response(kwargs)
+        if stub is not None:
+            return stub
         box["messages"] = messages
         return reply
 

@@ -7,6 +7,7 @@ from app.config import settings
 from app.core import knowledge
 from app.models.database import connect, init_db, reset_connections
 from app.services import request_trace
+from tests.llm_doubles import internal_call_response
 
 
 @pytest.fixture
@@ -68,6 +69,9 @@ def chat_env(db_env, monkeypatch):
     import app.core.embedding as _embedding
 
     async def fake_chat(messages, **kwargs):
+        stub = internal_call_response(kwargs)
+        if stub is not None:
+            return stub
         return "好的。"
 
     monkeypatch.setattr(_chat_api.llm, "chat", fake_chat)
@@ -171,6 +175,10 @@ def test_intent_rules_injected_for_enum(db_env, monkeypatch):
     box = {"systems": []}
 
     async def fake_chat(messages, **kwargs):
+        # 跳过 planner / 审校的内部调用，只捕获真正的回复请求
+        stub = internal_call_response(kwargs)
+        if stub is not None:
+            return stub
         box["systems"].append(messages[0]["content"])
         return "好的。"
 

@@ -9,6 +9,7 @@ sys.path.insert(0, str(REPO_ROOT))  # collector 与 common 共享包
 
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
+from tests.llm_doubles import internal_call_response
 
 
 def test_collector_channel_defaults_off():
@@ -66,6 +67,10 @@ def test_chat_no_behavior_injection_by_default(db_env, monkeypatch):
     systems = []
 
     async def fake_chat(messages, **kwargs):
+        # 跳过 planner / 审校的内部调用，只捕获真正的回复请求
+        stub = internal_call_response(kwargs)
+        if stub is not None:
+            return stub
         systems.append(messages[0]["content"])
         return "好的。"
 
@@ -110,6 +115,10 @@ def test_chat_behavior_injection_when_enabled(db_env, monkeypatch):
     systems = []
 
     async def fake_chat(messages, **kwargs):
+        # 跳过 planner / 审校的内部调用，只捕获真正的回复请求
+        stub = internal_call_response(kwargs)
+        if stub is not None:
+            return stub
         systems.append(messages[0]["content"])
         return "好的。"
 

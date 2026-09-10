@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +25,13 @@ _MORAL_FLAGS = (
 _FACT_QUERY_HINTS = ("什么", "是谁", "怎么回事", "为什么", "哪", "多少", "设定", "能力", "事实")
 _RISK_HINTS = ("删除", "执行", "运行", "发送", "修改", "备份", "移动", "重命名", "密码", "密钥", "token")
 _EMOTION_HINTS = ("焦虑", "难受", "崩溃", "烦", "累", "沮丧", "生气", "压力", "睡不着")
+
+# 真正的寒暄/确认：只有这类短消息才不需要审校
+_TRIVIAL_RE = re.compile(
+    r"^(?:你好|您好|嗨|哈啰|hi|hello|在吗|在么|收到|好的|好|嗯+|哦+|谢谢|多谢|"
+    r"麻烦了|辛苦了|哈哈+|笑死|早|早安|晚安|ok)[!！。~～\s]*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -102,14 +110,15 @@ def should_reflect(ctx: Any, bundle: Any, draft: str, route_kind: str = "chat", 
     moral_plan = bool(plan.get("needs_moral_judgment")) or plan.get("mode") == "moral_assessment"
     noise_hits = values_module.scan_noise(draft)
     moral_draft = values_module.looks_like_moral_claim(draft)
-    # 短回复也不能跳过道德/舆论检查：一句话的道德结论同样可能跑偏
+    # 只对真正的寒暄/确认短路。早期版本用"消息 ≤8 字"当判据，会把
+    # "李羽的能力是什么"这类简短事实问题一起跳过——短不代表不需要审校。
+    # 道德类计划/舆论痕迹/道德措辞一律不短路：一句话的道德结论同样会跑偏。
     if (
-        len(message) <= 8
-        and len(draft) <= 120
-        and not any(x in message for x in _RISK_HINTS)
+        len(draft) <= 120
         and not moral_plan
         and not noise_hits
         and not moral_draft
+        and _TRIVIAL_RE.fullmatch(message.strip())
     ):
         return []
     reasons: list[str] = []
@@ -227,6 +236,7 @@ async def review_reply(ctx: Any, runtime: Any, bundle: Any, draft: str) -> tuple
             model=model,
             request_id=ctx.request_id,
             user_id=ctx.uid,
+            purpose="review",
         )
         review = parse_review_result(text)
     except Exception as exc:  # noqa: BLE001
@@ -267,6 +277,7 @@ async def revise_reply(ctx: Any, runtime: Any, bundle: Any, draft: str, review: 
             model=model,
             request_id=ctx.request_id,
             user_id=ctx.uid,
+            purpose="revise",
         )).strip()
         return (final or draft), bool(final), max(0, int((time.monotonic() - started) * 1000))
     except Exception as exc:  # noqa: BLE001

@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）
     search_min_results: int = 3
     web_search_enabled: bool = True
+    # 声明级比对：仅在报道数 ≥ 此值时才做 LLM 抽取（单一信源无可比对）
+    claim_analysis_enabled: bool = True
+    claim_analysis_min_reports: int = 2
+    claim_analysis_max_tokens: int = 1200
+    claim_analysis_budget: float = 12.0
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

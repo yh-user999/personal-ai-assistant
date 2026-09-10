@@ -271,6 +271,13 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                     f"另有 {plan['web_unknown_count']} 条未标注原始出处，"
                     "不得当成独立来源。"
                 )
+            if int(plan.get("web_claim_conflicts") or 0):
+                block.append(
+                    f"多来源事实比对发现 {plan['web_claim_conflicts']} 处冲突"
+                    "（详见资料块「多来源事实比对」）：叙述时先说能对上的事实，"
+                    "再逐条点出对不上的地方，并说清每条是谁的说法；"
+                    "定性分歧不要替官方裁决，孤证和自媒体定性不得当事实。"
+                )
         system = system + "\n\n" + "\n".join(block)
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)

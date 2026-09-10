@@ -586,11 +586,31 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     plan["web_unknown_count"] = analysis.unknown_count
                     sources_text = web_provider.format_sources(data["results"])
                     events_text = web_provider.format_events(data["events"])
+
+                    # 声明级比对：仅在报道数达标时做，单一信源无可比对。
+                    claim_text = ""
+                    if getattr(runtime.settings, "claim_analysis_enabled", True) and (
+                        len(data["results"])
+                        >= int(getattr(runtime.settings, "claim_analysis_min_reports", 2))
+                    ):
+                        from app.chat import claim_analysis
+
+                        rule_cs = claim_analysis.extract_claims_rule(data["results"])
+                        llm_cs = await claim_analysis.extract_claims_llm(data["results"], runtime)
+                        report = claim_analysis.analyze_claims(rule_cs, llm_cs or None)
+                        claim_text = report.text
+                        plan["web_claim_conflicts"] = report.conflict_count
+                        plan["web_claim_singles"] = report.single_count
+                        plan["web_claim_extracted"] = report.extracted_by_llm
+
                     block = "【实时检索资料（本轮新获取）】\n"
                     # 先给独立性核查：它决定"多条报道"能不能当作多方印证
                     analysis_text = analysis.render()
                     if analysis_text:
                         block += analysis_text + "\n\n"
+                    # 再给声明级比对：具体哪个事实点对不上、是谁说的
+                    if claim_text:
+                        block += "【多来源事实比对】\n" + claim_text + "\n\n"
                     if events_text:
                         block += events_text + "\n\n"
                     block += sources_text

@@ -581,11 +581,20 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 query = str(msg or plan.get("query") or "").strip()
                 alt = str(plan.get("query") or "").strip()
                 plan["web_query"] = query[:200]
+                # 深挖：事件核查/道德判断类问题多搜几组正交角度，主动找可能
+                # 推翻当前印象的信息，减少"靠用户追问才补上关键事实"的情况。
+                deep = plan.get("intent") in {"event_lookup", "moral_judgment"} or bool(
+                    plan.get("needs_moral_judgment")
+                )
                 data = await web_provider.search_and_cluster(
                     query,
                     time_range=web_provider.time_range_default(),
                     alt_query=alt if alt and alt != query else None,
+                    deep_dive=deep,
                 )
+                if deep:
+                    plan["web_deep_dive"] = True
+                    plan["web_angle_added"] = int(data.get("angle_added") or 0)
                 if data["has_sources"]:
                     plan["web_has_sources"] = True
                     plan["web_fallback"] = bool(data.get("fallback_used"))

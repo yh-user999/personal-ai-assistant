@@ -68,6 +68,19 @@ _EMPTY_NEUTRAL_RE = re.compile(
     r"各有各的(?:道理|立场|看法)|仁者见仁|不好说|很难说|见仁见智|"
     r"(?:双方|两边|各方)都有(?:道理|问题)"
 )
+# ── 假平衡：表了态又用对称句式把是非拉平（比空洞中立更隐蔽）──
+# 空洞中立是"完全不表态"，假平衡是"表了态又对称抹平"——这次对话里
+# "两边都是拿情绪当证据""各打五十大板"就属于后者，从空洞中立的缝里溜过去了。
+_FALSE_BALANCE_RE = re.compile(
+    r"各打五十大板|一个巴掌拍不响|(?:两边|双方|各方)都(?:有错|有问题|不对|拿情绪)|"
+    r"一边.{0,12}一边.{0,12}(?:都|也)|谁都(?:没错|不占理)|各有各的不是"
+)
+# ── 程序结果冒充是非结论：拿"已调解/已赔付/程序走完"当道德背书 ──
+# 这次最深的坑：用"家长赔了、程序走完了"收尾，把'摆平'冒充'摆对'。
+_PROCEDURE_AS_VERDICT_RE = re.compile(
+    r"(?:已经?|都)(?:调解|赔付|赔偿|道歉|和解|走完|了结|处理).{0,16}"
+    r"(?:责任(?:到位|尽到|履行)|就(?:算|)(?:结束|完了|没事)|该(?:履行|尽)的(?:都|)(?:履行|尽)了)"
+)
 
 
 def scan_noise(text: str) -> list[str]:
@@ -101,6 +114,16 @@ def looks_like_moral_claim(text: str) -> bool:
 def looks_like_empty_neutrality(text: str) -> bool:
     """是否用分歧取消判断（空洞中立）。"""
     return bool(_EMPTY_NEUTRAL_RE.search(text or ""))
+
+
+def looks_like_false_balance(text: str) -> bool:
+    """是否表了态又用对称句式把是非拉平（假平衡）。"""
+    return bool(_FALSE_BALANCE_RE.search(text or ""))
+
+
+def looks_like_procedure_as_verdict(text: str) -> bool:
+    """是否拿'已调解/已赔付/程序走完'冒充道德是非结论。"""
+    return bool(_PROCEDURE_AS_VERDICT_RE.search(text or ""))
 
 
 def looks_like_person_attack(text: str) -> bool:

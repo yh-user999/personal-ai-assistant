@@ -286,6 +286,14 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                     "再逐条点出对不上的地方，并说清每条是谁的说法；"
                     "定性分歧不要替官方裁决，孤证和自媒体定性不得当事实。"
                 )
+            if plan.get("web_deep_dive"):
+                block.append(
+                    "这是事件核查/道德判断类问题，下结论前先自检："
+                    "①关键当事人各自的动作都查清了吗（谁先动手、谁受伤）——不确定就说不确定；"
+                    "②有没有可能推翻当前印象的信息还没纳入；"
+                    "③每个事实是正规来源还是自媒体孤证，孤证要标注并留余地；"
+                    "④不要拿「已调解/已赔付」当是非结论。"
+                )
         system = system + "\n\n" + "\n".join(block)
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)

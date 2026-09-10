@@ -187,7 +187,13 @@ def build_review_messages(ctx: Any, bundle: Any, draft: str) -> list[dict[str, s
         "escalates_to_person：是否从评价行为升级为否定整人（辱骂、贴标签）。\n"
         "substitutes_authority：是否代替司法定罪或医学诊断。\n"
         "empty_neutrality：是非明确的议题上只给「各有各的道理」而不表态。\n"
-        "判定只在候选回复确实涉及时才为 true。"
+        "false_balance：已表态却又用对称句式把是非拉平（「两边都有错/各打五十大板/"
+        "一边…一边…」），或把对方合理之处与主判断等重并列、对冲掉立场。\n"
+        "procedure_as_verdict：拿「已调解/已赔付/程序走完」当道德是非的结论或背书"
+        "（把「摆平」冒充「摆对」）。\n"
+        "判定只在候选回复确实涉及时才为 true。命中 false_balance 或 "
+        "procedure_as_verdict 时，在 issues/revision_plan 里指出并建议改法，"
+        "但不必然强制重写——由你综合 needs_revision 判断。"
     )
     return [
         {"role": "system", "content": (
@@ -199,6 +205,7 @@ def build_review_messages(ctx: Any, bundle: Any, draft: str) -> list[dict[str, s
             "\"proportionality\":0.0},\"noise_used_as_reason\":false,"
             "\"moralizes_unverified\":false,\"escalates_to_person\":false,"
             "\"substitutes_authority\":false,\"empty_neutrality\":false,"
+            "\"false_balance\":false,\"procedure_as_verdict\":false,"
             "\"issues\":[],\"revision_plan\":[],\"confidence\":0.0}"
         )},
         {"role": "user", "content": json.dumps({

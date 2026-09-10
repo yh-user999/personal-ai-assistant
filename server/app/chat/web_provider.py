@@ -479,7 +479,7 @@ def widen_time_range(time_range: str) -> str:
 
 
 def _min_results() -> int:
-    """达标线：低于此数视为证据不足，继续放宽。"""
+    """达标线：低于此结果数视为证据不足，继续放宽。"""
     from app.config import settings
 
     try:
@@ -488,12 +488,33 @@ def _min_results() -> int:
         return 3
 
 
+# 事件深挖：为核心查询补几组正交角度，避免只搜"证实主流叙事"的词。
+# 这次教训——"勒颈""后退"都藏在没主动搜的方向里，靠用户追问才补上。
+_ANGLE_SUFFIXES = (
+    "监控 经过 完整",      # 过程细节：还原到底怎么发生的
+    "双方 说法 争议",      # 各方主张：谁说了什么
+    "反转 后续 进展",      # 后续/反转：推翻当前印象的信息
+    "律师 定性 分析",      # 定性争议：专业视角
+)
+
+
+def build_angle_queries(cleaned: str, limit: int = 3) -> list[str]:
+    """给事件核查生成正交角度查询（主查询之外，主动找可能推翻印象的信息）。"""
+    base = (cleaned or "").strip()
+    if not base:
+        return []
+    # 取事件主体（去掉太长的部分，避免叠加后过长）
+    core = base[:24]
+    return [f"{core} {suffix}" for suffix in _ANGLE_SUFFIXES[:limit]]
+
+
 async def search_and_cluster(
     query: str,
     *,
     time_range: str = "week",
     limit: int = 10,
     alt_query: str | None = None,
+    deep_dive: bool = False,
 ) -> dict[str, Any]:
     """检索并按事件聚合；命中不足时逐级放宽。
 
@@ -537,6 +558,19 @@ async def search_and_cluster(
             used = key
             break
 
+    # 深挖：事件/道德类问题追加正交角度检索，主动找可能推翻当前印象的信息
+    # （过程细节/各方说法/后续反转/定性争议）。并入去重，不影响主结果。
+    angle_added = 0
+    if deep_dive and cleaned:
+        seen_urls = {r.get("url") for r in results}
+        for aq in build_angle_queries(cleaned):
+            extra = await web_search(aq, category="general", time_range="", limit=limit)
+            for it in extra:
+                if it.get("url") not in seen_urls:
+                    seen_urls.add(it.get("url"))
+                    results.append(it)
+                    angle_added += 1
+
     # 第二检索源 GDELT（走代理）：并入结果、按 URL 去重。
     # GDELT 失败/限流返回空，不影响 SearXNG 已有结果。
     gdelt_count = 0
@@ -567,6 +601,7 @@ async def search_and_cluster(
         "fallback_used": (used or first) != first,
         "attempts": len(tried),
         "gdelt_count": gdelt_count,
+        "angle_added": angle_added,
         "results": results,
         "events": events,
         "observed_at": _now_iso(),

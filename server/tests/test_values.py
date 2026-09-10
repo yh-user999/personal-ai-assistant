@@ -125,3 +125,22 @@ def test_judgment_frame_omits_empty_layers():
     text = values.JudgmentFrame(my_judgment="只有判断").render()
     assert "已确认事实" not in text
     assert "我的判断：只有判断" in text
+
+
+# ── 假平衡 / 程序冒充是非（这次对话暴露的和稀泥形态）──────────
+
+def test_false_balance_detected():
+    from app.chat import values as v
+    assert v.looks_like_false_balance("网上一边骂家长一边骂女方，两边都是拿情绪当证据")
+    assert v.looks_like_false_balance("这事各打五十大板，谁都没错")
+    assert v.looks_like_false_balance("双方都有问题")
+    # 明确表态不算假平衡
+    assert not v.looks_like_false_balance("错在成年人一方，孩子无辜，这没有中间地带")
+
+
+def test_procedure_as_verdict_detected():
+    from app.chat import values as v
+    assert v.looks_like_procedure_as_verdict("家长已经道歉赔付，该履行的履行了")
+    assert v.looks_like_procedure_as_verdict("都调解完了，责任到位了")
+    # 单纯陈述程序、不当结论的，不该命中
+    assert not v.looks_like_procedure_as_verdict("调解了三次没谈拢")

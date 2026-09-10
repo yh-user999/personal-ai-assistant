@@ -324,7 +324,7 @@ def _web_retrieval_env(monkeypatch, *, configured=True, results=None, unavailabl
 
     calls = {"search": 0}
 
-    async def fake_search_and_cluster(query, *, time_range="week", limit=10, alt_query=None):
+    async def fake_search_and_cluster(query, *, time_range="week", limit=10, alt_query=None, deep_dive=False):
         calls["search"] += 1
         return {
             "query": query,

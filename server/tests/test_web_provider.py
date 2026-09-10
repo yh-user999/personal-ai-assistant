@@ -455,6 +455,59 @@ def test_gdelt_results_merged_and_deduped(fake_http, monkeypatch):
     assert len([r for r in data["results"] if r["url"] == "https://sx.com/a"]) == 1
 
 
+# ── 规则B：事件深挖多角度检索 ──────────────────────────────
+
+def test_build_angle_queries():
+    qs = web_provider.build_angle_queries("湖南四岁幼童事件")
+    assert len(qs) == 3
+    assert all("湖南四岁幼童事件" in q for q in qs)
+    # 含"可能推翻印象"的角度
+    assert any("经过" in q for q in qs)
+    assert any("说法" in q or "争议" in q for q in qs)
+    assert web_provider.build_angle_queries("") == []
+
+
+def test_deep_dive_adds_angle_results(fake_http):
+    """深挖时追加正交角度检索，并入去重。"""
+    calls = []
+
+    def handler(url, kwargs):
+        q = kwargs.get("params", {}).get("q", "")
+        calls.append(q)
+        # 主查询给足结果；角度查询各给一条不同 URL
+        if "经过" in q or "说法" in q or "争议" in q or "反转" in q or "律师" in q:
+            return _FakeResponse(payload={"results": [
+                {"title": f"角度{len(calls)}", "url": f"https://ang.com/{len(calls)}",
+                 "source": "媒体", "publishedDate": "2026-09-10T00:00:00+00:00"},
+            ]})
+        return _FakeResponse(payload={"results": [
+            {"title": f"主{i}", "url": f"https://m.com/{i}", "source": "媒体",
+             "publishedDate": "2026-09-10T00:00:00+00:00"} for i in range(5)
+        ]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("某某事件", deep_dive=True))
+    assert data["angle_added"] >= 1
+    assert any("ang.com" in r["url"] for r in data["results"])
+
+
+def test_no_deep_dive_by_default(fake_http):
+    """默认不深挖：只跑主检索，不发角度查询。"""
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs.get("params", {}).get("q", ""))
+        return _FakeResponse(payload={"results": [
+            {"title": f"主{i}", "url": f"https://m.com/{i}", "source": "媒体",
+             "publishedDate": "2026-09-10T00:00:00+00:00"} for i in range(5)
+        ]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("某某事件"))
+    assert data["angle_added"] == 0
+    assert not any("经过" in c or "争议" in c for c in calls)
+
+
 def test_gdelt_failure_does_not_break_main_search(fake_http, monkeypatch):
     """GDELT 抛错不影响 SearXNG 已有结果。"""
     fake_http(lambda url, kwargs: _FakeResponse(payload={"results": [

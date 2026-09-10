@@ -8,6 +8,20 @@ import pytest
 from app.chat import source_analysis as sa
 
 
+def test_outlet_list_has_no_duplicates():
+    """重复项会让归一化提前命中错名，也说明表在膨胀时没人清理。"""
+    assert len(set(sa._KNOWN_OUTLETS)) == len(sa._KNOWN_OUTLETS)
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("据晨视频9月8日报道", "晨视频"),
+    ("潇湘晨报：当地已介入", "潇湘晨报"),
+    ("大皖新闻记者走访", "大皖新闻"),
+])
+def test_newly_added_outlets_recognized(title, expected):
+    assert sa.extract_origin(title) == expected
+
+
 def _item(title, summary="", domain="news.example.com"):
     return {"title": title, "summary": summary, "source": domain}
 
@@ -24,6 +38,14 @@ def _item(title, summary="", domain="news.example.com"):
 ])
 def test_extract_origin_from_patterns(text, expected):
     assert sa.extract_origin(text) == expected
+
+
+def test_origin_must_be_in_signature_position():
+    """只有开头署名位算原创；中段提及不算。"""
+    assert sa.extract_origin("【人民日报】评论文章") == "人民日报"
+    assert sa.extract_origin("人民日报：当地已回应") == "人民日报"
+    # 中段提及 —— 这条曾是真实误判，把腾讯自采稿并进了官方信源簇
+    assert sa.extract_origin("被指摸臀4岁男孩已返校；人民日报发声") == ""
 
 
 def test_mention_is_not_origin():

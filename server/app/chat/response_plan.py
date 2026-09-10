@@ -8,7 +8,7 @@ from typing import Any
 from app.chat import values as values_module
 from app.common.timeutil import now_local
 
-_ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search"})
+_ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
 _HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
 
 # 无来源不判断：价值层的安全底线，必须先于任何道德/事实结论生效
@@ -255,6 +255,20 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
         if plan.mode in {"casual_chat", "clarify"}:
             plan.mode = "retrieve_then_answer"
             plan.intent = hint.intent
+        if not plan.query:
+            plan.query = hint.query
+        for item in hint.constraints:
+            if item not in plan.constraints:
+                plan.constraints.append(item)
+    if hint.provider == "hotboard":
+        # 热点浏览属规则强制项：planner 不认识 hotboard，会把 provider 清空，
+        # 导致热榜不被调用（生产实测 intent=hot_browsing 但 provider='' ）。
+        plan.provider = "hotboard"
+        plan.tool_required = True
+        plan.retrieval_required = True
+        if plan.mode in {"casual_chat", "clarify"}:
+            plan.mode = "retrieve_then_answer"
+        plan.intent = "hot_browsing"
         if not plan.query:
             plan.query = hint.query
         for item in hint.constraints:

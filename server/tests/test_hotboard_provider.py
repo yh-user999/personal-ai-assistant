@@ -139,3 +139,26 @@ def test_hot_browsing_routing():
     # 具体事件不算浏览型 → 应走关键词检索
     assert wp.looks_like_hot_browsing("湖南四岁幼童事件怎么样了") is False
     assert wp.looks_like_hot_browsing("那个案件的进展") is False
+
+
+def test_planner_cannot_drop_hotboard_provider():
+    """planner 不认识 hotboard 会把 provider 清空——规则强制项必须回填。
+
+    生产实测：intent=hot_browsing 但 provider='' 导致热榜不被调用。
+    """
+    from app.chat.response_plan import build_rule_plan, apply_rule_requirements, ResponsePlan
+    hint = build_rule_plan("最近有什么大事", is_owner=True)
+    assert hint.provider == "hotboard"
+    planned = ResponsePlan(mode="retrieve_then_answer", intent="hot_browsing",
+                           provider="", confidence=0.85, source="llm")
+    merged = apply_rule_requirements(planned, hint, is_owner=True)
+    assert merged.provider == "hotboard"
+    assert merged.tool_required is True
+
+
+def test_hotboard_is_allowed_provider():
+    """hotboard 必须在允许清单，否则 validate_plan 会剥掉它。"""
+    from app.chat.response_plan import ResponsePlan, validate_plan
+    plan = ResponsePlan(mode="retrieve_then_answer", intent="hot_browsing",
+                        provider="hotboard", tool_required=True)
+    assert validate_plan(plan, is_owner=True).provider == "hotboard"

@@ -114,8 +114,10 @@ class Settings(BaseSettings):
     # 声明级比对：仅在报道数 ≥ 此值时才做 LLM 抽取（单一信源无可比对）
     claim_analysis_enabled: bool = True
     claim_analysis_min_reports: int = 2
-    claim_analysis_max_tokens: int = 1200
-    claim_analysis_budget: float = 12.0
+    # 声明表可能较长（多条 JSON），预算给足以免被截断——截断会导致 JSON
+    # 不完整、解析失败而静默降级（planner/审校都踩过同一个坑）
+    claim_analysis_max_tokens: int = 2400
+    claim_analysis_budget: float = 14.0
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

@@ -578,6 +578,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     plan["web_report_count"] = len(data["results"])
                     plan["web_event_count"] = len(data["events"])
                     plan["web_observed_at"] = data["observed_at"]
+                    plan["web_gdelt_count"] = int(data.get("gdelt_count") or 0)
                     from app.chat import source_analysis
 
                     analysis = source_analysis.analyze_sources(data["results"])

@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     # 声明抽取专用模型：留空则回退到主模型。独立于 reflection_review_model
     # （那个被审校/planner 共用），改这个只影响声明抽取。
     claim_analysis_model: str = ""
+    # GDELT 全球新闻事件库（第二检索源，走代理，与国内直连隔离）
+    gdelt_enabled: bool = True
+    gdelt_proxy: str = "http://127.0.0.1:7890"   # 留空则不走代理
+    gdelt_timeout: float = 15.0
+    gdelt_max_results: int = 10
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

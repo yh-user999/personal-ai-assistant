@@ -513,6 +513,24 @@ async def search_and_cluster(
             used = key
             break
 
+    # 第二检索源 GDELT（走代理）：并入结果、按 URL 去重。
+    # GDELT 失败/限流返回空，不影响 SearXNG 已有结果。
+    gdelt_count = 0
+    try:
+        from app.chat import gdelt_provider
+
+        if gdelt_provider.configured():
+            gdelt_items = await gdelt_provider.search(
+                cleaned, time_range=time_range, limit=limit
+            )
+            if gdelt_items:
+                seen_urls = {r.get("url") for r in results}
+                added = [it for it in gdelt_items if it.get("url") not in seen_urls]
+                gdelt_count = len(added)
+                results = results + added
+    except Exception as exc:  # noqa: BLE001 - 第二源绝不能拖垮主检索
+        logger.warning("GDELT 合并失败（%s），仅用主检索结果", type(exc).__name__)
+
     events = cluster_events(results) if results else []
     return {
         "query": query,
@@ -524,6 +542,7 @@ async def search_and_cluster(
         "query_cleaned": cleaned != (query or "").strip(),
         "fallback_used": (used or first) != first,
         "attempts": len(tried),
+        "gdelt_count": gdelt_count,
         "results": results,
         "events": events,
         "observed_at": _now_iso(),

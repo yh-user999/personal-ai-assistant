@@ -53,6 +53,8 @@ def backend(monkeypatch):
     monkeypatch.setattr(settings, "search_backend_url", "http://127.0.0.1:8888")
     monkeypatch.setattr(settings, "search_timeout", 5.0)
     monkeypatch.setattr(settings, "search_max_results", 10)
+    # 默认关掉 GDELT，避免主检索测试误连真实 API；需要时用例内单独开
+    monkeypatch.setattr(settings, "gdelt_enabled", False)
     yield
 
 
@@ -423,3 +425,50 @@ def test_clean_query_falls_back_when_too_short():
 ])
 def test_widen_time_range(start, expected):
     assert web_provider.widen_time_range(start) == expected
+
+
+# ── GDELT 合并 ──────────────────────────────────────────────
+
+def test_gdelt_results_merged_and_deduped(fake_http, monkeypatch):
+    """GDELT 结果并入 SearXNG，同 URL 去重。"""
+    fake_http(lambda url, kwargs: _FakeResponse(payload={"results": [
+        {"title": "主源A", "url": "https://sx.com/a", "source": "sx.com",
+         "publishedDate": "2026-09-10T00:00:00+00:00"},
+    ]}))
+
+    async def fake_gdelt(query, *, time_range="week", limit=10):
+        return [
+            {"title": "GDELT新源", "url": "https://gd.com/x", "source": "gd.com",
+             "published_at": "2026-09-09T00:00:00Z", "time_known": True, "summary": "", "language": "Chinese"},
+            {"title": "重复", "url": "https://sx.com/a", "source": "sx.com",
+             "published_at": "", "time_known": False, "summary": "", "language": ""},
+        ]
+
+    from app.chat import gdelt_provider
+    monkeypatch.setattr(gdelt_provider, "configured", lambda: True)
+    monkeypatch.setattr(gdelt_provider, "search", fake_gdelt)
+
+    data = asyncio.run(web_provider.search_and_cluster("某事件"))
+    urls = {r["url"] for r in data["results"]}
+    assert "https://gd.com/x" in urls          # GDELT 新源并入
+    assert data["gdelt_count"] == 1            # 去掉重复的那条，只算新增 1
+    assert len([r for r in data["results"] if r["url"] == "https://sx.com/a"]) == 1
+
+
+def test_gdelt_failure_does_not_break_main_search(fake_http, monkeypatch):
+    """GDELT 抛错不影响 SearXNG 已有结果。"""
+    fake_http(lambda url, kwargs: _FakeResponse(payload={"results": [
+        {"title": "主源", "url": "https://sx.com/a", "source": "sx.com",
+         "publishedDate": "2026-09-10T00:00:00+00:00"},
+    ]}))
+
+    async def boom(query, **kw):
+        raise RuntimeError("gdelt down")
+
+    from app.chat import gdelt_provider
+    monkeypatch.setattr(gdelt_provider, "configured", lambda: True)
+    monkeypatch.setattr(gdelt_provider, "search", boom)
+
+    data = asyncio.run(web_provider.search_and_cluster("某事件"))
+    assert data["has_sources"] is True
+    assert data["gdelt_count"] == 0

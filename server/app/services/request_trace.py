@@ -145,6 +145,7 @@ def record(
                 "web_fallback", "web_attempts",
                 "web_origin_count", "web_max_reprint", "web_unknown_count",
                 "web_claim_conflicts", "web_claim_singles", "web_claim_extracted",
+                "web_gdelt_count",
             },
             numeric={"web_report_count", "web_event_count"},
         )

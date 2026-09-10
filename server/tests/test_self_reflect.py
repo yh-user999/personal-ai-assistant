@@ -132,6 +132,47 @@ def test_detect_correction_covers_ni_jiu_jiao():
     assert detect_correction("你就叫小月吧")
 
 
+def test_identity_question_is_not_a_correction():
+    """问身份不是纠正——线上就是这条把人格锚点顶掉的。
+
+    "你的名字是什么"命中 CORRECTION_PATTERNS 里的"你的名字"，一度被判为纠正；
+    入库时 context 恰好是 AI 自己那句"我是你的 AI 助手…"，下一轮就顶着
+    「用户过往的纠正与偏好（务必遵守）」注入，等于拿她的错答当用户的长期指示。
+    """
+    for text in ("你的名字是什么", "你是谁", "你叫什么", "还记得你的名字吗"):
+        assert not detect_correction(text), f"身份提问被当成纠正: {text}"
+
+    # "定身份"必须照旧入库——首句命名仍要能建立人格锚点
+    for text in ("你就叫小月吧", "你就叫小月吧，记住了吗", "你的名字是李羽"):
+        assert detect_correction(text), f"身份设定被误杀: {text}"
+
+
+def test_question_lessons_purged_and_anchor_kept():
+    """老库里的提问式教训要清掉，人格锚点必须原样留下。"""
+    from app.models.database import _purge_question_lessons
+
+    conn = connect()
+    conn.execute(
+        "INSERT INTO lessons (user_id, content, context, created_at, kind) "
+        "VALUES ('owner', '你的名字是什么', '我是你的 AI 助手。平时可以帮你记东西…', "
+        "'2026-09-10T17:08:04+00:00', 'fact')"
+    )
+    conn.execute(
+        "INSERT INTO lessons (user_id, content, context, created_at, kind) "
+        "VALUES ('owner', '还记得你的名字吗', '', '2026-09-10T17:08:05+00:00', 'identity')"
+    )
+    conn.commit()
+    save_lesson("你就叫小月吧")
+
+    assert _purge_question_lessons(conn) == 2, "提问式教训未被清掉"
+    assert _purge_question_lessons(conn) == 0, "清理应当幂等"
+
+    text = get_lessons_injection()
+    assert "你的名字是什么" not in text, "污染行仍在注入里"
+    assert "我是你的 AI 助手" not in text, "AI 自我描述仍被当成用户偏好注入"
+    assert "你就叫小月吧" in text, "人格锚点被误清"
+
+
 def test_injection_records_hit_count():
     """注入即记一次命中——用来分辨"真有用"和"从没被用过的噪声"。"""
     save_lesson("你就叫小月吧")

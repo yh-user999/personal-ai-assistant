@@ -299,6 +299,44 @@ def test_guest_retrieve_skips_owner_knowledge_and_lessons(db_env, monkeypatch):
     assert bundle.trace["routing"] == {}
 
 
+def test_identity_question_does_not_poison_lessons(db_env, monkeypatch):
+    """端到端复现线上身份重置：身份提问不得连 AI 自己的通用介绍一起进 lessons。
+
+    线上原链路：17:07 问"你是谁"→ 答"我是你的 AI 助手。平时可以帮你记东西…"；
+    17:08 问"你的名字是什么"命中纠正信号词 → save_lesson(该提问, 上一句 AI 回复)
+    → 同一轮就以「用户过往的纠正与偏好（务必遵守）」注入生效 → 回答升级成
+    "我是你的 AI 助手，直接叫我助手就行"，机器人开始给自己改名。
+
+    这里用真实 self_reflect + 真实库，不桩入库判定——桩掉它正是原 bug 溜过去的
+    原因（_OwnerSafe.detect_correction 永远返回 False）。
+    """
+    from app.models.database import connect
+    from app.services import identity_guard as identity_guard_module
+    from app.services import self_reflect as self_reflect_module
+
+    _patch_memory_scoped(monkeypatch)
+
+    generic = "我是你的 AI 助手。平时可以帮你记东西、查资料、理思路。"
+    conn = connect()
+    conn.execute(
+        "INSERT INTO memories (user_id, sender, content, ts) VALUES ('', 'assistant', ?, ?)",
+        (generic, "2026-09-10T17:07:00+00:00"),
+    )
+    conn.commit()
+
+    services_map = {name: _OwnerSafe() for name in ALL_SERVICE_NAMES}
+    services_map["self_reflect"] = self_reflect_module
+    services_map["identity_guard"] = identity_guard_module
+    runtime = make_runtime(services_map)
+
+    retrieval.prepare_turn(make_ctx("你的名字是什么"), runtime)
+
+    rows = conn.execute("SELECT content, context FROM lessons").fetchall()
+    assert rows == [], f"身份提问被存成了教训: {[dict(r) for r in rows]}"
+    assert generic not in self_reflect_module.get_lessons_injection(user_id=""), \
+        "AI 自己的通用介绍被当成用户的长期偏好注入了"
+
+
 class _EmptyKnowledge:
     async def search_knowledge(self, *a, **k):
         return []

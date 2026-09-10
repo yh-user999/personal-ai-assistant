@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1061,6 +1061,31 @@ def _migrate_lessons(conn: sqlite3.Connection) -> None:
     logger.info("lessons 主体/去重迁移完成：保留 %d 条唯一教训", len(keep))
 
 
+def _purge_question_lessons(conn: sqlite3.Connection) -> int:
+    """清掉教训表里的"提问"行——它们不是用户偏好，还会覆盖人格锚点。
+
+    历史 bug：身份提问（"你的名字是什么"）命中纠正信号词被存成教训，context
+    恰好是 AI 自己那句通用介绍（"我是你的 AI 助手…"），此后每轮都以
+    「用户过往的纠正与偏好（务必遵守）」注入，等于拿她自己的错答当用户的长期
+    指示，形成自我强化的身份重置。入口已在 detect_correction 堵住，老库的脏行
+    在这里清掉（老库只走 _migrate_lessons 的早返回分支，不会顺带清理）。
+    幂等：每次启动跑一遍，无命中即无操作。
+    """
+    if not _table_exists(conn, "lessons"):
+        return 0
+    try:
+        from app.services.self_reflect import is_question
+    except ImportError:  # pragma: no cover - 自省模块缺失时不做清理
+        return 0
+    rows = conn.execute("SELECT id, content FROM lessons").fetchall()
+    bad = [row["id"] for row in rows if is_question(row["content"] or "")]
+    if not bad:
+        return 0
+    conn.executemany("DELETE FROM lessons WHERE id = ?", [(row_id,) for row_id in bad])
+    logger.info("清理 %d 条提问式教训（非用户偏好，且会覆盖人格锚点）", len(bad))
+    return len(bad)
+
+
 def _drop_legacy_fts(conn: sqlite3.Connection) -> None:
     """老 FTS 表缺 user_id → 先删，让 _SCHEMA 用新结构重建。
 
@@ -1514,6 +1539,7 @@ def init_db() -> None:
                 if "duplicate column name" not in str(exc).casefold():
                     raise
         _migrate_lessons(conn)
+        _purge_question_lessons(conn)
         _create_user_domain_indexes(conn)
         conn.execute(
             "INSERT INTO schema_version (id, version, applied_at) VALUES (1, ?, ?) "

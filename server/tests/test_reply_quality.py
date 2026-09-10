@@ -136,6 +136,32 @@ def test_system_prompt_proactive_judgement():
     assert "替代方案" in SYSTEM_PROMPT
 
 
+def test_system_prompt_anchors_persona_identity():
+    """身份锚点必须在提示词首段——首段只写"私人 AI 助手"就会被她当成自我定义。
+
+    线上事故：问"你是谁"时模型照第一句答"我是你的 AI 助手"，紧接着问"你的名字
+    是什么"就升级成"直接叫我助手就行"，等于自己给自己改了名。首段没有名字，
+    模型只能拿角色描述当身份，越答越远。
+    """
+    from app.api.chat import SYSTEM_PROMPT
+
+    head = SYSTEM_PROMPT.splitlines()[0]
+    assert "小月" in head, f"首句未建立「小月」身份: {head!r}"
+    assert "通用自我介绍" in SYSTEM_PROMPT, "缺「禁止用通用自我介绍应付」的显式约束"
+    # 注入区可能夹带冲突自述，必须显式规定以身份段为准
+    assert "以本段为准" in SYSTEM_PROMPT, "缺「与注入内容冲突时以身份段为准」"
+
+
+def test_core_duties_list_not_split_by_security_block():
+    """安全边界曾插在核心职责 1 与 2 之间，把编号列表劈成两半。"""
+    from app.api.chat import SYSTEM_PROMPT
+
+    duties = SYSTEM_PROMPT.split("核心职责：")[1].split("安全边界：")[0]
+    for marker in ("1.", "2.", "3."):
+        assert marker in duties, f"核心职责编号被截断，缺 {marker}: {duties!r}"
+    assert "安全边界" in SYSTEM_PROMPT.split("核心职责：")[1], "安全边界不得移出提示词"
+
+
 def test_generation_intent_detection():
     """长文生成档的意图判定：章节/续写/字数要求命中，普通问题不命中。"""
     from app.api.chat import _GENERATION_INTENT

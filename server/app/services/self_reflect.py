@@ -67,7 +67,17 @@ def _user_scope(user_id: str | None) -> tuple[str, str, tuple]:
 
 
 def detect_correction(text: str) -> bool:
-    """用户消息是否含纠正信号。"""
+    """用户消息是否含纠正信号。
+
+    疑问句一律不算纠正。身份类信号词和"问身份"天然重叠——"你的名字是什么"
+    会命中 CORRECTION_PATTERNS 里的"你的名字"。实测这类提问一旦入库，context
+    恰好是 AI 自己那句通用介绍（"我是你的 AI 助手…"），下一轮就以
+    「用户过往的纠正与偏好（务必遵守）」的身份注入，等于用她自己的错答覆盖
+    人格锚点：17:07 答成通用助手 → 17:08 这条被注入 → 回答升级成
+    "直接叫我助手就行"，形成自我强化的身份重置。
+    """
+    if is_question(text):
+        return False
     return any(p in text for p in CORRECTION_PATTERNS)
 
 

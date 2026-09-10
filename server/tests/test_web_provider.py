@@ -332,3 +332,62 @@ def test_format_sources_marks_unknown_and_inferred_time():
     assert "（媒体A，2026-09-10）" in text
     assert "2026-09-09（据链接推断）" in text
     assert "时间未见标注" in text
+
+
+# ── 空结果兜底：上游引擎会随机 CAPTCHA/超时 ─────────────────
+
+def test_empty_news_result_triggers_wider_fallback(fake_http):
+    """news 类空结果时改用通用类 + 更宽时间窗重试一次。"""
+    calls = []
+
+    def handler(url, kwargs):
+        params = kwargs.get("params", {})
+        calls.append(params)
+        # 第一次（news）返回空，兜底那次返回结果
+        if len(calls) == 1:
+            return _FakeResponse(payload={"results": []})
+        return _FakeResponse(payload={"results": [
+            {"title": "兜底命中", "url": "https://news.example.com/2026-09-10/a",
+             "source": "媒体", "publishedDate": "2026-09-10T00:00:00+00:00"},
+        ]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
+
+    assert len(calls) == 2
+    assert calls[0].get("categories") == "news"
+    assert calls[1].get("categories") is None          # 通用网页类
+    assert calls[1]["time_range"] == "month"           # week 放宽到 month
+    assert data["has_sources"] is True
+    assert data["fallback_used"] is True
+
+
+def test_non_empty_result_does_not_retry(fake_http):
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs.get("params", {}))
+        return _FakeResponse(payload={"results": [
+            {"title": "首次命中", "url": "https://a.com/2026-09-10/x",
+             "source": "媒体", "publishedDate": "2026-09-10T00:00:00+00:00"},
+        ]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
+
+    assert len(calls) == 1, "首次有结果就不该多花一次请求"
+    assert data["fallback_used"] is False
+
+
+def test_both_attempts_empty_reports_no_sources(fake_http):
+    fake_http(lambda url, kwargs: _FakeResponse(payload={"results": []}))
+    data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
+    assert data["has_sources"] is False
+    assert data["fallback_used"] is False
+
+
+@pytest.mark.parametrize("start,expected", [
+    ("day", "week"), ("week", "month"), ("month", "year"), ("year", "year"),
+])
+def test_widen_time_range(start, expected):
+    assert web_provider.widen_time_range(start) == expected

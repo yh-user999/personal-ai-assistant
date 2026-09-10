@@ -569,6 +569,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 )
                 if data["has_sources"]:
                     plan["web_has_sources"] = True
+                    plan["web_fallback"] = bool(data.get("fallback_used"))
                     plan["web_report_count"] = len(data["results"])
                     plan["web_event_count"] = len(data["events"])
                     plan["web_observed_at"] = data["observed_at"]

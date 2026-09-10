@@ -407,18 +407,39 @@ def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+# 时间窗放宽顺序：空结果时退到更宽的窗口
+_WIDER_RANGE = {"day": "week", "week": "month", "month": "year", "year": "year"}
+
+
+def widen_time_range(time_range: str) -> str:
+    return _WIDER_RANGE.get(time_range if time_range in TIME_RANGES else "week", "month")
+
+
 async def search_and_cluster(
     query: str,
     *,
     time_range: str = "week",
     limit: int = 10,
 ) -> dict[str, Any]:
-    """检索并按事件聚合；返回结果与是否取到来源。"""
+    """检索并按事件聚合；返回结果与是否取到来源。
+
+    空结果时做一次兜底重试：上游引擎会随机 CAPTCHA/超时，实测 news 类
+    空结果率约 25%，直接回"查不到"会让用户以为没有这条新闻。兜底改用
+    通用网页类 + 更宽时间窗（换一批引擎），只在失败路径上多花一次请求，
+    正常路径延迟不变。
+    """
     results = await web_search(query, category="news", time_range=time_range, limit=limit)
+    fallback_used = False
+    if not results:
+        results = await web_search(
+            query, category="general", time_range=widen_time_range(time_range), limit=limit
+        )
+        fallback_used = bool(results)
     events = cluster_events(results) if results else []
     return {
         "query": query,
         "has_sources": bool(results),
+        "fallback_used": fallback_used,
         "results": results,
         "events": events,
         "observed_at": _now_iso(),

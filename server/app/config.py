@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     search_max_results: int = 10
     search_max_page_bytes: int = 500_000
     search_time_range: str = "week"
+    # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）
+    search_min_results: int = 3
     web_search_enabled: bool = True
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────

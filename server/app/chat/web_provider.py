@@ -78,6 +78,43 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 口语框架词：它们是"人和人说话"的包装，不是检索词。
+# 实测同一事件："你知道最近湖南四岁幼童事件吗" 只命中 2 条，
+# 去掉包装后同一引擎命中 52 条——搜索引擎会把整句当短语匹配。
+_LEADING_FRAME_RE = re.compile(
+    r"^(?:你(?:还)?知道|你(?:还)?记得|请问|麻烦|帮我(?:查一下|查查|查|搜一下|搜搜|搜|看看|看|找找|找)|"
+    r"能不能|可不可以|可以帮我|我想(?:知道|了解|查)|有没有)"
+)
+_TRAILING_PARTICLE_RE = re.compile(r"[?？!！。，,~～\s]*(?:吗|呢|吧|啊|呀|么|嘛)?[?？!！。~～\s]*$")
+# 浏览型问法包装："最近有什么…" / "今天有没有…"
+# 注意不能带可选的"新/好"后缀：那会把"有什么新闻"的"新"吃掉，
+# 剩下单字"闻"又触发过短回退，等于白洗。
+_BROWSING_FRAME_RE = re.compile(
+    r"^(?:最近|近期|今天|昨天|这几天|这两天)?(?:有什么|有啥|有没有|有哪些|哪些)"
+)
+# 裸的时间前缀：时间由 time_range 参数控制，留在检索词里只会稀释匹配
+_LEADING_TIME_RE = re.compile(r"^(?:最近|近期|这几天|这两天|当前|现在)")
+
+
+def clean_query(text: str) -> str:
+    """把口语问句还原成检索词。
+
+    只剥"包装"，不动实体词——"事件/新闻/幼童"这些必须保留，
+    它们是检索的关键。剥完过短就退回原文，宁可多用几个词也不要搜空。
+    """
+    q = (text or "").strip()
+    if not q:
+        return ""
+    original = q
+    q = _LEADING_FRAME_RE.sub("", q)
+    q = _BROWSING_FRAME_RE.sub("", q)
+    q = _TRAILING_PARTICLE_RE.sub("", q)
+    q = _LEADING_TIME_RE.sub("", q)
+    q = q.strip()
+    # 剥完太空（比如只剩"的新闻"）就退回原文
+    return q if len(q) >= 2 else original
+
+
 def _backend_url() -> str:
     from app.config import settings
 
@@ -188,13 +225,15 @@ async def web_search(
 
     from app.config import settings
 
-    window = time_range if time_range in TIME_RANGES else "week"
     params = {
         "q": text[:400],
         "format": "json",
         "language": "zh-CN",
-        "time_range": window,
     }
+    # time_range 传空串 = 不限时间窗。事件报道常年躺在索引里，
+    # 硬限"最近一周"会把它们整批排除（实测同一事件 8 条 → 52 条）。
+    if time_range:
+        params["time_range"] = time_range if time_range in TIME_RANGES else "week"
     if category and category != "general":
         params["categories"] = category
     timeout = float(getattr(settings, "search_timeout", 15.0))
@@ -415,31 +454,76 @@ def widen_time_range(time_range: str) -> str:
     return _WIDER_RANGE.get(time_range if time_range in TIME_RANGES else "week", "month")
 
 
+def _min_results() -> int:
+    """达标线：低于此数视为证据不足，继续放宽。"""
+    from app.config import settings
+
+    try:
+        return max(1, int(getattr(settings, "search_min_results", 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
 async def search_and_cluster(
     query: str,
     *,
     time_range: str = "week",
     limit: int = 10,
+    alt_query: str | None = None,
 ) -> dict[str, Any]:
-    """检索并按事件聚合；返回结果与是否取到来源。
+    """检索并按事件聚合；命中不足时逐级放宽。
 
-    空结果时做一次兜底重试：上游引擎会随机 CAPTCHA/超时，实测 news 类
-    空结果率约 25%，直接回"查不到"会让用户以为没有这条新闻。兜底改用
-    通用网页类 + 更宽时间窗（换一批引擎），只在失败路径上多花一次请求，
-    正常路径延迟不变。
+    三级放宽（任一级达标即停，正常情况只跑第一级）：
+      1. 清洗后的检索词 + news 类 + 配置时间窗
+      2. 同上但去掉时间窗   ← 事件报道常年躺在索引里，硬限"最近一周"会整批排除
+      3. 通用网页类 + 无时间窗 ← 覆盖非新闻站的报道
+    另可传 ``alt_query``（如 planner 给出的规范化查询）作为备用检索词。
+
+    达标线用 ``search_min_results``：旧逻辑只在**零结果**时兜底，
+    实测整句问法只回 2 条、2 > 0 因而从不放宽，用户看到"只有一条转载稿"，
+    而同一事件实际有 52 条。
     """
-    results = await web_search(query, category="news", time_range=time_range, limit=limit)
-    fallback_used = False
-    if not results:
-        results = await web_search(
-            query, category="general", time_range=widen_time_range(time_range), limit=limit
-        )
-        fallback_used = bool(results)
+    cleaned = clean_query(query)
+    alt = clean_query(alt_query) if alt_query else ""
+    candidates = [cleaned] + ([alt] if alt and alt != cleaned else [])
+
+    # 阶梯式放宽：命中不足就逐级松绑，而不是只在"零结果"时兜底一次。
+    # 实测教训：整句问法只回 2 条，2 > 0 所以旧逻辑一次都没放宽，
+    # 用户看到的是"只有一条转载稿"——而同一事件实际有 52 条。
+    attempts: list[tuple[str, str, str]] = []
+    for q in candidates:
+        attempts.append((q, "news", time_range))
+    attempts.append((cleaned, "news", ""))          # 去掉时间窗
+    attempts.append((cleaned, "general", ""))       # 通用网页类
+    for q in candidates[1:]:
+        attempts.append((q, "general", ""))
+
+    threshold = _min_results()
+    results: list[dict[str, Any]] = []
+    first = (candidates[0], "news", time_range)
+    used: tuple[str, str, str] | None = None
+    tried: set[tuple[str, str, str]] = set()
+    for q, category, window in attempts:
+        key = (q, category, window)
+        if not q or key in tried:
+            continue
+        tried.add(key)
+        results = await web_search(q, category=category, time_range=window, limit=limit)
+        if len(results) >= threshold:
+            used = key
+            break
+
     events = cluster_events(results) if results else []
     return {
         "query": query,
+        "query_used": (used or first)[0],
         "has_sources": bool(results),
-        "fallback_used": fallback_used,
+        "result_count": len(results),
+        # 分开记录两种降级，混在一起无法判断该调哪一处：
+        # query_cleaned = 检索词被剥过口语包装；fallback_used = 放宽过类别/时间窗
+        "query_cleaned": cleaned != (query or "").strip(),
+        "fallback_used": (used or first) != first,
+        "attempts": len(tried),
         "results": results,
         "events": events,
         "observed_at": _now_iso(),

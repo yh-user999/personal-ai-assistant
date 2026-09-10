@@ -336,54 +336,86 @@ def test_format_sources_marks_unknown_and_inferred_time():
 
 # ── 空结果兜底：上游引擎会随机 CAPTCHA/超时 ─────────────────
 
-def test_empty_news_result_triggers_wider_fallback(fake_http):
-    """news 类空结果时改用通用类 + 更宽时间窗重试一次。"""
+def test_insufficient_results_widen_progressively(fake_http):
+    """命中不足达标线时逐级放宽：先去时间窗，再换通用类。
+
+    旧逻辑只在**零结果**时兜底，实测整句问法回 2 条就不放宽了，
+    而同一事件实际有 52 条。
+    """
     calls = []
 
     def handler(url, kwargs):
         params = kwargs.get("params", {})
         calls.append(params)
-        # 第一次（news）返回空，兜底那次返回结果
-        if len(calls) == 1:
-            return _FakeResponse(payload={"results": []})
+        # 前两次都不足 3 条，第三次给足
+        if len(calls) < 3:
+            return _FakeResponse(payload={"results": [
+                {"title": f"不足{i}", "url": f"https://a.com/{i}", "source": "S",
+                 "publishedDate": "2026-09-10T00:00:00+00:00"} for i in range(1)
+            ]})
         return _FakeResponse(payload={"results": [
-            {"title": "兜底命中", "url": "https://news.example.com/2026-09-10/a",
-             "source": "媒体", "publishedDate": "2026-09-10T00:00:00+00:00"},
+            {"title": f"命中{i}", "url": f"https://a.com/x{i}", "source": "S",
+             "publishedDate": "2026-09-10T00:00:00+00:00"} for i in range(5)
         ]})
 
     fake_http(handler)
     data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
 
-    assert len(calls) == 2
-    assert calls[0].get("categories") == "news"
-    assert calls[1].get("categories") is None          # 通用网页类
-    assert calls[1]["time_range"] == "month"           # week 放宽到 month
+    assert len(calls) == 3
+    assert calls[0].get("categories") == "news" and calls[0]["time_range"] == "week"
+    assert calls[1].get("categories") == "news" and "time_range" not in calls[1]  # 去时间窗
+    assert calls[2].get("categories") is None and "time_range" not in calls[2]    # 通用类
     assert data["has_sources"] is True
+    assert data["result_count"] == 5
     assert data["fallback_used"] is True
+    assert data["attempts"] == 3
 
 
-def test_non_empty_result_does_not_retry(fake_http):
+def test_sufficient_results_stop_after_first_attempt(fake_http):
+    """首次就达标 → 只发一次请求，正常路径无额外开销。"""
     calls = []
 
     def handler(url, kwargs):
         calls.append(kwargs.get("params", {}))
         return _FakeResponse(payload={"results": [
-            {"title": "首次命中", "url": "https://a.com/2026-09-10/x",
-             "source": "媒体", "publishedDate": "2026-09-10T00:00:00+00:00"},
+            {"title": f"命中{i}", "url": f"https://a.com/{i}", "source": "S",
+             "publishedDate": "2026-09-10T00:00:00+00:00"} for i in range(5)
         ]})
 
     fake_http(handler)
-    data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
+    data = asyncio.run(web_provider.search_and_cluster("科技新闻"))
 
-    assert len(calls) == 1, "首次有结果就不该多花一次请求"
+    assert len(calls) == 1
     assert data["fallback_used"] is False
+    assert data["attempts"] == 1
 
 
-def test_both_attempts_empty_reports_no_sources(fake_http):
+def test_all_attempts_exhausted_reports_no_sources(fake_http):
     fake_http(lambda url, kwargs: _FakeResponse(payload={"results": []}))
     data = asyncio.run(web_provider.search_and_cluster("最近有什么新闻"))
     assert data["has_sources"] is False
-    assert data["fallback_used"] is False
+    assert data["result_count"] == 0
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("你知道最近湖南四岁幼童事件吗", "湖南四岁幼童事件"),
+    ("请问今天有什么新闻", "新闻"),
+    ("帮我查查具身智能的报道", "具身智能的报道"),
+    ("湖南四岁幼童事件", "湖南四岁幼童事件"),
+])
+def test_clean_query_strips_conversational_frames(raw, expected):
+    assert web_provider.clean_query(raw) == expected
+
+
+def test_clean_query_keeps_content_words():
+    """剥包装不能伤到实体词——"事件/新闻/幼童"是检索关键。"""
+    for word in ("事件", "新闻", "幼童", "科技"):
+        assert word in web_provider.clean_query(f"你知道最近{word}吗")
+
+
+def test_clean_query_falls_back_when_too_short():
+    """剥完太空就退回原文，宁可多几个词也不要搜空。"""
+    assert web_provider.clean_query("请问吗") == "请问吗"
 
 
 @pytest.mark.parametrize("start,expected", [

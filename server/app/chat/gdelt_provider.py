@@ -33,8 +33,9 @@ _API = "https://api.gdeltproject.org/api/v2/doc/doc"
 # time_range → GDELT timespan
 _TIMESPAN = {"day": "1d", "week": "1w", "month": "1m", "year": "12m"}
 
-# 进程级节流：GDELT 要求最小间隔（留余量用 6 秒）
-_MIN_INTERVAL = 6.0
+# 进程级节流：不足此间隔直接跳过（不 sleep）。实测该代理出口的限流窗口远超
+# 官方"5 秒"，设 60 秒可显著降低徒劳的 429 请求，同时保证偶发的空闲窗口能命中。
+_MIN_INTERVAL = 60.0
 _last_call = 0.0
 _lock = asyncio.Lock()
 
@@ -111,16 +112,16 @@ async def search(
         "sort": "datedesc",
     }
 
-    # 进程级节流：抢锁后确保距上次调用 ≥ 最小间隔
+    # 进程级节流：GDELT 从不 sleep 等待——聊天链路等不起。距上次调用不足
+    # 最小间隔就**直接跳过**本轮（返回空，降级到 SearXNG）。GDELT 只在空闲
+    # 窗口贡献结果，永不拖慢回答。实测该代理 IP 的限流窗口远超官方"5 秒"，
+    # 硬等会把回答拖到 60 秒，绝不可接受。
     global _last_call
     async with _lock:
-        wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
-        if wait > 0:
-            # 节流等待有上限：超过就放弃本轮（不拖慢主链路）
-            if wait > max(1.0, timeout - 2.0):
-                logger.info("GDELT 节流等待过长（%.1fs），本轮跳过", wait)
-                return []
-            await asyncio.sleep(wait)
+        since = time.monotonic() - _last_call
+        if since < _MIN_INTERVAL:
+            logger.info("GDELT 距上次调用仅 %.1fs（<%.0fs），本轮跳过", since, _MIN_INTERVAL)
+            return []
         _last_call = time.monotonic()
 
     proxy = _proxy() or None

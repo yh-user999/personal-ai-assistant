@@ -582,9 +582,14 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 alt = str(plan.get("query") or "").strip()
                 plan["web_query"] = query[:200]
                 # 深挖：事件核查/道德判断类问题多搜几组正交角度，主动找可能
-                # 推翻当前印象的信息，减少"靠用户追问才补上关键事实"的情况。
-                deep = plan.get("intent") in {"event_lookup", "moral_judgment"} or bool(
-                    plan.get("needs_moral_judgment")
+                # 推翻当前印象的信息。不按 intent 名判断——planner 会改写 intent
+                # 名称（moral_judgment → event_opinion_with_fact_check），按名匹配
+                # 会失效。改用稳定信号：道德判断标记，或事件类意图/模式。
+                deep = (
+                    bool(plan.get("needs_moral_judgment"))
+                    or plan.get("mode") == "moral_assessment"
+                    or "event" in str(plan.get("intent") or "")
+                    or "moral" in str(plan.get("intent") or "")
                 )
                 data = await web_provider.search_and_cluster(
                     query,

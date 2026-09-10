@@ -139,6 +139,19 @@ def test_parse_claims_rejects_bad_json():
     assert ca.parse_claims("").claims == []
 
 
+def test_parse_claims_salvages_truncated_output():
+    """轻量模型常把声明表写到一半就撞 token 上限，整体 JSON 无法解析，
+    但前面若干条是完整的——截断救援要能捞回来。"""
+    truncated = (
+        '{"claims":[{"layer":"硬事实","dimension":"时间","sub":"事发",'
+        '"value":"8月26日","attribution":"事实陈述","source":"凤凰网"},'
+        '{"layer":"定性","dimension":"性质","sub":"认定","value":"摸臀'
+    )
+    cs = ca.parse_claims(truncated)
+    assert len(cs.claims) == 1                    # 第一条完整、第二条残缺
+    assert cs.claims[0].value == "8月26日"
+
+
 def test_parse_claims_drops_invalid_layer():
     text = '{"claims":[{"layer":"乱写","value":"x"},{"layer":"硬事实","dimension":"时间","sub":"事发","value":"8月26日"}]}'
     cs = ca.parse_claims(text)
@@ -154,12 +167,38 @@ def test_llm_extraction_failure_degrades_to_empty():
 
     runtime = SimpleNamespace(
         settings=SimpleNamespace(claim_analysis_budget=5.0, claim_analysis_max_tokens=800,
+                                 claim_analysis_retries=2,
                                  reflection_review_model="", llm_model="m"),
         llm=_LLM(),
         logger=SimpleNamespace(warning=lambda *a, **k: None),
     )
     cs = asyncio.run(ca.extract_claims_llm([_item("A", "标题")], runtime))
     assert cs.claims == []
+
+
+def test_llm_extraction_retries_until_nonempty():
+    """返回不稳定（先空后成功）时，重试应拿到结果。"""
+    class _FlakyLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                return ""      # 首次空
+            return '{"claims":[{"layer":"硬事实","dimension":"时间","sub":"事发","value":"8月26日"}]}'
+
+    llm = _FlakyLLM()
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(claim_analysis_budget=10.0, claim_analysis_max_tokens=800,
+                                 claim_analysis_retries=2,
+                                 reflection_review_model="", llm_model="m"),
+        llm=llm,
+        logger=SimpleNamespace(warning=lambda *a, **k: None),
+    )
+    cs = asyncio.run(ca.extract_claims_llm([_item("A", "标题")], runtime))
+    assert llm.calls == 2
+    assert len(cs.claims) == 1
 
 
 def test_merge_combines_rule_and_llm():

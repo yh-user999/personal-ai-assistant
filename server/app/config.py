@@ -117,7 +117,9 @@ class Settings(BaseSettings):
     # 声明表可能较长（多条 JSON），预算给足以免被截断——截断会导致 JSON
     # 不完整、解析失败而静默降级（planner/审校都踩过同一个坑）
     claim_analysis_max_tokens: int = 2400
-    claim_analysis_budget: float = 14.0
+    # 轻量模型对结构化抽取返回不稳定，在预算内重试；总预算适当放宽
+    claim_analysis_retries: int = 2
+    claim_analysis_budget: float = 20.0
 
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True

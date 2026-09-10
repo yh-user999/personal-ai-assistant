@@ -198,13 +198,17 @@ _EXTRACT_INSTRUCTION = """你是事实抽取器，只抽取不评价、不判断
 不要输出任何解释文字。"""
 
 
-def build_extraction_prompt(results: list[dict[str, Any]], limit: int = 10) -> str:
-    """拼装供 LLM 抽取的输入。"""
+def build_extraction_prompt(results: list[dict[str, Any]], limit: int = 6) -> str:
+    """拼装供 LLM 抽取的输入。
+
+    控制规模：轻量模型面对长输入+长输出容易截断或返回空。限 6 条、摘要截到
+    120 字，既够比对（同一事件的报道高度重复），又让输出短而稳。
+    """
     lines = [_EXTRACT_INSTRUCTION, "", "报道列表："]
     for i, item in enumerate(results[:limit], 1):
         src = str(item.get("source") or "未知来源")
         title = str(item.get("title") or "").strip()
-        summary = str(item.get("summary") or "").strip()[:200]
+        summary = str(item.get("summary") or "").strip()[:120]
         lines.append(f"[{i}] 来源={src}｜标题：{title}｜摘要：{summary}")
     return "\n".join(lines)
 
@@ -227,19 +231,80 @@ def _extract_json_block(text: str) -> str:
     return ""
 
 
+def _salvage_claim_objects(text: str) -> list[dict[str, Any]]:
+    """截断救援：JSON 整体不完整时，逐个抠出**已闭合**的 claim 对象。
+
+    轻量模型常把声明表写到一半就撞上 token 上限，末尾对象残缺、整个 JSON
+    无法解析。但前面若干条是完整的——按大括号配对逐个提取，能救回大部分。
+    """
+    import json
+
+    objects: list[dict[str, Any]] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    fragment = text[start: i + 1]
+                    start = -1
+                    try:
+                        obj = json.loads(fragment)
+                    except (ValueError, TypeError):
+                        continue
+                    # 顶层对象可能是 {"claims":[...]}（完整前半段），展开它
+                    if isinstance(obj, dict) and isinstance(obj.get("claims"), list):
+                        for c in obj["claims"]:
+                            if isinstance(c, dict) and (c.get("value") or c.get("layer")):
+                                objects.append(c)
+                    elif isinstance(obj, dict) and (obj.get("value") or obj.get("layer")):
+                        objects.append(obj)
+    # 若整体只有一个未闭合的外层 {"claims":[ ...，逐个抠内部已闭合对象
+    if not objects:
+        for m in re.finditer(r"\{[^{}]*\}", text):
+            try:
+                obj = json.loads(m.group())
+            except (ValueError, TypeError):
+                continue
+            if isinstance(obj, dict) and (obj.get("value") or obj.get("layer")):
+                objects.append(obj)
+    return objects
+
+
 def parse_claims(json_text: str) -> ClaimSet:
     """解析 LLM 抽取结果；任何异常都返回空集，绝不抛出。"""
     import json
 
     block = _extract_json_block(json_text or "")
-    if not block:
-        return ClaimSet()
-    try:
-        data = json.loads(block)
-    except (ValueError, TypeError):
-        return ClaimSet()
-    raw = data.get("claims") if isinstance(data, dict) else None
+    raw: Any = None
+    if block:
+        try:
+            data = json.loads(block)
+            raw = data.get("claims") if isinstance(data, dict) else None
+        except (ValueError, TypeError):
+            raw = None
+    # 整体解析失败或不含 claims 列表 → 截断救援：捞已闭合的 claim 对象
     if not isinstance(raw, list):
+        raw = _salvage_claim_objects(json_text or "")
+    if not raw:
         return ClaimSet()
 
     cs = ClaimSet(extracted_by_llm=True)
@@ -392,11 +457,15 @@ async def extract_claims_llm(results: list[dict[str, Any]], runtime: Any) -> Cla
     budget = max(1.0, float(getattr(settings, "claim_analysis_budget", 12.0)))
     model = str(getattr(settings, "reflection_review_model", "") or "").strip() or settings.llm_model
 
+    prompt = build_extraction_prompt(results)
+    max_tokens = max(200, int(getattr(settings, "claim_analysis_max_tokens", 1200)))
+    attempts = max(1, int(getattr(settings, "claim_analysis_retries", 2)) + 1)
+
     async def _call() -> str:
         return await runtime.llm.chat(
-            [{"role": "user", "content": build_extraction_prompt(results)}],
+            [{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=max(200, int(getattr(settings, "claim_analysis_max_tokens", 1200))),
+            max_tokens=max_tokens,
             response_format={"type": "json_object"},
             timeout=budget,
             model=model,
@@ -404,12 +473,25 @@ async def extract_claims_llm(results: list[dict[str, Any]], runtime: Any) -> Cla
             retry_budget=0,
         )
 
-    try:
-        text = await asyncio.wait_for(_call(), timeout=budget)
-    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
-        runtime.logger.warning("声明抽取失败，降级到规则结果: %s", type(exc).__name__)
-        return ClaimSet()
-    return parse_claims(text)
+    # 实测这个轻量模型对结构化抽取返回不稳定（同一输入时空时不空），
+    # 故在总预算内重试若干次，任一非空即用；仍失败就降级到规则层。
+    deadline = asyncio.get_event_loop().time() + budget
+    for _ in range(attempts):
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0.5:
+            break
+        try:
+            text = await asyncio.wait_for(_call(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            runtime.logger.warning("声明抽取调用失败: %s", type(exc).__name__)
+            continue
+        cs = parse_claims(text)
+        if cs.claims:
+            return cs
+    runtime.logger.warning("声明抽取多次未取得结果，降级到规则层")
+    return ClaimSet()
 
 
 @dataclass

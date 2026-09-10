@@ -23,7 +23,12 @@ _MORAL_FLAGS = (
     "noise_used_as_reason", "moralizes_unverified", "escalates_to_person",
     "substitutes_authority", "empty_neutrality",
 )
-_FACT_QUERY_HINTS = ("什么", "是谁", "怎么回事", "为什么", "哪", "多少", "设定", "能力", "事实")
+# 事实问句信号：必须是多字问句形态，不能用裸的"什么/哪"。
+# 实测「什么都不想做」会被裸"什么"判成事实问题，把一句情绪表达拖进审校。
+_FACT_QUERY_HINTS = ("是什么", "是谁", "为什么", "怎么回事", "怎么样", "哪些", "多少", "设定", "能力")
+# 纠正信号用正则：裸"不对"会命中"对不对"（"你觉得对不对"是在征求意见，不是纠正）。
+# 注意"对不对"里"不对"位于第 2、3 字，所以前瞻和后顾都要排除"对"。
+_CORRECTION_RE = re.compile(r"(?<!对)不对(?!对)|错了|别再|不要再|应该是")
 _RISK_HINTS = ("删除", "执行", "运行", "发送", "修改", "备份", "移动", "重命名", "密码", "密钥", "token")
 _EMOTION_HINTS = ("焦虑", "难受", "崩溃", "烦", "累", "沮丧", "生气", "压力", "睡不着")
 
@@ -152,7 +157,7 @@ def should_reflect(ctx: Any, bundle: Any, draft: str, route_kind: str = "chat", 
         reasons.append("emotional")
     if getattr(bundle, "facts", "") and any(x in message for x in ("记得", "之前", "你说", "设定")):
         reasons.append("memory_conflict")
-    if any(x in message for x in ("不对", "错了", "别再", "不要再", "应该是")):
+    if _CORRECTION_RE.search(message):
         reasons.append("user_correction")
     if not reasons and len(draft) >= 220:
         reasons.append("quality_check")

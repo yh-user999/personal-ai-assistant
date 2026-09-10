@@ -259,3 +259,30 @@ def test_internal_calls_do_not_retry(monkeypatch):
     _asyncio.run(review.review_reply(ctx, runtime, bundle, "草稿"))
     assert captured["retry_budget"] == 0
     assert captured["purpose"] == "review"
+
+
+# ── 触发规则不得误报：误报＝白花一次调用和 6 秒 ──────────────
+
+def _reasons(message, draft="这是一段正常长度的回复内容，用来让审校进入判定。" * 3):
+    ctx = _ctx(message)
+    bundle = SimpleNamespace(facts="", lessons="", mood="", mood_state="", behavior="", self_state="")
+    return review.should_reflect(ctx, bundle, draft)
+
+
+def test_emotional_statement_is_not_flagged_as_fact_question():
+    """「什么都不想做」是情绪表达，裸"什么"不该把它判成事实问题。"""
+    assert "fact_question" not in _reasons("我今天有点累，什么都不想做")
+
+
+def test_asking_for_opinion_is_not_user_correction():
+    """「你觉得对不对」是征求意见，不是用户纠正（裸"不对"是"对不对"子串）。"""
+    assert "user_correction" not in _reasons("网上都在骂他，你觉得对不对")
+
+
+def test_real_correction_still_detected():
+    assert "user_correction" in _reasons("这不对，应该是另一个方案")
+
+
+def test_real_fact_question_still_detected():
+    assert "fact_question" in _reasons("李羽的能力是什么")
+    assert "fact_question" in _reasons("为什么召回率上不去")

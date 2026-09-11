@@ -37,6 +37,12 @@ def _install_astrbot_stubs():
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
+    class At:
+        type = "At"
+
+        def __init__(self, qq):
+            self.qq = qq
+
     class File:
         pass
 
@@ -56,6 +62,7 @@ def _install_astrbot_stubs():
     event.filter = _Filter
     components.Plain = Plain
     components.Image = Image
+    components.At = At
     components.File = File
     star.Context = object
     star.Star = Star
@@ -81,11 +88,12 @@ _SPEC.loader.exec_module(_MOD)
 
 
 class _Event:
-    def __init__(self, messages, text="", sender="123", group=""):
+    def __init__(self, messages, text="", sender="123", group="", self_id="999"):
         self._messages = messages
         self._text = text
         self._sender = sender
         self._group = group
+        self._self_id = self_id
         self.sent = []
         self.stopped = False
         self.llm_blocked = False
@@ -101,6 +109,9 @@ class _Event:
 
     def get_group_id(self):
         return self._group
+
+    def get_self_id(self):
+        return self._self_id
 
     def stop_event(self):
         self.stopped = True
@@ -174,6 +185,11 @@ def _plugin(client=None, max_bytes=10 * 1024 * 1024):
         "owner_api_token": "owner-token",
         "owner_qq": "123",
         "identity_secret": "secret",
+        "assistant_mode": "personal",
+        "group_allowed_ids": "456",
+        "group_require_mention": True,
+        "group_cooldown_seconds": 60,
+        "group_max_replies_per_hour": 6,
     }
     plugin._vision_timeout_seconds = 90
     plugin._vision_max_image_bytes = max_bytes
@@ -218,6 +234,81 @@ def test_text_request_routes_owner_and_visitor_tokens():
     asyncio.run(plugin.on_message(visitor_event))
     assert client.kwargs["headers"]["Authorization"] == "Bearer qq-token"
     assert client.kwargs["headers"]["X-QQ-User-ID"] == "456"
+
+
+def test_group_configuration_parsing_is_fail_closed():
+    assert _MOD.normalize_assistant_mode("group") == "group"
+    assert _MOD.normalize_assistant_mode("unexpected") == "personal"
+    assert _MOD.parse_bool("invalid", default=True) is True
+    assert _MOD.parse_group_allowed_ids("456, 789; 101112") == frozenset({"456", "789", "101112"})
+    assert _MOD.parse_group_allowed_ids(["456", "not-a-group", "789"]) == frozenset({"456", "789"})
+
+
+def test_personal_mode_keeps_group_silent():
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    event = _Event([], "普通群消息", sender="123", group="456", self_id="999")
+
+    asyncio.run(plugin.on_message(event))
+
+    assert event.stopped is True
+    assert event.llm_blocked is True
+    assert event.sent == []
+    assert client.kwargs is None
+
+
+def test_group_mode_owner_uses_visitor_token_and_scope():
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    event = _Event(
+        [sys.modules["astrbot.api.message_components"].At("999")],
+        "@小月 你好",
+        sender="123",
+        group="456",
+        self_id="999",
+    )
+
+    asyncio.run(plugin.on_message(event))
+
+    assert event.stopped is True
+    assert event.sent
+    assert client.kwargs["headers"]["Authorization"] == "Bearer qq-token"
+    assert client.kwargs["headers"]["X-QQ-User-ID"] == "123"
+    assert client.kwargs["json"]["group_id"] == "456"
+
+
+def test_group_mode_requires_whitelist_and_mention():
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+
+    not_mentioned = _Event([], "普通群消息", sender="456", group="456", self_id="999")
+    asyncio.run(plugin.on_message(not_mentioned))
+    assert not_mentioned.sent == []
+    assert client.kwargs is None
+
+    other_group = _Event(
+        [sys.modules["astrbot.api.message_components"].At("999")],
+        "@小月 你好",
+        sender="456",
+        group="789",
+        self_id="999",
+    )
+    asyncio.run(plugin.on_message(other_group))
+    assert other_group.sent == []
+    assert client.kwargs is None
+
+
+def test_group_rate_limit_is_per_group():
+    _MOD._GROUP_REPLY_TIMES.clear()
+    assert _MOD.group_rate_limited("456", cooldown_seconds=10, max_replies_per_hour=2, now=100) is False
+    assert _MOD.group_rate_limited("456", cooldown_seconds=10, max_replies_per_hour=2, now=105) is True
+    assert _MOD.group_rate_limited("789", cooldown_seconds=10, max_replies_per_hour=2, now=105) is False
+    assert _MOD.group_rate_limited("456", cooldown_seconds=10, max_replies_per_hour=2, now=111) is False
+    assert _MOD.group_rate_limited("456", cooldown_seconds=10, max_replies_per_hour=2, now=122) is True
 
 
 def test_image_identification_and_caption_cleanup():

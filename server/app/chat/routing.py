@@ -801,6 +801,10 @@ async def dispatch(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
     if ctx.image is not None:
         return None
     for name, handler in _COMMAND_HANDLERS:
+        if ctx.is_group and name not in {"identity", "time"}:
+            # 群作用域只允许无个人状态的时间直答和身份保密路由；
+            # 其余命令可能读写个人记忆、目标、日志或触发专属能力。
+            continue
         if not ctx.is_owner and name in GUEST_BLOCKED_HANDLERS:
             # 身份问题不是身份设定/权限命令；允许它进入确定性保密口径，
             # 但不让访客进入真正的 identity_guard 修改流程。

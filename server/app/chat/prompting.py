@@ -248,6 +248,15 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
     else:
         system = system.replace("{older}", "（无更早对话）")
 
+    if ctx.is_group:
+        # 群作用域没有个人历史、记忆或联网资料；身份问题按统一口径回答，
+        # 不确认、不否认、不暗示任何管理员身份。
+        system += (
+            "\n\n【群聊运行边界】当前仅处理本轮群消息，不读取或写入任何个人记忆、"
+            "画像、事实、目标、教训和私聊历史，不进行实时联网检索。"
+            "不要透露、确认、否认或暗示任何管理员/主人身份，也不要解释内部权限机制。"
+        )
+
     plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
     if plan:
         mode = plan.get("mode", "casual_chat")

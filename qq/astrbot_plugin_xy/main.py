@@ -5,8 +5,9 @@
 人格建议切到「小月」以保持兜底身份一致（见 docs/QQ_OPS.md 人格路由一节）。
 
 路由规则（隐私优先）：
-- 群聊：一律静默且 stop_event（v1.4.1 兜底——AstrBot 会话白名单关闭后
-  群聊事件到达所有插件，这里先阻断后续插件响应）
+- personal 模式：群聊一律静默且 stop_event；私聊按现有规则处理
+- group 模式：仅白名单群、明确 @/前缀且未触发按群限流时响应；群请求始终使用访客身份，
+  服务端不读写个人记忆、不联网、不持久化群消息
 - 私聊：任何 QQ 用户都能聊（v1.4 多人支持）——透传 sender QQ 号给
   小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
 - 陌生私聊：可聊，但仅限对话；主人专属功能（执行器/提醒/文件入库等）只在主人会话生效
@@ -77,6 +78,120 @@ _IMAGE_PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+_GROUP_REPLY_TIMES: dict[str, list[float]] = {}
+
+
+def normalize_assistant_mode(value: object) -> str:
+    """运行模式只允许 personal/group；未知值按最保守的 personal 处理。"""
+    return "group" if str(value or "").strip().casefold() == "group" else "personal"
+
+
+def parse_bool(value: object, default: bool = False) -> bool:
+    """解析插件布尔配置；非法值回落到显式默认值。"""
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().casefold()
+    if text in {"1", "true", "yes", "on", "y", "是"}:
+        return True
+    if text in {"0", "false", "no", "off", "n", "否"}:
+        return False
+    return default
+
+
+def parse_group_allowed_ids(value: object) -> frozenset[str]:
+    """解析群白名单；只接受数字群号，空值表示不允许任何群。"""
+    if isinstance(value, (list, tuple, set, frozenset)):
+        raw_values = value
+    else:
+        raw_values = re.split(r"[,;\s]+", str(value or ""))
+    return frozenset(
+        item for item in (str(raw).strip() for raw in raw_values)
+        if item and item.isdigit() and len(item) <= 32
+    )
+
+
+def _event_self_id(event: object) -> str:
+    for name in ("get_self_id", "get_bot_id"):
+        getter = getattr(event, name, None)
+        if callable(getter):
+            try:
+                value = getter()
+            except Exception:
+                value = ""
+            if value:
+                return str(value).strip()
+    return ""
+
+
+def group_triggered(
+    event: object,
+    *,
+    require_mention: bool = True,
+    prefix: str = "",
+) -> bool:
+    """判断群消息是否明确唤醒机器人；无法确认目标时默认不触发。"""
+    text = str(getattr(event, "get_message_str", lambda: "")() or "").strip()
+    if prefix and text.startswith(str(prefix)):
+        return True
+    if not require_mention:
+        return True
+    checker = getattr(event, "is_at_or_wake_command", None)
+    if callable(checker):
+        try:
+            if bool(checker()):
+                return True
+        except Exception:
+            pass
+    self_id = _event_self_id(event)
+    if not self_id:
+        return False
+    for component in getattr(event, "get_messages", lambda: [])() or []:
+        kind = str(getattr(component, "type", "") or type(component).__name__).casefold()
+        if kind not in {"at", "mention"}:
+            continue
+        target = ""
+        for name in ("qq", "target", "user_id", "id"):
+            value = getattr(component, name, None)
+            if value is not None and str(value).strip():
+                target = str(value).strip()
+                break
+        if target == self_id:
+            return True
+    return False
+
+
+def group_rate_limited(
+    group_id: str,
+    *,
+    cooldown_seconds: float = 60.0,
+    max_replies_per_hour: int = 6,
+    now: float | None = None,
+) -> bool:
+    """按群执行冷却和小时上限；返回 True 表示本次不应回复。"""
+    group = str(group_id or "").strip()
+    if not group:
+        return True
+    current = time.time() if now is None else float(now)
+    try:
+        cooldown = max(0.0, float(cooldown_seconds))
+    except (TypeError, ValueError):
+        cooldown = 60.0
+    try:
+        hourly_limit = max(1, int(max_replies_per_hour))
+    except (TypeError, ValueError):
+        hourly_limit = 6
+    events = _GROUP_REPLY_TIMES.setdefault(group, [])
+    while events and current - events[0] >= 3600:
+        events.pop(0)
+    if events and current - events[-1] < cooldown:
+        return True
+    if len(events) >= hourly_limit:
+        return True
+    events.append(current)
+    if len(_GROUP_REPLY_TIMES) > 512:
+        oldest = min(_GROUP_REPLY_TIMES, key=lambda key: _GROUP_REPLY_TIMES[key][-1] if _GROUP_REPLY_TIMES[key] else current)
+        _GROUP_REPLY_TIMES.pop(oldest, None)
+    return False
 
 
 class ImageTooLargeError(Exception):
@@ -236,14 +351,18 @@ def select_api_token(
     owner_qq: str,
     owner_api_token: str,
     qq_api_token: str,
+    *,
+    group_id: str = "",
 ) -> tuple[str, bool]:
     """按发送者选择服务端 token，返回 ``(token, is_owner)``。
 
     主人必须使用 owner/internal 角色对应的主人 token；不能因为
-    ``api_token`` 存在就让主人退回 QQ 访客 token。访客则继续使用 QQ token。
+    ``api_token`` 存在就让主人退回 QQ 访客 token。群聊始终使用 QQ 访客 token。
     """
     sender = str(sender or "").strip()
     owner_qq = str(owner_qq or "").strip()
+    if group_id:
+        return str(qq_api_token or "").strip(), False
     if owner_qq and sender == owner_qq:
         return str(owner_api_token or "").strip(), True
     return str(qq_api_token or "").strip(), False
@@ -320,24 +439,56 @@ class XiaoYuePlugin(Star):
         except (TypeError, ValueError):
             self._vision_max_image_bytes = VISION_MAX_IMAGE_BYTES
 
-    def _selected_api_token(self, sender: str) -> tuple[str, bool]:
-        """返回当前发送者应使用的 token 与主人标记。"""
+    def _selected_api_token(self, sender: str, group_id: str = "") -> tuple[str, bool]:
+        """返回当前发送者应使用的 token 与主人标记；群聊始终走访客 token。"""
         return select_api_token(
             sender,
             self.cfg.get("owner_qq", ""),
             self.cfg.get("owner_api_token", ""),
             self.cfg.get("api_token", ""),
+            group_id=group_id,
         )
 
-    def _api_headers(self, sender: str, request_id: str | None = None) -> dict[str, str]:
-        """构造按角色分流的 Bearer 请求头；QQ HMAC 只发给访客角色。"""
-        token, is_owner = self._selected_api_token(sender)
+    def _api_headers(
+        self,
+        sender: str,
+        request_id: str | None = None,
+        *,
+        group_id: str = "",
+    ) -> dict[str, str]:
+        """构造按角色分流的 Bearer 请求头；群聊只发 QQ 访客身份。"""
+        token, is_owner = self._selected_api_token(sender, group_id)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         if not is_owner:
             secret = str(self.cfg.get("identity_secret", "") or "").strip()
             if secret:
                 headers.update(build_qq_identity_headers(secret, sender, request_id=request_id))
         return headers
+
+    def _group_mode_enabled(self) -> bool:
+        return normalize_assistant_mode(self.cfg.get("assistant_mode", "personal")) == "group"
+
+    def _group_allowed(self, group_id: str) -> bool:
+        return str(group_id or "").strip() in parse_group_allowed_ids(
+            self.cfg.get("group_allowed_ids", "")
+        )
+
+    def _group_requires_mention(self) -> bool:
+        return parse_bool(self.cfg.get("group_require_mention", True), default=True)
+
+    def _group_triggered(self, event: AstrMessageEvent) -> bool:
+        return group_triggered(
+            event,
+            require_mention=self._group_requires_mention(),
+            prefix=str(self.cfg.get("group_trigger_prefix", "") or "").strip(),
+        )
+
+    def _group_rate_limited(self, group_id: str) -> bool:
+        return group_rate_limited(
+            group_id,
+            cooldown_seconds=self.cfg.get("group_cooldown_seconds", 60),
+            max_replies_per_hour=self.cfg.get("group_max_replies_per_hour", 6),
+        )
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -346,22 +497,33 @@ class XiaoYuePlugin(Star):
         group = event.get_group_id() or ""
         owner = str(self.cfg.get("owner_qq", "") or "").strip()
 
-        # 群聊一律静默（隐私铁律）。v1.4.1：AstrBot 会话白名单已关闭
-        # （否则陌生人私聊在 whitelist_check 阶段就被拦、到不了本插件），
-        # 群聊事件因此会到达所有插件——这里 stop_event 兜底，阻止后续插件响应。
-        if group:
-            logger.debug("[xy] 群聊静默 stop_event group=%s sender=%s", group, sender)
+        group_scope = str(group or "").strip()
+        if group_scope:
+            # personal 模式保持旧行为：群消息静默并阻断宿主默认 LLM。
+            if not self._group_mode_enabled():
+                logger.debug("[xy] personal 模式群聊静默 group=%s", group_scope)
+                event.stop_event()
+                event.should_call_llm(True)
+                return
+            # group 模式默认 fail-closed：白名单、唤醒和按群限流全部通过才进入服务。
+            if not self._group_allowed(group_scope) or not self._group_triggered(event):
+                event.should_call_llm(True)
+                return
+            if self._group_rate_limited(group_scope):
+                logger.debug("[xy] 群聊限流 group=%s", group_scope)
+                event.should_call_llm(True)
+                return
+            # 触发后的群消息由本插件独占；请求仍使用访客 token，不能暴露 owner。
             event.stop_event()
-            event.should_call_llm(True)
-            return
-        # 私聊放行闸门（v1.4：陌生人可聊；owner 未配置 fail-closed）
-        if not can_chat(sender, group, owner):
-            # 仅禁止默认 LLM；不 stop_event，避免影响 meme_manager 等其他插件的事件处理。
-            event.should_call_llm(True)
-            return
-        # 主人消息本插件全权处理，阻断其他处理器；访客不 stop_event（留给其他插件）
-        if sender == owner:
-            event.stop_event()
+        else:
+            # 私聊放行闸门（v1.4：陌生人可聊；owner 未配置 fail-closed）
+            if not can_chat(sender, group_scope, owner):
+                # 仅禁止默认 LLM；不 stop_event，避免影响其他插件的事件处理。
+                event.should_call_llm(True)
+                return
+            # 主人消息本插件全权处理，阻断其他处理器；访客不 stop_event。
+            if sender == owner:
+                event.stop_event()
 
         # 文件分支（仅主人）：识别 File 组件 → 提取文本 → 入库知识库
         if should_handle(sender, group, owner):
@@ -390,7 +552,7 @@ class XiaoYuePlugin(Star):
             return
 
         base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
-        token, _ = self._selected_api_token(sender)
+        token, _ = self._selected_api_token(sender, group_scope)
         if not base or not token:
             logger.error("[xy] 插件配置缺失（api_base 或当前角色 token 为空），请到 AstrBot 控制台配置")
             event.should_call_llm(True)
@@ -402,8 +564,13 @@ class XiaoYuePlugin(Star):
             request_id = uuid.uuid4().hex
             r = await self._client.post(
                 f"{base}/api/chat",
-                json={"message": msg.strip(), "user_id": sender, "request_id": request_id},
-                headers=self._api_headers(sender, request_id),
+                json={
+                    "message": msg.strip(),
+                    "user_id": sender,
+                    "request_id": request_id,
+                    **({"group_id": group_scope} if group_scope else {}),
+                },
+                headers=self._api_headers(sender, request_id, group_id=group_scope),
             )
             r.raise_for_status()
             reply = r.json().get("reply", "") or ""
@@ -664,16 +831,22 @@ class XiaoYuePlugin(Star):
                 tmp_path = ""
             request_id = uuid.uuid4().hex
             sender = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+            group_id = str(getattr(event, "get_group_id", lambda: "")() or "").strip()
             base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
-            token, _ = self._selected_api_token(sender)
+            token, _ = self._selected_api_token(sender, group_id)
             if not base or not token:
                 raise ImageDownloadError("插件配置缺失（api_base 或当前角色 token）")
             with open(local, "rb") as image_file:
                 response = await self._client.post(
                     f"{base}/api/chat/vision",
-                    data={"message": caption, "request_id": request_id, "user_id": sender},
+                    data={
+                        "message": caption,
+                        "request_id": request_id,
+                        "user_id": sender,
+                        **({"group_id": group_id} if group_id else {}),
+                    },
                     files={"image": (Path(local).name, image_file, mime)},
-                    headers=self._api_headers(sender, request_id),
+                    headers=self._api_headers(sender, request_id, group_id=group_id),
                     timeout=self._vision_timeout_seconds,
                 )
             response.raise_for_status()

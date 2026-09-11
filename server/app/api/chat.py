@@ -113,6 +113,7 @@ async def vision_chat(
     message: str | None = Form(None),
     request_id: str | None = Form(None),
     user_id: str | None = Form(None),
+    group_id: str | None = Form(None),
     image: UploadFile | None = File(None),
 ) -> ChatResponse:
     """图片+文字提问：先在边界读取/校验图片，再复用认证、幂等和主聊天链路。"""
@@ -128,6 +129,7 @@ async def vision_chat(
         message=message or "",
         request_id=request_id,
         user_id=user_id,
+        group_id=group_id,
         image=ImagePayload(**validated.__dict__),
     )
     result = await deduplicate_request(req, request, memory, _chat_impl)

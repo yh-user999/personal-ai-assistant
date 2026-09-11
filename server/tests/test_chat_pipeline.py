@@ -195,13 +195,14 @@ def make_runtime(llm=None):
     )
 
 
-def make_ctx(message, uid="", is_owner=True):
+def make_ctx(message, uid="", is_owner=True, group_id=""):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message),
+        request_model=ChatRequest(message=message, group_id=group_id or None),
         message=message,
         uid=uid,
         is_owner=is_owner,
+        group_id=group_id,
     )
 
 
@@ -283,6 +284,49 @@ def test_generation_double_failure_not_persisted(db_env, monkeypatch):
         assert rows == [], "两次失败后 assistant 侧不得入库任何文本"
     finally:
         conn.close()
+
+
+def test_group_chat_does_not_persist_personal_messages_or_trigger_personal_hooks(db_env, monkeypatch):
+    llm = _LLM(reply="群里收到。")
+    runtime = make_runtime(llm=llm)
+    calls = {"mood": 0, "initiative": 0, "write": 0}
+
+    original_record_mood = runtime.services.mood.record_mood
+    runtime.services.mood.record_mood = lambda *a, **k: calls.__setitem__("mood", calls["mood"] + 1)
+    runtime.services.initiative.mark_responded = lambda *a, **k: calls.__setitem__("initiative", calls["initiative"] + 1)
+    original_write = memory_module.write_message
+    monkeypatch.setattr(
+        memory_module,
+        "write_message",
+        lambda *a, **k: calls.__setitem__("write", calls["write"] + 1),
+    )
+    try:
+        ctx = make_ctx("群里的一句话", uid="123", is_owner=False, group_id="456")
+        resp = asyncio.run(run_chat(ctx, runtime))
+    finally:
+        runtime.services.mood.record_mood = original_record_mood
+        monkeypatch.setattr(memory_module, "write_message", original_write)
+
+    assert resp.reply == "群里收到。"
+    assert llm.calls
+    assert calls == {"mood": 0, "initiative": 0, "write": 0}
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_group_admin_identity_query_uses_privacy_route_without_llm(db_env, monkeypatch):
+    llm = _LLM(reply="不应调用")
+    runtime = make_runtime(llm=llm)
+    ctx = make_ctx("管理员是谁", uid="123", is_owner=False, group_id="456")
+
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert resp.reply == "这个我不透露。"
+    assert llm.calls == []
+    assert ctx.trace.route_name == "command:identity"
 
 
 def test_user_and_assistant_messages_persisted(db_env, monkeypatch):

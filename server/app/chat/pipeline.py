@@ -455,7 +455,7 @@ async def _run_chat(
     if routed is not None:
         return routed
 
-    planner_history = await asyncio.to_thread(
+    planner_history = [] if ctx.is_group else await asyncio.to_thread(
         memory.get_recent_history,
         getattr(settings, "response_plan_max_history", 4),
         user_id=ctx.uid,
@@ -506,10 +506,11 @@ async def _run_chat(
                 ),
             )
 
-    if services.unresolved.detect_resolved(msg):
-        await asyncio.to_thread(services.unresolved.resolve_latest, user_id=ctx.uid)
-    elif services.unresolved.detect_unresolved(msg):
-        await asyncio.to_thread(services.unresolved.add_issue, msg, user_id=ctx.uid)
+    if not ctx.is_group:
+        if services.unresolved.detect_resolved(msg):
+            await asyncio.to_thread(services.unresolved.resolve_latest, user_id=ctx.uid)
+        elif services.unresolved.detect_unresolved(msg):
+            await asyncio.to_thread(services.unresolved.add_issue, msg, user_id=ctx.uid)
 
     # prepare_turn 保持在事件循环：它内部会调度后台任务（事实桥接），
     # 工作线程里没有可用的 loop；其 DB 开销仅一条小 SELECT + 罕见写入。
@@ -528,18 +529,19 @@ async def _run_chat(
             "system_total": len(assembly.system),
         }
 
-    memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
-    with ctx.trace.stage("persistence.user"):
-        await memory.write_message(
-            "user",
-            memory_text,
-            user_id=ctx.uid,
-            precomputed_vec=(
-                None
-                if ctx.image is not None
-                else memory.take_query_vec(services.sanitize.sanitize(msg))
-            ),
-        )
+    if not ctx.is_group:
+        memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
+        with ctx.trace.stage("persistence.user"):
+            await memory.write_message(
+                "user",
+                memory_text,
+                user_id=ctx.uid,
+                precomputed_vec=(
+                    None
+                    if ctx.image is not None
+                    else memory.take_query_vec(services.sanitize.sanitize(msg))
+                ),
+            )
 
     # 事件判断必须审完再展示，不能先流出可能错误的指控再试图撤回。
     buffered_investigation = bool(ctx.trace.response_plan.get("investigation_status"))
@@ -565,10 +567,10 @@ async def _run_chat(
             memories_used=0,
         )
 
-    if settings.reflection_enabled:
+    if not ctx.is_group and settings.reflection_enabled:
         with ctx.trace.stage("reflection"):
             reply = await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
-    elif buffered_investigation:
+    elif not ctx.is_group and buffered_investigation:
         # 明确关闭审校也不能把失败的调查宣称为完整核验。
         ctx.trace.reflection = {"status": "skipped", "triggers": ["review_disabled"]}
         if bundle.evidence.get("status") != "complete":
@@ -576,21 +578,22 @@ async def _run_chat(
     if on_delta is not None and buffered_reply:
         await on_delta(reply)
 
-    with ctx.trace.stage("persistence.assistant"):
-        await memory.write_message("assistant", reply, user_id=ctx.uid)
-    if bundle.mems:
-        await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
-    if bundle.definition_term:
-        await asyncio.to_thread(
-            services.jargon.save_term, bundle.definition_term, reply, user_id=ctx.uid
+    if not ctx.is_group:
+        with ctx.trace.stage("persistence.assistant"):
+            await memory.write_message("assistant", reply, user_id=ctx.uid)
+        if bundle.mems:
+            await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
+        if bundle.definition_term:
+            await asyncio.to_thread(
+                services.jargon.save_term, bundle.definition_term, reply, user_id=ctx.uid
+            )
+
+        retrieval.track_background(
+            runtime,
+            services.fact_extract.maybe_extract_facts(
+                msg, user_id=ctx.uid, request_id=ctx.request_id
+            ),
         )
 
-    retrieval.track_background(
-        runtime,
-        services.fact_extract.maybe_extract_facts(
-            msg, user_id=ctx.uid, request_id=ctx.request_id
-        ),
-    )
-
-    _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
+        _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
     return ChatResponse(reply=reply, memories_used=len(bundle.mems))

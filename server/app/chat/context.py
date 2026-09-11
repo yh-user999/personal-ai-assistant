@@ -41,6 +41,8 @@ class ChatRequest(BaseModel):
     request_id: str | None = None
     # QQ 插件透传的发送者 QQ 号。空 = 主人（桌面端/本地调用）。
     user_id: str | None = None
+    # 群聊作用域；存在时必须走 QQ 访客身份，且不读写个人记忆。
+    group_id: str | None = None
     # 图片只允许由 multipart API 注入，纯 JSON 请求仍保持兼容。
     image: ImagePayload | None = None
 
@@ -48,6 +50,16 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     memories_used: int
+
+
+def normalize_group_id(value: Any) -> str:
+    """校验 QQ 群作用域；非法值拒绝而不是降级成个人请求。"""
+    group_id = str(value or "").strip()
+    if not group_id:
+        return ""
+    if len(group_id) > 32 or not group_id.isdigit():
+        raise HTTPException(status_code=400, detail="invalid group_id")
+    return group_id
 
 
 @dataclass
@@ -107,9 +119,14 @@ class ChatContext:
     message: str
     uid: str
     is_owner: bool
+    group_id: str = ""
     auth: Any | None = None
     image: ImagePayload | None = None
     trace: TraceContext = field(default_factory=TraceContext)
+
+    @property
+    def is_group(self) -> bool:
+        return bool(self.group_id)
 
     @property
     def request_id(self) -> str | None:
@@ -164,9 +181,12 @@ _request_lock = asyncio.Lock()
 
 def authenticated_uid(req: ChatRequest, request: Request, memory_module: Any) -> tuple[str, bool]:
     """按当前认证上下文解析用户身份，并拒绝跨角色冒充。"""
+    group_id = normalize_group_id(req.group_id)
     auth = getattr(getattr(request, "state", None), "auth", None)
     if auth is not None and auth.role not in {"owner", "internal", "qq"}:
         raise HTTPException(status_code=403, detail="forbidden")
+    if group_id and auth is not None and auth.role in {"owner", "internal"}:
+        raise HTTPException(status_code=403, detail="group scope requires qq identity")
 
     if auth is not None and auth.role == "qq":
         # 真实 HTTP 请求的 subject 由 AuthMiddleware 根据 HMAC 签名头写入；
@@ -208,11 +228,15 @@ def authenticated_uid(req: ChatRequest, request: Request, memory_module: Any) ->
         uid = memory_module.normalize_user_id(req.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return uid, memory_module.is_owner_user(uid)
+    is_owner = memory_module.is_owner_user(uid)
+    if group_id and is_owner:
+        raise HTTPException(status_code=403, detail="group scope cannot use owner identity")
+    return uid, is_owner
 
 
 def build_context(req: ChatRequest, request: Request, memory_module: Any) -> ChatContext:
     """从 FastAPI 请求构造一轮聊天上下文，并建立服务端 trace_id。"""
+    group_id = normalize_group_id(req.group_id)
     uid, is_owner = authenticated_uid(req, request, memory_module)
     state = getattr(request, "state", None)
     auth = getattr(state, "auth", None)
@@ -251,6 +275,7 @@ def build_context(req: ChatRequest, request: Request, memory_module: Any) -> Cha
         message=req.message.strip(),
         uid=uid,
         is_owner=is_owner,
+        group_id=group_id,
         auth=auth,
         image=req.image,
         trace=trace,
@@ -298,6 +323,7 @@ def _request_hash(req: ChatRequest) -> str:
     image = req.image
     payload = {
         "message": req.message or "",
+        "group_id": normalize_group_id(req.group_id),
         "image_sha256": image.sha256 if image is not None else None,
         "image_media_type": image.media_type if image is not None else None,
         "image_size": image.size if image is not None else None,

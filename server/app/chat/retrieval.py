@@ -258,6 +258,9 @@ def _last_assistant_message(runtime: ChatRuntime, uid: str) -> str | None:
 
 def prepare_turn(ctx: ChatContext, runtime: ChatRuntime) -> TurnPreparation:
     """执行检索前的纠正/风格/事实桥接，并取得上一条 AI 回复。"""
+    if ctx.is_group:
+        # 群消息不读写任何个人记忆、教训、示例或事实；首版只处理当轮上下文。
+        return TurnPreparation()
     services = runtime.services
     last_ai = _last_assistant_message(runtime, ctx.uid)
     self_reflect = services.self_reflect
@@ -317,6 +320,14 @@ def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dic
     "工作线程里没有事件循环"的限制在这里不存在。
     执行顺序与拆分前逐项一致，保持注入语义不变。
     """
+    if ctx.is_group:
+        # 群模式不注入个人画像、事实、目标、教训、历史摘要或用户习惯。
+        return {
+            "profile": "", "lessons": "", "concerns": "", "jargon": "",
+            "style_examples": "", "facts": "", "behavior": "", "goals_text": "",
+            "open_issues": "", "slang": "", "mood": "", "mood_state": "",
+            "self_state": "", "older": [], "extra_blocks": [],
+        }
     settings = runtime.settings
     services = runtime.services
     memory = runtime.memory
@@ -402,6 +413,23 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     knowledge = runtime.knowledge
     services = runtime.services
     msg = ctx.message
+    if ctx.is_group:
+        # 群模式首版只使用当轮消息：不检索个人记忆/知识，不联网，不创建调查上下文。
+        return RetrievalBundle(
+            trace={
+                "routing": {}, "path": "group", "degraded": 0,
+                "healer_words": [], "search_ms": 0,
+                "original_query": msg, "search_query": msg,
+                "anchors": [], "expanded": False,
+                "retrieval": {
+                    "memory_candidates": 0, "memory_selected": 0,
+                    "knowledge_candidates": 0, "knowledge_selected": 0,
+                    "entity_hits": 0, "healed_chunks": 0,
+                },
+            },
+            history=[],
+            evidence={},
+        )
     evidence: dict[str, Any] = {}
     history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
     known_anchors = _known_index_anchors(ctx)

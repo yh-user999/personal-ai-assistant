@@ -239,14 +239,37 @@ def make_runtime(services_map, knowledge=None):
     )
 
 
-def make_ctx(message, uid="", is_owner=True):
+def make_ctx(message, uid="", is_owner=True, group_id=""):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message),
+        request_model=ChatRequest(message=message, group_id=group_id or None),
         message=message,
         uid=uid,
         is_owner=is_owner,
+        group_id=group_id,
     )
+
+
+def test_group_retrieve_returns_empty_personal_scope():
+    ctx = make_ctx("群里的一句话", uid="10086", is_owner=False, group_id="456")
+    runtime = type("Runtime", (), {"settings": settings, "memory": object(), "knowledge": object(), "services": object()})()
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert preparation.last_ai is None
+    assert bundle.history == []
+    assert bundle.evidence == {}
+    assert bundle.mems == []
+    assert bundle.trace["path"] == "group"
+
+
+def test_group_injections_are_empty():
+    ctx = make_ctx("群消息", uid="10086", is_owner=False, group_id="456")
+    runtime = type("Runtime", (), {"settings": settings, "services": object()})()
+    injections = retrieval._collect_injections(ctx, runtime, ctx.message)
+    assert all(not value for key, value in injections.items() if key not in {"older", "extra_blocks"})
+    assert injections["older"] == []
+    assert injections["extra_blocks"] == []
 
 
 def _patch_memory_scoped(monkeypatch, expect_uid=None):

@@ -12,6 +12,7 @@ from app.chat.context import (
     _request_cache,
     _request_inflight,
     authenticated_uid,
+    build_context,
     deduplicate_request,
     guest_rate_limited,
 )
@@ -74,6 +75,34 @@ def test_no_auth_falls_back_to_body_user_id():
     guest_req = ChatRequest(message="hi", user_id="10086")
     uid, is_owner = authenticated_uid(guest_req, make_request(None), memory_module)
     assert uid == "10086" and is_owner is False
+
+
+def test_group_scope_never_uses_owner_identity():
+    group_req = ChatRequest(message="hi", user_id="10086", group_id="456")
+    uid, is_owner = authenticated_uid(group_req, make_request("qq"), memory_module)
+    assert uid == "10086" and is_owner is False
+
+    with pytest.raises(Exception) as exc:
+        authenticated_uid(ChatRequest(message="hi", group_id="456"), make_request("owner"), memory_module)
+    assert getattr(exc.value, "status_code", None) == 403
+
+    with pytest.raises(Exception) as exc:
+        authenticated_uid(ChatRequest(message="hi", user_id=memory_module.owner_user_id(), group_id="456"), make_request(None), memory_module)
+    assert getattr(exc.value, "status_code", None) == 403
+
+
+def test_group_id_is_validated_and_context_marks_scope():
+    with pytest.raises(Exception) as exc:
+        authenticated_uid(ChatRequest(message="hi", user_id="10086", group_id="not-a-group"), make_request("qq"), memory_module)
+    assert getattr(exc.value, "status_code", None) == 400
+
+    request = make_request("qq")
+    request.url = type("URL", (), {"path": "/api/chat"})()
+    request.headers = {}
+    request.state.auth.subject = "10086"
+    request.state.qq_request_id = ""
+    ctx = build_context(ChatRequest(message="hi", user_id="10086", group_id="456"), request, memory_module)
+    assert ctx.is_group is True and ctx.group_id == "456" and ctx.is_owner is False
 
 
 # ── request_id 单飞与成功缓存 ───────────────────────────────

@@ -50,14 +50,48 @@ def test_dispatch_skips_guest_blocked_and_falls_through():
 
 # ── 快捷时间问答（零 LLM）───────────────────────────────────
 
-def _identity_context(message: str, *, is_owner: bool) -> ChatContext:
+def _identity_context(message: str, *, is_owner: bool, group_id: str = "") -> ChatContext:
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message),
+        request_model=ChatRequest(message=message, group_id=group_id or None),
         message=message,
         uid="owner" if is_owner else "guest-test",
         is_owner=is_owner,
+        group_id=group_id,
     )
+
+
+def test_group_dispatch_blocks_personal_commands_but_keeps_safe_routes():
+    calls = []
+
+    async def forbidden_handler(msg, request, ctx, runtime=None):
+        calls.append("forbidden")
+        return ChatResponse(reply="不应执行", memories_used=0)
+
+    async def safe_time_handler(msg, request, ctx, runtime=None):
+        calls.append("time")
+        return ChatResponse(reply="时间", memories_used=0)
+
+    original = routing._COMMAND_HANDLERS
+    routing._COMMAND_HANDLERS = [
+        ("goals", forbidden_handler),
+        ("search", forbidden_handler),
+        ("time", safe_time_handler),
+    ]
+    try:
+        ctx = _identity_context("几点了", is_owner=False, group_id="456")
+        result = asyncio.run(routing.dispatch(ctx, SimpleNamespace()))
+    finally:
+        routing._COMMAND_HANDLERS = original
+
+    assert result is not None and result.reply == "时间"
+    assert calls == ["time"]
+
+
+def test_group_identity_query_keeps_privacy_route():
+    ctx = _identity_context("管理员是谁", is_owner=False, group_id="456")
+    result = asyncio.run(routing.dispatch(ctx, SimpleNamespace()))
+    assert result is not None and result.reply == "这个我不透露。"
 
 
 def test_admin_identity_query_is_detected_without_matching_identity_settings():

@@ -33,7 +33,8 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 
 ## 二、隐私铁律（插件白名单，多人支持）
 
-- 群聊消息（包括图片）一律静默，插件先 `stop_event()`，零 API 调用。
+- `personal` 模式下群聊消息（包括图片）一律静默，插件先 `stop_event()`，零 API 调用。
+- `group` 模式仅响应白名单群中明确 @/命中前缀且未触发按群限流的消息；群请求始终走 QQ 访客身份，不读取或写入个人数据、不联网、不持久化群消息。
 - 私聊：主人和访客都可聊天；服务端按 QQ 号隔离记忆。访客可识图，但不能读取主人信息或调用主人专属功能。
 - 主人专属功能（文件入库、执行器、提醒、工作日志等）只有 `owner_qq` 可用；门禁在服务端，不依赖插件自称身份。
 - `owner_qq` 未配置 = 全拒（fail-closed）。
@@ -43,7 +44,7 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 
 `cmd_config.json` → `platform_settings.enable_id_white_list` **必须为 `false`**。
 
-白名单开启时，AstrBot 的 `whitelist_check` 会在插件前拦截陌生人私聊，多人支持和访客图片识别都会失效。群聊静默由 xy 插件自身兜底：收到群聊事件后立即 `stop_event()`，阻止后续插件响应。
+白名单开启时，AstrBot 的 `whitelist_check` 会在插件前拦截陌生人私聊，多人支持和访客图片识别都会失效。群聊入口由 xy 插件按 `assistant_mode`、白名单、唤醒和限流规则处理；`personal` 模式收到群聊事件后立即 `stop_event()`，`group` 模式只有通过门禁的群消息才调用服务端。
 
 若发现群聊中有机器人响应，优先检查插件版本至少为 v1.4.1，以及 xy handler 是否早于其他可能回复的插件加载。
 
@@ -59,7 +60,13 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 
 | 项 | 说明 |
 |---|---|
-| `owner_qq` | 主人 QQ 号（纯数字字符串）；只用于主人专属功能和 fail-closed 判断 |
+| `assistant_mode` | `personal`（默认，群聊静默）或 `group`（启用群聊入口） |
+| `group_allowed_ids` | 允许响应的群号，逗号/空格/分号分隔；留空不响应任何群 |
+| `group_require_mention` | 是否要求 @机器人，默认 `true` |
+| `group_trigger_prefix` | 可选群聊触发前缀 |
+| `group_cooldown_seconds` | 同群回复冷却秒数，默认 60 |
+| `group_max_replies_per_hour` | 每群每小时最大回复数，默认 6 |
+| `owner_qq` | 主人 QQ 号（纯数字字符串）；只用于私聊主人专属功能和 fail-closed 判断，群聊不生效 |
 | `api_base` | 小月服务根地址，同机通常为 `http://127.0.0.1:8000` |
 | `api_token` | QQ 访客入站 Bearer token；应与服务器 `QQ_API_TOKEN` 一致，不要填主人 token 或出站 `QQ_PUSH_TOKEN` |
 | `owner_api_token` | 主人入站 Bearer token；应与服务器 `OWNER_API_TOKEN`（或兼容的 `API_TOKEN`）一致，只给 `owner_qq` 使用，不能填 `QQ_API_TOKEN` |
@@ -93,7 +100,8 @@ QQ 插件为访客请求构造 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request
 |---|---|
 | 主人私聊图片无回复 | ① `/api/health` ② 插件 `api_base` ③ `api_token` ↔ `QQ_API_TOKEN` ④ `identity_secret` ↔ `QQ_IDENTITY_SECRET` ⑤ AstrBot `[xy]` 日志 |
 | 访客私聊图片无回复 | ① `enable_id_white_list=false` ② 插件版本 ≥v1.4.1 ③ `identity_secret` 已配置 ④ 确认只发送图片问答，不是主人专属命令 |
-| 群聊图片有响应 | 严重隐私问题：检查插件是否 ≥v1.4.1、xy 是否先于其他 handler；群聊必须在任何上传前 `stop_event()`，不应访问 `/api/chat/vision` |
+| `personal` 模式群聊图片有响应 | 严重隐私问题：检查插件是否 ≥v1.4.1、xy 是否先于其他 handler；群聊必须在任何上传前 `stop_event()`，不应访问 `/api/chat/vision` |
+| `group` 模式群聊图片无响应 | 先确认群号在 `group_allowed_ids`，消息已 @机器人或命中前缀，且未触发按群冷却/小时上限；通过门禁后才会访问 `/api/chat/vision` |
 | 图片提示“未能读取图片” | 检查 Image 组件是否只有 `file_id`；确认 `onebot_http`、`onebot_token` 和 NapCat `get_file` 可用，再看容器路径映射 |
 | CDN 下载 502/超时 | 优先走 NapCat `get_file` 会话通道；仍失败时配置 `download_proxy`，确认本机 clash/代理可访问 QQ CDN |
 | 格式或 MIME 不支持 | 只接受 JPEG/PNG/WebP；同时检查文件头和声明 MIME，SVG、改后缀文件、MIME 不匹配都会拒绝 |

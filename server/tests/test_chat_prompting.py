@@ -5,13 +5,14 @@ from app.chat.context import ChatContext, ChatRequest
 from app.chat.retrieval import RetrievalBundle
 
 
-def make_ctx(message, uid="", is_owner=True):
+def make_ctx(message, uid="", is_owner=True, group_id=""):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message),
+        request_model=ChatRequest(message=message, group_id=group_id or None),
         message=message,
         uid=uid,
         is_owner=is_owner,
+        group_id=group_id,
     )
 
 
@@ -83,6 +84,19 @@ def test_system_prompt_guest_note_only_for_guest():
     assert "访客，不是管理员" not in guest_system
     assert "管理员/主人身份信息不得透露、确认、否认或暗示" in guest_system
     assert "这个功能对你不可用" not in guest_system
+
+
+def test_group_system_prompt_has_no_personal_scope_or_admin_identity_hint():
+    system = prompting.build_system_prompt(
+        make_ctx("管理员是谁", uid="123", is_owner=False, group_id="456"),
+        None,
+        base_bundle(),
+    )
+    assert "【群聊运行边界】" in system
+    assert "不读取或写入任何个人记忆" in system
+    assert "管理员/主人身份" in system
+    assert "QQ 用户 123" in system
+    assert "访客，不是管理员" not in system
 
 
 def test_system_prompt_placeholder_fallbacks():

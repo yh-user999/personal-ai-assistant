@@ -412,7 +412,7 @@ def safe_doc_name(name: str) -> str:
 @register(
     "astrbot_plugin_xy",
     "小月接入",
-    "小月 QQ 接入：私聊直达小月服务（多人按 QQ 号隔离记忆），群聊静默",
+    "小月 QQ 接入：私聊直达小月服务，可切换白名单群聊机器人",
     "v1.4.3",
 )
 class XiaoYuePlugin(Star):

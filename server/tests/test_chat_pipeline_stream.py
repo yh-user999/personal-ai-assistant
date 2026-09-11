@@ -5,6 +5,8 @@ run_chat 在业务语义（入库、友好错误、长文重试）上保持一�
 """
 import asyncio
 
+import pytest
+
 from app.chat.pipeline import run_chat, run_chat_stream
 from app.models.database import connect
 
@@ -128,3 +130,43 @@ def test_plain_run_chat_still_uses_full_call(db_env):
 
     resp = asyncio.run(run_chat(make_ctx("你好"), make_runtime(llm=_OnlyChat())))
     assert resp.reply == "全量回复"
+
+
+@pytest.mark.parametrize("investigation_run", [True, False])
+def test_investigation_stream_waits_for_review_before_emitting(db_env, monkeypatch, investigation_run):
+    from app.chat import pipeline, retrieval
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "semantic_planner_enabled", False)
+    monkeypatch.setattr(settings, "reflection_enabled", True)
+    seen = []
+
+    class DraftLLM:
+        async def chat(self, messages, **kwargs):
+            return "尚未审校的草稿"
+
+        async def chat_stream(self, *args, **kwargs):
+            raise AssertionError("调查不应提前流出草稿")
+            yield ""
+
+    async def fake_retrieve(ctx, runtime, preparation):
+        if investigation_run:
+            ctx.trace.response_plan["investigation_status"] = "complete"
+        return retrieval.RetrievalBundle(evidence={
+            "version": 1, "checks": {"mode": "gap_driven_investigation"} if investigation_run else {},
+            "sources": [{"id": "s1", "url": "https://example.org/news", "text": "来源资料"}],
+        })
+
+    async def fake_review(ctx, runtime, bundle, draft):
+        assert seen == [], "审校前已把草稿发送给用户"
+        assert draft == "尚未审校的草稿"
+        return "审校后的有据回复"
+
+    async def on_delta(text):
+        seen.append(text)
+
+    monkeypatch.setattr(retrieval, "retrieve", fake_retrieve)
+    monkeypatch.setattr(pipeline, "_reflect_and_finalize_reply", fake_review)
+    resp = asyncio.run(run_chat_stream(make_ctx("事件甲怎么看"), make_runtime(llm=DraftLLM()), on_delta))
+    assert resp.reply == "审校后的有据回复"
+    assert seen == ["审校后的有据回复"]

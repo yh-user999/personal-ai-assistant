@@ -298,10 +298,31 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                     "这是事件核查/道德判断类问题，下结论前先自检："
                     "①关键当事人各自的动作都查清了吗（谁先动手、谁受伤）——不确定就说不确定；"
                     "②有没有可能推翻当前印象的信息还没纳入；"
-                    "③每个事实是正规来源还是自媒体孤证，孤证要标注并留余地；"
+                    "③逐条核对直接引文、来源归属、时间与反证，媒体名气和数量不是事实证明；"
                     "④不要拿「已调解/已赔付」当是非结论。"
                 )
+        if plan.get("investigation_status"):
+            block.append(
+                "【事件判断纪律】本轮已运行有界调查，见下方事实与证据记录。"
+                "supported仅表示能追溯到引文，不等于该说法已被证实；"
+                "unknown不等于未发生，旧摘要不是本轮证据。"
+                "依次核对关键事实、适用的价值原则、各方能力义务与必要性/比例、"
+                "责任差异、主判断、从属理解、程序状态及可能改变判断的未决事实。"
+                "事实清楚时明确评价行为；不清楚的只限制对应部分，不能推成双方各有一半错。"
+                "有反证应修正判断，不能为坚持原立场隐藏相反材料。"
+                "自然回答，不展示内部评分、隐藏思考或整个工作表；必要时引用证据的来源链接。"
+            )
+            if plan.get("investigation_status") in {"failed", "timeout", "partial"}:
+                block.append(
+                    "调查未完整完成：根据现有材料明确能支持什么和仍未知什么，"
+                    "不得声称已经查清全部事实或没有遗漏，也不得将未知部分下肯定结论。"
+                )
         system = system + "\n\n" + "\n".join(block)
+    evidence = getattr(bundle, "evidence", {})
+    if evidence and plan.get("investigation_status"):
+        from app.chat.investigation import render_evidence
+
+        system += "\n\n" + _untrusted_reference("当轮事实与证据记录", render_evidence(evidence))
     if bundle.extra_blocks:
         system = system + "\n\n" + "\n\n".join(bundle.extra_blocks)
     return system

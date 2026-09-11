@@ -229,6 +229,8 @@ class RetrievalBundle:
     mood_state: str = ""
     self_state: str = ""
     extra_blocks: list[str] = field(default_factory=list)
+    # 当轮证据只驻留内存，供生成与审校共用；落库只保存限长脱敏调查摘要。
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def track_background(runtime: ChatRuntime, awaitable: Any) -> asyncio.Task:
@@ -400,6 +402,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     knowledge = runtime.knowledge
     services = runtime.services
     msg = ctx.message
+    evidence: dict[str, Any] = {}
     history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
     known_anchors = _known_index_anchors(ctx)
     # 无 caption 的图片也必须走稳定的非空检索 query，避免 embedding/FTS 空串异常。
@@ -578,6 +581,14 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
 
             if not web_provider.configured():
                 plan["web_unavailable"] = True
+                if plan.get("investigation_required") and getattr(settings, "investigation_enabled", True):
+                    evidence = {
+                        "version": 1, "question": msg, "status": "failed",
+                        "stop_reason": "backend_unavailable", "sources": [], "claims": [],
+                        "gaps": [], "checks": {"mode": "gap_driven_investigation"},
+                    }
+                    plan["investigation_status"] = "failed"
+                    plan["investigation_stop_reason"] = "backend_unavailable"
             else:
                 # 主检索词用用户原话（provider 会剥掉口语包装），planner 的
                 # 改写只作备用：改写可能收窄成生僻词，原话反而更全。
@@ -585,7 +596,11 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 alt = str(plan.get("query") or "").strip()
                 # 指代式追问（"现在呢"）本身没有检索价值，拿它当主检索词只会
                 # 白跑一轮。规则层已把上一轮的话题词放进 plan.query，改用它。
-                if web_provider.looks_like_followup(query) and alt and alt != query:
+                from app.chat.response_plan import is_investigation_followup
+
+                if is_investigation_followup(query) and alt and alt != query:
+                    query, alt = alt, ""
+                if not query:
                     query, alt = alt, ""
                 plan["web_query"] = query[:200]
                 # 深挖：事件核查/道德判断类问题多搜几组正交角度，主动找可能
@@ -593,21 +608,69 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 # 名称（moral_judgment → event_opinion_with_fact_check），按名匹配
                 # 会失效。改用稳定信号：道德判断标记，或事件类意图/模式。
                 deep = (
-                    bool(plan.get("needs_moral_judgment"))
+                    bool(plan.get("investigation_required"))
+                    or bool(plan.get("needs_moral_judgment"))
                     or plan.get("mode") == "moral_assessment"
                     or "event" in str(plan.get("intent") or "")
                     or "moral" in str(plan.get("intent") or "")
                 )
+                active_investigation = deep and bool(getattr(settings, "investigation_enabled", True))
+                from math import isfinite
+
+                investigation_started = time.monotonic()
+                total_budget = float(getattr(settings, "investigation_budget", 20.0))
+                total_budget = min(40.0, max(0.0, total_budget)) if isfinite(total_budget) else 20.0
+                initial_options = {
+                    "max_attempts": 3, "budget_seconds": min(6.0, total_budget),
+                } if active_investigation else {}
                 with ctx.trace.stage("web_search"):
                     data = await web_provider.search_and_cluster(
                         query,
                         time_range=web_provider.time_range_default(),
                         alt_query=alt if alt and alt != query else None,
-                        deep_dive=deep,
+                        # 有界调查替代固定角度，避免先重复搜一遍再叠加深挖预算。
+                            # 有界调查关闭时也不偷偷退回旧的固定深挖；普通事件请求只做一次主检索。
+                            deep_dive=False,
+                        **initial_options,
                     )
+                from app.chat import investigation
+
+                evidence = investigation.build_evidence(query, data["results"])
                 if deep:
                     plan["web_deep_dive"] = True
                     plan["web_angle_added"] = int(data.get("angle_added") or 0)
+                if active_investigation:
+                    previous = getattr(ctx.trace, "investigation_context", {}) or {}
+                    plan["investigation_resumed"] = bool(previous)
+                    with ctx.trace.stage("investigation"):
+                        try:
+                            investigated = await investigation.investigate(
+                                query, data["results"], runtime,
+                                request_id=ctx.request_id, user_id=ctx.uid, previous=previous,
+                                budget_seconds=max(0.0, total_budget - (time.monotonic() - investigation_started)),
+                            )
+                        except Exception as exc:  # 取消继续向上传播；其他故障保留已有来源。
+                            runtime.logger.warning("事件调查失败: %s", type(exc).__name__)
+                            evidence.update(status="failed", stop_reason="investigation_failed")
+                            evidence.setdefault("checks", {})["mode"] = "gap_driven_investigation"
+                            plan["investigation_status"] = "failed"
+                            plan["investigation_stop_reason"] = "investigation_failed"
+                        else:
+                            evidence = investigated.evidence
+                            data["results"] = investigated.results
+                            data["events"] = web_provider.cluster_events(investigated.results)
+                            data["has_sources"] = bool(investigated.results)
+                            data["result_count"] = len(investigated.results)
+                            from app.services.request_trace import safe_investigation_summary
+
+                            plan["investigation_summary"] = safe_investigation_summary(investigated.summary)
+                            plan["investigation_status"] = evidence.get("status", "unknown")
+                            for key in ("rounds", "search_calls", "pages_read", "claim_count", "gap_count", "elapsed_ms", "stop_reason"):
+                                if key in investigated.metrics:
+                                    plan[f"investigation_{key}"] = investigated.metrics[key]
+                            if investigated.metrics.get("analysis_error"):
+                                plan["investigation_analysis_error"] = str(investigated.metrics["analysis_error"])[:60]
+                    plan["investigation_elapsed_ms"] = max(0, int((time.monotonic() - investigation_started) * 1000))
                 if data["has_sources"]:
                     plan["web_has_sources"] = True
                     plan["web_fallback"] = bool(data.get("fallback_used"))
@@ -628,14 +691,21 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
 
                     # 声明级比对：仅在报道数达标时做，单一信源无可比对。
                     claim_text = ""
-                    if getattr(runtime.settings, "claim_analysis_enabled", True) and (
+                    if active_investigation:
+                        # 调查已生成绑定事件/主体/引文的声明；不再叠加旧的整批抽取。
+                        claims = evidence.get("claims", [])
+                        plan["web_claim_conflicts"] = sum(c.get("status") == "disputed" for c in claims)
+                        plan["web_claim_singles"] = sum(len(c.get("support", [])) <= 1 for c in claims)
+                        plan["web_claim_extracted"] = bool(claims)
+                    elif getattr(runtime.settings, "claim_analysis_enabled", True) and (
                         len(data["results"])
                         >= int(getattr(runtime.settings, "claim_analysis_min_reports", 2))
                     ):
                         from app.chat import claim_analysis
 
                         rule_cs = claim_analysis.extract_claims_rule(data["results"])
-                        llm_cs = await claim_analysis.extract_claims_llm(data["results"], runtime)
+                        with ctx.trace.stage("claim_analysis"):
+                            llm_cs = await claim_analysis.extract_claims_llm(data["results"], runtime)
                         report = claim_analysis.analyze_claims(rule_cs, llm_cs or None)
                         claim_text = report.text
                         plan["web_claim_conflicts"] = report.conflict_count
@@ -708,4 +778,5 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         self_state=collected["self_state"],
         older=collected["older"],
         extra_blocks=collected["extra_blocks"],
+        evidence=evidence,
     )

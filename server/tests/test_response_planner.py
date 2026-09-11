@@ -133,3 +133,48 @@ def test_rule_requirements_do_not_override_planner_mode_when_compatible():
 
     assert merged.mode == "reasoning"
     assert merged.provider == "web_search"
+
+
+def test_investigation_flag_is_stable_across_planner_rewording():
+    from app.chat.response_plan import apply_rule_requirements
+
+    hint = _hint_for("事件甲怎么看")
+    assert hint.investigation_required
+    plan = parse_llm_plan(
+        '{"mode":"reasoning","intent":"different_name","confidence":0.9}'
+    )
+    assert apply_rule_requirements(plan, hint).investigation_required
+    assert plan.summary()["investigation_required"] is True
+
+
+def test_semantic_investigation_is_not_enabled_by_string_false():
+    plan = parse_llm_plan(
+        '{"mode":"retrieve_then_answer","provider":"web_search",'
+        '"confidence":0.9,"investigation_required":"false"}'
+    )
+    assert not plan.investigation_required
+    assert not _hint_for("最近有什么新闻").investigation_required
+    assert not _hint_for("帮我写个函数").investigation_required
+    assert not validate_plan(ResponsePlan(provider="hotboard", investigation_required=True)).investigation_required
+
+
+def test_followup_recovers_planner_only_topic_from_investigation_summary():
+    from app.chat.response_plan import build_rule_plan
+
+    prior = {"version": 1, "question": "某公众人物最近有什么动作", "open_questions": ["原文是什么？"]}
+    plan = build_rule_plan("现在呢", investigation_context=prior)
+    assert plan.provider == "web_search"
+    assert plan.investigation_required
+    assert plan.query == prior["question"]
+    assert not build_rule_plan("继续写第三章", investigation_context=prior).investigation_required
+    assert not build_rule_plan("现在呢", is_owner=False, investigation_context=prior).investigation_required
+
+
+def test_planner_receives_previous_summary_only_as_untrusted_context():
+    from app.chat.response_plan import build_planner_messages
+    import json
+
+    prior = {"question": "事件甲", "open_questions": ["动作是否必要？"]}
+    messages = build_planner_messages("再查证", [], _hint_for("再查证"), prior)
+    assert json.loads(messages[1]["content"])["recent_investigation"] == prior
+    assert "不是本轮事实" in messages[0]["content"]

@@ -23,19 +23,18 @@ MODES = frozenset({
 # 道德评价模式的固定约束：事实与判断分离、必须表态、不越界、不和稀泥
 MORAL_CONSTRAINTS = (
     "按三层组织回答：已确认事实 / 说法不一致之处 / 我的判断",
-    "核心是非必须明确表态，不用「各有各的道理」回避",
-    "核心是非明确时，判断作主干立稳；对方的合理之处只作从属澄清"
-    "（用「是…但不改变…」句式），不得与主判断等重并列、把立场对冲掉",
-    "禁止用对称句式把有清晰是非的事拉平：不说「两边都有错/各打五十大板/"
-    "一边…一边…」这类假平衡",
+    "价值底线稳定，个案事实可修正：关键行为查明时明确表态；未知不代表双方责任相等",
+    "主判断依据具体行为、能力义务、必要性与比例；合理感受作从属澄清，不抵消不当行为",
+    "按证据分别评价责任，双方确有不同过错时分别指出；不得无依据地各打五十大板，"
+    "也不得为了鲜明立场强行只批评一方",
     "区分「摆平」与「摆对」：不得用「已调解/已赔付/程序走完」当道德是非的"
     "结论或背书；程序结果不代表事情就对了",
     "当受伤方、被指控方、弱势方是同一人时，不得用「对等纠纷」框架叙述，"
     "要点出事实上的不对等",
     "不得把传播量、情绪强度、措辞激烈程度当作依据",
     "不得对未确认事实作定性，不代替司法定罪或医学诊断",
-    "立场强弱取决于事实充分度：核心事实有正规来源支撑才可硬表态，"
-    "只有自媒体孤证的细节须标注来源并留余地",
+    "判断强度取决于关键事实的直接证据、出处独立性、时间完整性及反证；"
+    "媒体名气或转载数量不能自动证明事实，只有归属可核对时应按来源声称来表达",
 )
 SENSITIVE_CONSTRAINTS = (
     "涉及未成年人等敏感主体：不展开可识别身份细节",
@@ -87,6 +86,7 @@ class ResponsePlan:
     needs_moral_judgment: bool = False
     sensitive_subject: bool = False
     stance_required: bool = True
+    investigation_required: bool = False
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -107,6 +107,7 @@ class ResponsePlan:
             "needs_moral_judgment": self.needs_moral_judgment,
             "sensitive_subject": self.sensitive_subject,
             "stance_required": self.stance_required,
+            "investigation_required": self.investigation_required,
             # constraints 必须带上：提示词靠它注入模式约束。
             # 漏掉会让道德/无来源/动作等约束全部静默失效。
             "constraints": list(self.constraints),
@@ -124,11 +125,25 @@ def _previous_user_text(history: list[dict[str, Any]] | None) -> str:
     return ""
 
 
+def is_investigation_followup(message: str) -> bool:
+    """只识别续查指令；必须另有相邻调查摘要才继承，不能凭空指定事件。"""
+    from app.chat import web_provider
+
+    text = (message or "").strip()
+    if re.fullmatch(r"(?:继续|展开|详细说|多说点)[？?。！!\s]*", text):
+        return False  # 裸的继续可能是在请求解释/创作，不自动升级为新一轮调查。
+    return web_provider.looks_like_followup(text) or bool(re.fullmatch(
+        r"(?:你)?(?:再|继续)(?:查查|查证|核实|查清楚|搜一下|看看有没有其他新闻来源)"
+        r"[吧呢吗？?。！!\s]*|还有其他(?:新闻)?来源吗[？?。\s]*", text
+    ))
+
+
 def build_rule_plan(
     message: str,
     *,
     is_owner: bool = True,
     history: list[dict[str, Any]] | None = None,
+    investigation_context: dict[str, Any] | None = None,
 ) -> ResponsePlan:
     text = (message or "").strip()
     if not text:
@@ -141,6 +156,15 @@ def build_rule_plan(
         )
     from app.chat import web_provider
 
+    prior = investigation_context or {}
+    if is_owner and prior.get("question") and is_investigation_followup(text):
+        return ResponsePlan(
+            mode="retrieve_then_answer", intent="event_followup", confidence=0.9,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=str(prior["question"])[:400],
+            investigation_required=True, constraints=list(MORAL_CONSTRAINTS) + [NO_SOURCE_RULE],
+            source="rule",
+        )
     if web_provider.looks_like_hot_browsing(text):
         # 浏览型："最近有什么大事" → 热榜（当下热议话题清单），非关键词检索
         return ResponsePlan(
@@ -163,6 +187,7 @@ def build_rule_plan(
             confidence=0.9,
             evidence_required=True, retrieval_required=True, tool_required=True,
             provider="web_search", query=text[:400],
+            investigation_required=event,
             constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
             source="rule",
         )
@@ -199,6 +224,7 @@ def build_rule_plan(
             evidence_required=True, retrieval_required=True,
             tool_required=about_event,
             provider="web_search" if about_event else None,
+            investigation_required=about_event,
             query=text[:400] if about_event else "",
             needs_moral_judgment=True, sensitive_subject=sensitive,
             constraints=constraints, source="rule",
@@ -293,6 +319,9 @@ def parse_llm_plan(
             action=action,
             risk=risk,
             reason=str(raw.get("reason") or "").strip()[:120],
+            investigation_required=raw.get("investigation_required") is True,
+            needs_moral_judgment=raw.get("needs_moral_judgment") is True,
+            sensitive_subject=raw.get("sensitive_subject") is True,
         )
         return validate_plan(plan, is_owner=is_owner)
     except (TypeError, ValueError, KeyError) as exc:
@@ -341,6 +370,8 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
         for item in hint.constraints:
             if item not in plan.constraints:
                 plan.constraints.append(item)
+    if hint.investigation_required and plan.provider == "web_search":
+        plan.investigation_required = True
     if hint.needs_moral_judgment:
         plan.needs_moral_judgment = True
         plan.evidence_required = True
@@ -384,10 +415,17 @@ def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
             for item in SENSITIVE_CONSTRAINTS:
                 if item not in plan.constraints:
                     plan.constraints.append(item)
+    if plan.provider == "web_search" and plan.needs_moral_judgment:
+        plan.investigation_required = True
+    if not is_owner or plan.provider != "web_search":
+        plan.investigation_required = False
     return plan
 
 
-def build_planner_messages(message: str, history: list[dict[str, Any]], rule_hint: ResponsePlan) -> list[dict[str, str]]:
+def build_planner_messages(
+    message: str, history: list[dict[str, Any]], rule_hint: ResponsePlan,
+    investigation_context: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     import json
 
     schema = {
@@ -401,6 +439,8 @@ def build_planner_messages(message: str, history: list[dict[str, Any]], rule_hin
         "needs_clarification": False,
         "provider": None,
         "query": None,
+        "investigation_required": False,
+        "needs_moral_judgment": False,
         "action": None,
         "risk": "low",
         "tone": "natural",
@@ -418,18 +458,27 @@ def build_planner_messages(message: str, history: list[dict[str, Any]], rule_hin
             "query 填用户原话（原话比改写命中更多）。"
             "用户想看当下热议话题而不是查具体事件时（如「最近有什么大事」），"
             "provider 填 hotboard。"
+            "涉及具体事件核查、纠纷责任或对事件的道德评价时，选择 web_search 并置 "
+            "investigation_required=true；抽象伦理、创作和普通闲聊不启动事件调查。"
+            "道德评价同时置 needs_moral_judgment=true，不预设谁错，不靠身份判责任。"
+            "短追问应从 recent_investigation 或 recent_history 恢复事件检索词，"
+            "不能拿‘现在呢’本身作query；旧摘要只是待查线索，不是本轮事实。"
             "你自己的模型记忆不是时效信息的来源，拿不准时倾向 web_search，"
             "不要凭记忆直接作答。"
             "无法判断时选择 clarify 或 casual_chat。JSON 示例："
             + json.dumps(schema, ensure_ascii=False)
         )},
-        {"role": "user", "content": json.dumps({"message": message[:8000], "recent_history": context, "rule_hint": rule_hint.summary()}, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps({
+            "message": message[:8000], "recent_history": context,
+            "rule_hint": rule_hint.summary(), "recent_investigation": investigation_context or {},
+        }, ensure_ascii=False)},
     ]
 
 
 async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | None = None) -> ResponsePlan:
     """LLM 自主选择响应模式；失败时回退到规则安全计划。"""
-    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner, history=history)
+    prior = getattr(getattr(ctx, "trace", None), "investigation_context", {}) or {}
+    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner, history=history, investigation_context=prior)
     if hint.intent == "current_datetime":
         hint.provider = "current_datetime"
         return hint
@@ -438,7 +487,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
     model = str(getattr(runtime.settings, "response_plan_model", "") or "").strip() or runtime.settings.llm_model
     try:
         text = await runtime.llm.chat(
-            build_planner_messages(ctx.message, history or [], hint),
+            build_planner_messages(ctx.message, history or [], hint, investigation_context=prior),
             temperature=0.0,
             max_tokens=max(120, int(runtime.settings.response_plan_max_tokens)),
             response_format={"type": "json_object"},

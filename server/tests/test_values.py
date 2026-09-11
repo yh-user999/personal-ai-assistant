@@ -100,9 +100,86 @@ def test_empty_neutrality_detection():
     assert values.looks_like_empty_neutrality("我认为责任在施工方") is False
 
 
-def test_clear_cut_detection():
-    assert values.is_clear_cut("湖南四岁幼童事件谁的错") is True
-    assert values.is_clear_cut("该选哪个技术方案") is False
+@pytest.mark.parametrize("text", [
+    "湖南四岁幼童事件谁的错", "关于未成年人的报道", "发生暴力和伤害谁的错",
+    "为了保护孩子把人拉开，有身体接触就是恶吗", "该选哪个技术方案",
+])
+def test_risk_words_do_not_establish_clear_cut_facts(text):
+    assert values.is_clear_cut(text) is False
+
+
+def test_layered_constraints_are_complete_bounded_and_independent():
+    import json
+
+    constraints = values.judgment_constraints()
+    assert constraints["version"] == 1
+    assert set(constraints) == {"version", "layers", "fact_axis", "procedure_axis"}
+    assert [layer["id"] for layer in constraints["layers"]] == [
+        "baseline", "fair_attribution", "understanding_repair",
+    ]
+    assert [layer["name"] for layer in constraints["layers"]] == ["基本底线", "公平归责", "理解修复"]
+    assert tuple(item for layer in constraints["layers"] for item in layer["principles"]) == values.CORE_PRINCIPLES
+    assert len(json.dumps(constraints, ensure_ascii=False)) < 2600
+    rendered = values.render_principles()
+    for required in (
+        "不当伤害", "人格尊严", "诚实", "能力不足", "公平回应机会", "主观状态有证据",
+        "必要性", "谁升级冲突", "先错不授权过度反应", "同理心不是免责", "身体接触",
+        "独立事实轴", "独立程序轴", "不等于责任相等", "supported", "unknown", "同源转载",
+    ):
+        assert required in rendered
+    assert rendered.index("第1层·基本底线") < rendered.index("第2层·公平归责") < rendered.index("第3层·理解修复")
+    constraints["layers"][0]["principles"].clear()
+    assert values.judgment_constraints()["layers"][0]["principles"]
+    assert values.render_principles(2).count("- ") == 2
+
+
+def _action_evidence():
+    quote = "甲将乙从行驶车辆旁拉开，随后松手。"
+    return {
+        "version": 1,
+        "sources": [{"id": "s1", "url": "https://example.test/report", "text": quote}],
+        "claims": [{
+            "id": "c1", "actor": "甲", "action": "拉开后松手", "target": "乙",
+            "status": "supported", "support": [{"source_id": "s1", "quote": quote}], "oppose": [],
+        }],
+    }
+
+
+def test_traceable_action_is_not_a_truth_or_morality_verdict():
+    evidence = _action_evidence()
+    assert values.traceable_action_claim_ids(evidence) == {"c1"}
+    assert values.is_clear_cut("甲和乙有身体接触，幼童事件谁的错") is False
+    evidence["checks"] = {"source_count": 999, "facts_verified": True}
+    evidence["claims"][0]["action"] = ""
+    assert values.traceable_action_claim_ids(evidence) == set()
+
+
+@pytest.mark.parametrize("field", ["actor", "action", "target"])
+def test_withdrawing_action_premises_removes_traceable_basis(field):
+    evidence = _action_evidence()
+    evidence["claims"][0].pop(field)
+    assert values.traceable_action_claim_ids(evidence) == set()
+
+
+@pytest.mark.parametrize("status", ["unknown", "disputed", "verified", None])
+def test_claim_status_does_not_invent_support(status):
+    evidence = _action_evidence()
+    evidence["claims"][0]["status"] = status
+    assert values.traceable_action_claim_ids(evidence) == set()
+
+
+def test_traceable_basis_requires_quote_to_match_identified_source():
+    evidence = _action_evidence()
+    evidence["claims"][0]["support"][0]["quote"] = "甲对乙实施了不当伤害。"
+    assert values.traceable_action_claim_ids(evidence) == set()
+    evidence = _action_evidence()
+    evidence["sources"].append(dict(evidence["sources"][0]))
+    assert values.traceable_action_claim_ids(evidence) == set()
+
+
+@pytest.mark.parametrize("evidence", [None, {}, [], {"version": "1"}, {"version": 1, "sources": {}, "claims": {}}])
+def test_malformed_evidence_is_not_a_basis(evidence):
+    assert values.traceable_action_claim_ids(evidence) == set()
 
 
 # ── 三层判断框架 ────────────────────────────────────────────

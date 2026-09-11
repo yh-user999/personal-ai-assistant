@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -42,6 +43,73 @@ def _summary_map(value: object, *, allowed: set[str], numeric: set[str] = set())
         else:
             result[key] = _safe_text(raw)
     return result
+
+
+def _investigation_text(value: object, limit: int = 180) -> str:
+    text = _safe_text(value, limit)
+    # 调查摘要不是技术日志：额外去掉地址和长数字标识，不保存可识别账号。
+    text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[地址已脱敏]", text)
+    return re.sub(r"(?<!\d)\d{5,}(?!\d)", "[编号已脱敏]", text)
+
+
+def safe_investigation_summary(value: object) -> dict:
+    """限长白名单摘要；不保存网页全文、任意模型字段或隐藏思考。"""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return {}
+    question = _investigation_text(value.get("question"), 300)
+    if not question:
+        return {}
+    result = {
+        "version": 1, "question": question,
+        "checked_at": _safe_text(value.get("checked_at"), 40),
+        "stop_reason": _safe_text(value.get("stop_reason"), 40),
+    }
+    for key, count in (("findings", 6), ("open_questions", 6), ("searched_queries", 7)):
+        raw = value.get(key)
+        result[key] = []
+        for item in raw[:count] if isinstance(raw, list) else []:
+            if key == "findings" and isinstance(item, dict):
+                status = item.get("status")
+                status = status if status in {"supported", "disputed", "unknown"} else "unknown"
+                item = f"[{status}] {_investigation_text(item.get('statement'))}"
+            if isinstance(item, str) and item:
+                result[key].append(_investigation_text(item))
+    return result
+
+
+def recent_investigation_summary(user_id: str, previous_user_text: str = "") -> dict:
+    """只续同一用户最近一轮、24小时内的调查；中途换话题即不恢复。
+
+    摘要仅用于找待查方向，不是已核实事实。即使模型曾下过判断也要本轮复核。
+    """
+    from app.core.memory import normalize_user_id
+
+    try:
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT query, ts, response_plan FROM request_traces "
+                "WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                (normalize_user_id(user_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return {}
+        when = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - when).total_seconds()
+        if age < 0 or age > 86400:
+            return {}
+        if not previous_user_text or _safe_text(previous_user_text, 500) != row["query"]:
+            return {}
+        plan = json.loads(row["response_plan"] or "{}")
+        if not isinstance(plan, dict):
+            return {}
+        return safe_investigation_summary(plan.get("investigation_summary"))
+    except (sqlite3.Error, ValueError, TypeError, RuntimeError):
+        return {}
 
 
 def _safe_routing(value: object) -> dict:
@@ -130,7 +198,8 @@ def record(
         safe_stages = _safe_stages(stages)
         safe_reflection = _summary_map(
             reflection,
-            allowed={"status", "review_ms", "revise_ms", "quality", "revision_count", "triggers"},
+            allowed={"status", "review_ms", "revise_ms", "quality", "revision_count", "triggers",
+                     "revision_status", "safety_fallback", "advisory_flags"},
             numeric={"review_ms", "revise_ms", "revision_count"},
         )
         # 这些字段是排障依据：只看 mode/provider 无法区分"检索为空"与
@@ -147,10 +216,17 @@ def record(
                 "web_claim_conflicts", "web_claim_singles", "web_claim_extracted",
                 "web_gdelt_count",
                 "hotboard_count", "hotboard_ok", "hotboard_empty", "hotboard_unavailable",
-                "web_deep_dive", "web_angle_added",
+                "web_deep_dive", "web_angle_added", "investigation_required",
+                "investigation_status", "investigation_rounds", "investigation_search_calls",
+                "investigation_pages_read", "investigation_claim_count", "investigation_gap_count",
+                "investigation_elapsed_ms", "investigation_stop_reason", "investigation_resumed", "investigation_analysis_error",
             },
             numeric={"web_report_count", "web_event_count"},
         )
+        if isinstance(response_plan, dict):
+            summary = safe_investigation_summary(response_plan.get("investigation_summary"))
+            if summary:
+                safe_plan["investigation_summary"] = summary
         safe_trace_id = _safe_text(trace_id, 160)
         safe_request_id = _safe_text(request_id, 160)
         safe_channel = _safe_text(channel or "chat", 40)

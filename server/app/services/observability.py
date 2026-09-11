@@ -16,7 +16,7 @@ MAX_SCAN = 10_000
 _TRACE_COLUMNS = (
     "id, trace_id, request_id, user_id, channel, route_name, query, ts, "
     "retrieval_path, vector_degraded, total_latency_ms, status, error_code, "
-    "routing, retrieval, healer, injection_bytes, stages, search_ms"
+    "routing, retrieval, healer, injection_bytes, stages, search_ms, response_plan, reflection"
 )
 
 
@@ -99,6 +99,15 @@ def _row_payload(row) -> dict[str, Any]:
         ),
         "stages": _public_stages(_parse_json(row["stages"], {})),
         "search_ms": max(0, int(row["search_ms"] or 0)),
+        # API只公开统计与停止原因；不返回调查摘要、来源原文或模型自由输出。
+        "investigation": _public_summary(_parse_json(row["response_plan"], {}), {
+            "investigation_status", "investigation_rounds", "investigation_search_calls",
+            "investigation_pages_read", "investigation_claim_count", "investigation_gap_count",
+            "investigation_elapsed_ms", "investigation_stop_reason", "investigation_resumed", "investigation_analysis_error",
+        }),
+        "reflection": _public_summary(_parse_json(row["reflection"], {}), {
+            "status", "review_ms", "revise_ms", "revision_count", "revision_status", "safety_fallback",
+        }),
     }
 
 

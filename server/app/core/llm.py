@@ -580,6 +580,8 @@ async def chat(
     user_id: str | None = None,
     purpose: str = "",
     retry_budget: int | None = None,
+    reasoning_effort: str | None = None,
+    thinking_enabled: bool | None = None,
 ) -> str:
     """通用对话调用，按 Key 池执行一次有限轮故障切换。
 
@@ -601,6 +603,14 @@ async def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if reasoning_effort is not None:
+        if reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("unsupported reasoning_effort")
+        kwargs["reasoning_effort"] = reasoning_effort
+    if thinking_enabled is not None:
+        if not isinstance(thinking_enabled, bool):
+            raise ValueError("thinking_enabled must be boolean")
+        kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking_enabled else "disabled"}}
     if response_format:
         kwargs["response_format"] = response_format
     if timeout is not None:

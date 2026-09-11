@@ -286,24 +286,33 @@ async def _reflect_and_finalize_reply(
     checked, review_ms = await review.review_reply(ctx, runtime, bundle, draft)
     model = str(getattr(runtime.settings, "reflection_review_model", "") or "").strip() or runtime.settings.llm_model
     min_quality = float(getattr(runtime.settings, "reflection_min_quality_score", 0.78))
-    if not review.should_revise(checked, ctx, min_quality=min_quality, draft=draft):
+    incomplete_investigation = (
+        bundle.evidence.get("checks", {}).get("mode") == "gap_driven_investigation"
+        and bundle.evidence.get("status") != "complete"
+    )
+    if incomplete_investigation or not review.should_revise(checked, ctx, min_quality=min_quality, draft=draft, evidence=bundle.evidence):
+        status = "investigation_incomplete" if incomplete_investigation and checked.status == "passed" else checked.status
+        safe_reply = review.investigation_safety_fallback(bundle) if status != "passed" else None
         ctx.trace.reflection = {
-            "status": "passed" if checked.status != "failed" else "failed",
+            "status": status,
             "triggers": reasons,
             "review_ms": review_ms,
             "quality": round(checked.quality, 3),
             "revision_count": 0,
+            "safety_fallback": safe_reply is not None,
+            "advisory_flags": checked.advisory_flags,
         }
         review.persist_review(
             ctx, reasons, checked,
-            status="passed" if checked.status != "failed" else "failed",
+            status=status,
             model=model,
             latency_ms=review_ms,
         )
-        return draft
+        return safe_reply or draft
 
     final, changed, revise_ms = await review.revise_reply(ctx, runtime, bundle, draft, checked)
-    status = "revised" if changed else "fallback"
+    status = "revised" if changed else (checked.revision_status or "fallback")
+    safe_reply = review.investigation_safety_fallback(bundle) if not changed else None
     ctx.trace.reflection = {
         "status": status,
         "triggers": reasons,
@@ -311,6 +320,9 @@ async def _reflect_and_finalize_reply(
         "revise_ms": revise_ms,
         "quality": round(checked.quality, 3),
         "revision_count": 1 if changed else 0,
+        "revision_status": checked.revision_status,
+        "safety_fallback": safe_reply is not None,
+        "advisory_flags": checked.advisory_flags,
     }
     review.persist_review(
         ctx, reasons, checked,
@@ -319,7 +331,7 @@ async def _reflect_and_finalize_reply(
         latency_ms=review_ms + revise_ms,
         revision_count=1 if changed else 0,
     )
-    return final
+    return safe_reply or final
 
 
 def _maybe_capture_chapter(
@@ -448,8 +460,22 @@ async def _run_chat(
         getattr(settings, "response_plan_max_history", 4),
         user_id=ctx.uid,
     )
+    if (
+        ctx.is_owner
+        and getattr(settings, "investigation_enabled", True)
+        and response_plan.is_investigation_followup(msg)
+    ):
+        from app.services.request_trace import recent_investigation_summary
+
+        previous_text = response_plan._previous_user_text(planner_history)
+        ctx.trace.investigation_context = await asyncio.to_thread(
+            recent_investigation_summary, ctx.uid, previous_text,
+        )
     planned = await response_plan.plan_response(ctx, runtime, planner_history)
-    hint = response_plan.build_rule_plan(msg, is_owner=ctx.is_owner, history=planner_history)
+    hint = response_plan.build_rule_plan(
+        msg, is_owner=ctx.is_owner, history=planner_history,
+        investigation_context=ctx.trace.investigation_context,
+    )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
@@ -515,8 +541,13 @@ async def _run_chat(
             ),
         )
 
+    # 事件判断必须审完再展示，不能先流出可能错误的指控再试图撤回。
+    buffered_investigation = bool(ctx.trace.response_plan.get("investigation_status"))
+    buffered_reply = buffered_investigation or bool(
+        ctx.is_owner and settings.reflection_enabled and bundle.evidence.get("sources")
+    )
     with ctx.trace.stage("llm"):
-        if on_delta is None:
+        if on_delta is None or buffered_reply:
             reply, generation_failed = await _call_llm_with_fallback(ctx, runtime, assembly)
         else:
             reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
@@ -537,6 +568,13 @@ async def _run_chat(
     if settings.reflection_enabled:
         with ctx.trace.stage("reflection"):
             reply = await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
+    elif buffered_investigation:
+        # 明确关闭审校也不能把失败的调查宣称为完整核验。
+        ctx.trace.reflection = {"status": "skipped", "triggers": ["review_disabled"]}
+        if bundle.evidence.get("status") != "complete":
+            reply = review.investigation_safety_fallback(bundle) or reply
+    if on_delta is not None and buffered_reply:
+        await on_delta(reply)
 
     with ctx.trace.stage("persistence.assistant"):
         await memory.write_message("assistant", reply, user_id=ctx.uid)

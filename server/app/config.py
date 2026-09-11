@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     reflection_min_quality_score: float = 0.78
     reflection_long_reply_chars: int = 500
     reflection_max_revisions_per_turn: int = 1
+    # 反思是结构化审校，不默认启用高强度隐藏思维；最终答复设置不受影响。
+    reflection_thinking_enabled: bool = False
 
     # ── LLM 自主响应规划（普通非流式聊天）───────────────
     # shadow_only=True 时只记录计划不改行为；默认全量生效。
@@ -111,6 +113,19 @@ class Settings(BaseSettings):
     # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）
     search_min_results: int = 3
     web_search_enabled: bool = True
+    # 事件调查：首检后读取原文、按证据缺口补查；不影响普通聊天和热榜。
+    # 所有抓页、分析、补查共享墙钟预算，不把重试藏到预算外。
+    investigation_enabled: bool = True
+    investigation_budget: float = 20.0
+    investigation_max_rounds: int = 2
+    investigation_queries_per_round: int = 2
+    investigation_max_pages: int = 4
+    investigation_model: str = ""  # 留空复用主模型，不额外维护一套凭据
+    investigation_max_tokens: int = 2400
+    # 仅适用于支持此选项的 DeepSeek V4 结构化调查/新闻审校；不改最终回复的推理设置。
+    investigation_reasoning_effort: str = "low"
+    # 调查器只做证据结构化；真正的价值推理在补查循环和最终回答中完成。
+    investigation_thinking_enabled: bool = False
     # 声明级比对：仅在报道数 ≥ 此值时才做 LLM 抽取（单一信源无可比对）
     claim_analysis_enabled: bool = True
     claim_analysis_min_reports: int = 2

@@ -65,6 +65,7 @@ class TraceContext:
     injection_bytes: dict[str, Any] = field(default_factory=dict)
     reflection: dict[str, Any] = field(default_factory=dict)
     response_plan: dict[str, Any] = field(default_factory=dict)
+    investigation_context: dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
     error_code: str = ""
 
@@ -75,6 +76,11 @@ class TraceContext:
         state["status"] = "running"
         try:
             yield
+        except asyncio.CancelledError:
+            state.update(status="cancelled", error="CancelledError")
+            self.status = "failed"
+            self.error_code = self.error_code or "CancelledError"
+            raise
         except Exception as exc:
             state.update(status="failed", error=type(exc).__name__)
             self.status = "failed"

@@ -18,10 +18,12 @@ import html
 import ipaddress
 import json
 import logging
+import math
 import re
+import socket
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -226,34 +228,76 @@ def _backend_url() -> str:
 
 
 def configured() -> bool:
-    """是否配置了检索后端。未配置时所有检索能力整体关闭。"""
-    return bool(_backend_url())
+    """是否启用并配置了检索后端；开关关闭时不得搜索或抓页。"""
+    from app.config import settings
+
+    return bool(getattr(settings, "web_search_enabled", True)) and bool(_backend_url())
+
+
+def _public_address(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return _public_address(str(address.ipv4_mapped))
+    return address.is_global and not (
+        address.is_reserved or address.is_multicast or address.is_unspecified
+    )
 
 
 def _is_safe_url(url: str) -> bool:
-    """抓页 SSRF 护栏：只允许公网 http(s) 地址。"""
+    """语法层护栏；域名必须再经过 _resolve_public_addresses，不能仅凭此函数抓页。"""
+    if not isinstance(url, str) or len(url) > 2000 or re.search(r"[\\\x00-\x20\x7f]", url):
+        return False
     try:
-        parsed = urlparse(url or "")
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port  # 同时拒绝非法端口
     except ValueError:
         return False
-    if parsed.scheme.lower() not in {"http", "https"}:
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
         return False
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
+    if parsed.username is not None or parsed.password is not None or "%" in host:
+        return False
+    if port is not None and not 0 < port <= 65535:
         return False
     if host == "localhost" or host.endswith(_PRIVATE_HOST_SUFFIXES):
         return False
     try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return _public_address(host)
+
+
+async def _resolve_public_addresses(url: str) -> list[str]:
+    """每跳校验全部 DNS 答案，混有一个非公网地址也拒绝；可由测试完整替换。"""
+    if not _is_safe_url(url):
+        return []
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").rstrip(".")
+    try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return True  # 域名：交由后续 DNS 解析，不做本地解析避免额外依赖
-    return not (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_multicast
-    )
+        answers = await asyncio.get_running_loop().getaddrinfo(
+            host, parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+        addresses = list(dict.fromkeys(answer[4][0] for answer in answers))
+    else:
+        addresses = [str(address)]
+    if not addresses or len(addresses) > 16 or not all(_public_address(a) for a in addresses):
+        return []
+    return addresses
+
+
+def _bounded_number(value: Any, default: float, upper: float) -> float:
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        number = default
+    return min(upper, max(0.001, number)) if math.isfinite(number) else default
 
 
 # 新闻 URL 常见日期：/2026-09-10/ 与 /20260910A01/ 两类
@@ -324,7 +368,7 @@ async def web_search(
     """检索网页/新闻。后端未配置、超时或返回异常一律返回空列表。"""
     backend = _backend_url()
     text = (query or "").strip()
-    if not backend or not text:
+    if not configured() or not text:
         return []
 
     from app.config import settings
@@ -366,28 +410,71 @@ async def web_search(
 
 
 async def fetch_page(url: str) -> dict[str, Any] | None:
-    """抓取页面并抽取正文文本；护栏不通过或失败返回 None。"""
+    """有界抓页。逐跳验 DNS、钉住公网 IP，保留原 Host/TLS 名称，防 DNS 重绑定。
+
+    页面禁用自动跳转和压缩（避免解压炸弹），最多三跳、1 MB；DNS、网络、
+    流读取共用墙钟期限。取消直接向上传播。配置的搜索后端不受网页护栏约束。
+    """
     if not configured() or not _is_safe_url(url):
         return None
 
     from app.config import settings
 
-    timeout = float(getattr(settings, "search_timeout", 15.0))
-    max_bytes = int(getattr(settings, "search_max_page_bytes", 500_000))
-    try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            if "html" not in response.headers.get("content-type", "").lower():
+    timeout = _bounded_number(getattr(settings, "search_timeout", 15.0), 15.0, 20.0)
+    max_bytes = int(_bounded_number(
+        getattr(settings, "search_max_page_bytes", 500_000), 500_000, 1_000_000,
+    ))
+
+    async def _fetch() -> dict[str, Any] | None:
+        current = url
+        for hop in range(4):
+            addresses = await _resolve_public_addresses(current)
+            if not addresses:
                 return None
-            body = response.text[:max_bytes]
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
+            original = httpx.URL(current)
+            pinned = original.copy_with(host=addresses[0])
+            host_header = original.netloc.decode("ascii")
+            # 每跳独立连接池：同一 IP 的不同域名不能复用错误的 TLS SNI。
+            async with httpx.AsyncClient(
+                timeout=timeout, trust_env=False, follow_redirects=False,
+            ) as client:
+                async with client.stream(
+                    "GET", pinned,
+                    headers={"Host": host_header, "Accept-Encoding": "identity"},
+                    extensions={"sni_hostname": original.host},
+                ) as response:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("location", "")
+                        if not location or hop == 3:
+                            return None
+                        current = urljoin(current, location)
+                        # 下一轮在发请求前重新做语法和 DNS 校验。
+                        continue
+                    response.raise_for_status()
+                    if "html" not in response.headers.get("content-type", "").lower():
+                        return None
+                    if response.headers.get("content-encoding", "identity").lower() != "identity":
+                        return None
+                    length = response.headers.get("content-length", "")
+                    if length and int(length) > max_bytes:
+                        return None
+                    body = bytearray()
+                    async for chunk in response.aiter_raw(chunk_size=min(8192, max_bytes + 1)):
+                        if len(body) + len(chunk) > max_bytes:
+                            return None
+                        body.extend(chunk)
+                    encoding = response.encoding or "utf-8"
+                    text = extract_text(bytes(body).decode(encoding, errors="replace"))
+                    if text:
+                        return {"url": current, "text": text, "fetched_at": _now_iso()}
+                    return None
+        return None
+
+    try:
+        return await asyncio.wait_for(_fetch(), timeout=timeout)
+    except (httpx.HTTPError, OSError, ValueError, TypeError, LookupError, asyncio.TimeoutError) as exc:
         logger.warning("抓页失败（%s）", type(exc).__name__)
         return None
-    text = extract_text(body)
-    if not text:
-        return None
-    return {"url": url, "text": text, "fetched_at": _now_iso()}
 
 
 def extract_text(markup: str) -> str:
@@ -595,14 +682,19 @@ async def search_and_cluster(
     limit: int = 10,
     alt_query: str | None = None,
     deep_dive: bool = False,
+    max_attempts: int | None = None,
+    budget_seconds: float | None = None,
 ) -> dict[str, Any]:
     """检索并按事件聚合；命中不足时逐级放宽。
 
-    三级放宽（任一级达标即停，正常情况只跑第一级）：
+    三级放宽（按累计URL去重数量达标即停，不把条数当关键事实完整性）：
       1. 清洗后的检索词 + news 类 + 配置时间窗
       2. 同上但去掉时间窗   ← 事件报道常年躺在索引里，硬限"最近一周"会整批排除
       3. 通用网页类 + 无时间窗 ← 覆盖非新闻站的报道
     另可传 ``alt_query``（如 planner 给出的规范化查询）作为备用检索词。
+    ``max_attempts`` 限制本函数发起的检索调用总数（含阶梯、角度和 GDELT）；
+    调查器集成可设 1，避免在调查预算开始前重复放宽。默认保持现有策略。
+    ``budget_seconds`` 可收紧整次检索的墙钟预算，耗尽仍返回先前完成的来源。
 
     达标线用 ``search_min_results``：旧逻辑只在**零结果**时兜底，
     实测整句问法只回 2 条、2 > 0 因而从不放宽，用户看到"只有一条转载稿"，
@@ -625,75 +717,138 @@ async def search_and_cluster(
 
     threshold = _min_results()
     results: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
     first = (candidates[0], "news", time_range)
     used: tuple[str, str, str] | None = None
+    last_attempt: tuple[str, str, str] | None = None
     tried: set[tuple[str, str, str]] = set()
+    attempt_log: list[dict[str, Any]] = []
+    request_cap = int(_bounded_number(max_attempts, 9, 9)) if max_attempts is not None else 9
+    # 显式 0 的语义就是零次请求；默认策略仍至少允许一次。
+    if max_attempts is None:
+        request_cap = max(1, request_cap)
+    else:
+        request_cap = max(0, request_cap)
+    request_count = 0
+    budget_exhausted = False
+    deadline = None
+    if budget_seconds is not None:
+        try:
+            budget = float(budget_seconds)
+        except (ValueError, TypeError, OverflowError):
+            budget = 0.0
+        budget = max(0.0, min(budget, 40.0)) if math.isfinite(budget) else 0.0
+        deadline = asyncio.get_running_loop().time() + budget
+
+    def remaining() -> float | None:
+        return max(0.0, deadline - asyncio.get_running_loop().time()) if deadline is not None else None
+
+    def may_start() -> bool:
+        nonlocal budget_exhausted
+        left = remaining()
+        if left is not None and left <= 0:
+            budget_exhausted = True
+            return False
+        return request_count < request_cap
+
+    def merge_batch(items: Any) -> int:
+        added = 0
+        for item in items[:100] if isinstance(items, list) else []:
+            if not isinstance(item, dict) or len(results) >= 100:
+                continue
+            url = item.get("url")
+            if not isinstance(url, str) or not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            results.append(item)
+            added += 1
+        return added
+
+    async def timed(operation):
+        left = remaining()
+        return await asyncio.wait_for(operation, timeout=left) if left is not None else await operation
+
     for q, category, window in attempts:
+        if not may_start():
+            break
         key = (q, category, window)
         if not q or key in tried:
             continue
         tried.add(key)
-        results = await web_search(q, category=category, time_range=window, limit=limit)
+        last_attempt = key
+        request_count += 1
+        record = {"query": q, "category": category, "time_range": window, "received": 0, "added": 0, "status": "completed"}
+        attempt_log.append(record)
+        try:
+            batch = await timed(web_search(q, category=category, time_range=window, limit=limit))
+        except Exception as exc:  # 子次失败/超时不能覆盖已获得的证据；取消仍向上传播
+            record["status"] = type(exc).__name__
+            if deadline is not None and remaining() == 0:
+                budget_exhausted = True
+                break
+            continue
+        record["received"] = len(batch) if isinstance(batch, list) else 0
+        record["added"] = merge_batch(batch)
+        if record["added"]:
+            used = key  # 最后实际贡献来源的查询，而不是空批次的查询
         if len(results) >= threshold:
-            used = key
             break
 
-    # 深挖：事件/道德类问题追加正交角度检索，主动找可能推翻当前印象的信息
-    # （过程细节/各方说法/后续反转/定性争议）。并入去重，不影响主结果。
+    # 追加来源同样即时合并。另一个角度超时，不影响已完成的角度。
     angle_added = 0
-    if deep_dive and cleaned:
-        angles = build_angle_queries(cleaned)
-        if angles:
-            # 角度查询彼此正交、互不依赖，并行发起。串行时实测深挖 6.6s
-            # （多次放宽尝试 + 各角度全部排队），而热榜在同目录早就用了
-            # asyncio.gather。return_exceptions 保证单个角度失败不牵连整体——
-            # 深挖只是加料，绝不能让它把主结果一起弄丢。
-            gathered = await asyncio.gather(
-                *(
-                    web_search(aq, category="general", time_range="", limit=limit)
-                    for aq in angles
-                ),
-                return_exceptions=True,
-            )
-            seen_urls = {r.get("url") for r in results}
-            for extra in gathered:
-                if not isinstance(extra, list):
-                    continue
-                for it in extra:
-                    if it.get("url") not in seen_urls:
-                        seen_urls.add(it.get("url"))
-                        results.append(it)
-                        angle_added += 1
+    if deep_dive and cleaned and may_start():
+        angles = build_angle_queries(cleaned)[:max(0, request_cap - request_count)]
 
-    # 第二检索源 GDELT（走代理）：并入结果、按 URL 去重。
-    # GDELT 失败/限流返回空，不影响 SearXNG 已有结果。
+        async def angle(q: str) -> None:
+            nonlocal request_count, angle_added, budget_exhausted
+            if not may_start():
+                return
+            request_count += 1
+            try:
+                angle_added += merge_batch(await timed(web_search(q, category="general", time_range="", limit=limit)))
+            except Exception:
+                if deadline is not None and remaining() == 0:
+                    budget_exhausted = True
+
+        tasks = [asyncio.create_task(angle(q)) for q in angles]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     gdelt_count = 0
     try:
         from app.chat import gdelt_provider
 
-        if gdelt_provider.configured():
-            gdelt_items = await gdelt_provider.search(
-                cleaned, time_range=time_range, limit=limit
-            )
-            if gdelt_items:
-                seen_urls = {r.get("url") for r in results}
-                added = [it for it in gdelt_items if it.get("url") not in seen_urls]
-                gdelt_count = len(added)
-                results = results + added
-    except Exception as exc:  # noqa: BLE001 - 第二源绝不能拖垮主检索
-        logger.warning("GDELT 合并失败（%s），仅用主检索结果", type(exc).__name__)
+        if may_start() and gdelt_provider.configured():
+            request_count += 1
+            gdelt_count = merge_batch(await timed(gdelt_provider.search(cleaned, time_range=time_range, limit=limit)))
+    except Exception as exc:  # noqa: BLE001 - 第二源绝不能拖垮已得来源
+        if deadline is not None and remaining() == 0:
+            budget_exhausted = True
+        logger.warning("GDELT 合并失败（%s），仅用已有检索结果", type(exc).__name__)
 
     events = cluster_events(results) if results else []
     return {
         "query": query,
-        "query_used": (used or first)[0],
+        "query_used": (used or last_attempt or first)[0],
         "has_sources": bool(results),
         "result_count": len(results),
         # 分开记录两种降级，混在一起无法判断该调哪一处：
         # query_cleaned = 检索词被剥过口语包装；fallback_used = 放宽过类别/时间窗
         "query_cleaned": cleaned != (query or "").strip(),
-        "fallback_used": (used or first) != first,
+        "fallback_used": any(key != first for key in tried),
         "attempts": len(tried),
+        "attempt_log": attempt_log,
+        "request_count": request_count,
+        "budget_exhausted": budget_exhausted,
+        "threshold_met": len(results) >= threshold,
+        "stop_reason": "budget_exhausted" if budget_exhausted else (
+            "threshold_met" if len(results) >= threshold else "attempt_limit" if request_count >= request_cap else "search_complete"
+        ),
         "gdelt_count": gdelt_count,
         "angle_added": angle_added,
         "results": results,

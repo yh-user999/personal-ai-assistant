@@ -61,6 +61,60 @@ def test_record_failure_isolated(monkeypatch):
     assert request_trace.record("u", "q", {}, "", False, [], {}, 0) is False
 
 
+def test_investigation_summary_is_scoped_recent_and_sanitized(db_env):
+    from datetime import datetime, timezone
+    import json
+
+    summary = {
+        "version": 1, "question": "事件甲", "checked_at": datetime.now(timezone.utc).isoformat(),
+        "findings": ["来源声称有身体接触"], "open_questions": ["接触是否必要？"],
+        "searched_queries": ["事件甲 完整经过"], "stop_reason": "no_gain",
+        "raw_prompt": "不许保存这条任意字段",
+    }
+    assert request_trace.record(
+        "10001", "事件甲怎么看", {}, "", False, [], {}, 0,
+        response_plan={"investigation_summary": summary, "investigation_rounds": 1},
+    )
+    restored = request_trace.recent_investigation_summary("10001", "事件甲怎么看")
+    assert restored["open_questions"] == ["接触是否必要？"]
+    assert "raw_prompt" not in restored
+    assert request_trace.recent_investigation_summary("10002", "事件甲怎么看") == {}
+    assert request_trace.recent_investigation_summary("10001", "不相关的最近一轮") == {}
+    conn = connect()
+    try:
+        raw = conn.execute("SELECT response_plan FROM request_traces ORDER BY id DESC LIMIT 1").fetchone()[0]
+        assert json.loads(raw)["investigation_rounds"] == 1
+        conn.execute("UPDATE request_traces SET ts='2000-01-01T00:00:00+00:00'")
+        conn.commit()
+    finally:
+        conn.close()
+    assert request_trace.recent_investigation_summary("10001", "事件甲怎么看") == {}
+
+
+def test_investigation_summary_never_jumps_over_topic_change(db_env):
+    assert request_trace.record(
+        "10001", "事件甲", {}, "", False, [], {}, 0,
+        response_plan={"investigation_summary": {"version": 1, "question": "事件甲"}},
+    )
+    assert request_trace.record("10001", "写个函数", {}, "", False, [], {}, 0)
+    assert request_trace.recent_investigation_summary("10001", "写个函数") == {}
+
+
+def test_investigation_summary_strips_sensitive_data_and_bounds_lists():
+    from app.config import settings
+    from unittest.mock import patch
+
+    with patch.object(settings, "sensitive_terms", "测试私密姓名"):
+        summary = request_trace.safe_investigation_summary({
+            "version": 1, "question": "测试私密姓名的纠纷", "findings": ["测试私密姓名"] * 30,
+            "open_questions": ["测试私密姓名"], "sources": [{"text": "网页全文"}],
+        })
+    assert "测试私密姓名" not in str(summary)
+    assert "sources" not in summary
+    assert len(summary["findings"]) == 6
+    assert request_trace.safe_investigation_summary({"version": 2, "question": "x"}) == {}
+
+
 # ── chat 集成：主人落轨迹、访客不落、开关生效 ───────────────
 
 @pytest.fixture

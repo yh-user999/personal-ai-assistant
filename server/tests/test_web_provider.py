@@ -1,5 +1,6 @@
 """实时检索 provider 测试：全部用 fake HTTP，不访问真实搜索后端。"""
 import asyncio
+import ipaddress
 import json
 
 import pytest
@@ -160,6 +161,14 @@ def test_search_returns_empty_when_backend_missing(monkeypatch):
     monkeypatch.setattr(settings, "search_backend_url", "")
     assert asyncio.run(web_provider.web_search("最近新闻")) == []
     assert web_provider.configured() is False
+
+
+def test_search_switch_disables_search_and_fetch(monkeypatch, fake_http):
+    monkeypatch.setattr(settings, "web_search_enabled", False)
+    fake_http(lambda url, kwargs: pytest.fail("搜索开关关闭后不得发起请求"))
+    assert web_provider.configured() is False
+    assert asyncio.run(web_provider.web_search("最近新闻")) == []
+    assert asyncio.run(web_provider.fetch_page("https://news.example/article")) is None
 
 
 def test_search_returns_empty_on_http_error(fake_http):
@@ -368,7 +377,8 @@ def test_insufficient_results_widen_progressively(fake_http):
     assert calls[1].get("categories") == "news" and "time_range" not in calls[1]  # 去时间窗
     assert calls[2].get("categories") is None and "time_range" not in calls[2]    # 通用类
     assert data["has_sources"] is True
-    assert data["result_count"] == 5
+    assert data["result_count"] == 6  # 保留前两轮取得的同一个URL，再并入第三轮5条
+    assert "https://a.com/0" in {r["url"] for r in data["results"]}
     assert data["fallback_used"] is True
     assert data["attempts"] == 3
 
@@ -525,3 +535,335 @@ def test_gdelt_failure_does_not_break_main_search(fake_http, monkeypatch):
     data = asyncio.run(web_provider.search_and_cluster("某事件"))
     assert data["has_sources"] is True
     assert data["gdelt_count"] == 0
+
+
+def test_explicit_first_search_attempt_cap_skips_widening_angles_and_gdelt(fake_http, monkeypatch):
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs)
+        return _FakeResponse(payload={"results": []})
+
+    from app.chat import gdelt_provider
+    monkeypatch.setattr(gdelt_provider, "configured", lambda: True)
+
+    async def no_gdelt(*args, **kwargs):
+        pytest.fail("总调用上限用完后不能访问第二搜索源")
+
+    monkeypatch.setattr(gdelt_provider, "search", no_gdelt)
+    fake_http(handler)
+    result = asyncio.run(web_provider.search_and_cluster("事件A", alt_query="另一词", deep_dive=True, max_attempts=1))
+    assert len(calls) == 1 and result["attempts"] == 1 and result["request_count"] == 1
+    assert result["angle_added"] == 0 and result["gdelt_count"] == 0
+
+
+def test_widening_keeps_earlier_sources_when_batches_shrink_to_empty(fake_http, monkeypatch):
+    monkeypatch.setattr(settings, "search_min_results", 5)
+    batches = [
+        [{"title": "事件A原始经过", "url": "https://a.com/one"}, {"title": "事件A各方说法", "url": "https://a.com/two"}],
+        [{"title": "事件A补充记录", "url": "https://a.com/three"}], [],
+    ]
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs["params"])
+        return _FakeResponse(payload={"results": batches[len(calls) - 1]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", max_attempts=3))
+    assert [len(b) for b in batches] == [2, 1, 0]
+    assert data["result_count"] == 3 and data["has_sources"]
+    assert {r["url"] for r in data["results"]} == {"https://a.com/one", "https://a.com/two", "https://a.com/three"}
+    assert [a["received"] for a in data["attempt_log"]] == [2, 1, 0]
+    assert [a["added"] for a in data["attempt_log"]] == [2, 1, 0]
+    assert data["fallback_used"] and data["attempts"] == 3 and not data["threshold_met"]
+
+
+def test_widening_stops_at_unique_merged_threshold_not_last_batch(fake_http):
+    batches = [
+        [{"title": "事件A原始经过", "url": "https://a.com/one"}, {"title": "事件A各方说法", "url": "https://a.com/two"}],
+        [{"title": "事件A重复", "url": "https://a.com/two"}, {"title": "事件A新记录", "url": "https://a.com/three"}],
+    ]
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs)
+        assert len(calls) <= 2, "累计去重已达3条，不应再跑第三轮"
+        return _FakeResponse(payload={"results": batches[len(calls) - 1]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("事件A"))
+    assert data["threshold_met"] and data["result_count"] == 3 and data["attempts"] == 2
+    assert [a["added"] for a in data["attempt_log"]] == [2, 1]
+    assert len({r["url"] for r in data["results"]}) == 3
+
+
+def test_zero_search_attempt_cap_makes_no_backend_call(fake_http):
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs)
+        return _FakeResponse(payload={"results": []})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", max_attempts=0))
+    assert calls == []
+    assert data["attempts"] == 0 and data["request_count"] == 0
+    assert data["has_sources"] is False
+
+
+def test_empty_fallback_is_reported_even_when_only_first_query_contributed(fake_http):
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(kwargs["params"])
+        batch = [{"title": "事件A", "url": "https://a.com/one"}] if len(calls) == 1 else []
+        return _FakeResponse(payload={"results": batch})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", alt_query="另一事件关键词", max_attempts=2))
+    assert data["query_used"] == "事件A"  # 最后实际贡献来源的是首次查询
+    assert data["fallback_used"] is True  # 备用词确实被尝试，不能误报没有放宽
+    assert data["attempts"] == 2 and data["result_count"] == 1
+    assert data["attempt_log"][1]["query"] == "另一事件关键词"
+    assert data["attempt_log"][1]["added"] == 0
+
+
+def test_search_budget_expiry_preserves_completed_batch_and_cancels_pending(monkeypatch):
+    calls, cancelled = [], []
+
+    async def search(q, **kwargs):
+        calls.append(q)
+        if len(calls) == 1:
+            return [{"title": "事件A", "url": "https://a.com/one", "summary": "有效原始资料。"}]
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    monkeypatch.setattr(web_provider, "web_search", search)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", max_attempts=3, budget_seconds=0.03))
+    assert data["result_count"] == 1 and data["results"][0]["url"] == "https://a.com/one"
+    assert data["budget_exhausted"] and data["stop_reason"] == "budget_exhausted"
+    assert len(calls) == 2 and cancelled
+    assert data["attempt_log"][1]["status"] == "TimeoutError"
+
+
+def test_search_zero_shared_budget_starts_no_requests(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        pytest.fail("零剩余预算不得继续首检")
+
+    monkeypatch.setattr(web_provider, "web_search", forbidden)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", budget_seconds=0))
+    assert data["budget_exhausted"] and data["request_count"] == 0 and data["attempts"] == 0
+
+
+def test_angle_budget_timeout_retains_the_successful_parallel_result(monkeypatch):
+    cancelled = []
+
+    async def search(q, **kwargs):
+        if q == "事件A":
+            return [{"title": "事件A", "url": f"https://a.com/{i}"} for i in range(3)]
+        if "经过" in q:
+            return [{"title": "事件A关键原文", "url": "https://a.com/original"}]
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    monkeypatch.setattr(web_provider, "web_search", search)
+    data = asyncio.run(web_provider.search_and_cluster("事件A", deep_dive=True, budget_seconds=0.03))
+    assert "https://a.com/original" in {r["url"] for r in data["results"]}
+    assert data["angle_added"] == 1 and data["budget_exhausted"]
+    assert len(cancelled) == 2
+
+
+# ── 原网页安全流读取：HTTP 与 DNS 均为 fake ──────────────────
+
+class _PageStream(web_provider.httpx.AsyncByteStream):
+    def __init__(self, chunks, *, wait=False):
+        self.chunks = chunks
+        self.read_count = 0
+        self.closed = False
+        self.wait = wait
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.read_count += 1
+            yield chunk
+        if self.wait:
+            await asyncio.Event().wait()
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture
+def page_network(monkeypatch):
+    """实际运行 HTTPX 的流协议，只有传输和 DNS 是替身，不可能访问真网络。"""
+    real_client = web_provider.httpx.AsyncClient
+    calls, resolutions = [], []
+    state = {"dns": {}, "handler": None}
+
+    async def dns(self, host, port, **kwargs):
+        resolutions.append(host)
+        ips = state["dns"].get(host, ["93.184.216.34"])
+        return [(2, 1, 6, "", (ip, port)) for ip in ips]
+
+    def handler(request):
+        calls.append(request)
+        if state["handler"] is None:
+            raise AssertionError("没有设置fake页面响应")
+        return state["handler"](request)
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", dns)
+    monkeypatch.setattr(web_provider.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=web_provider.httpx.MockTransport(handler), **kwargs,
+    ))
+    state.update(calls=calls, resolutions=resolutions)
+    return state
+
+
+def _page_response(text="<p>事件A合成正文</p>", *, status=200, headers=None, stream=None):
+    return web_provider.httpx.Response(status, headers={"content-type": "text/html; charset=utf-8", **(headers or {})},
+                                       stream=stream or _PageStream([text.encode("utf-8")]))
+
+
+def test_fetch_page_reads_original_and_pins_dns_with_original_tls_host(page_network):
+    page_network["handler"] = lambda request: _page_response()
+    page = asyncio.run(web_provider.fetch_page("https://news.example/article"))
+    assert page["text"] == "事件A合成正文"
+    assert page["url"] == "https://news.example/article"
+    request = page_network["calls"][0]
+    assert request.url.host == "93.184.216.34"  # 不让 HTTP 客户端重新解析不可信域名
+    assert request.headers["host"] == "news.example"
+    assert request.extensions["sni_hostname"] == "news.example"
+    assert request.headers["accept-encoding"] == "identity"
+    assert page_network["resolutions"] == ["news.example"]
+
+
+# 用整数构造不可路由地址，避免把任何真实/私有地址字面量写进测试文件。
+_NONPUBLIC_TEST_ADDRESSES = [str(ipaddress.ip_address(value)) for value in (
+    0x7F000001, 0x0A010203, 0xAC100001, 0xC0A80101,
+    0xA9FEA9FE, 0x00000000, 0x64400001, 0xE0000001,
+    0xC000020A,
+)] + [str(ipaddress.IPv6Address(value)) for value in (
+    1, 0xFE800000000000000000000000000001,
+    0xFC000000000000000000000000000001, 0xFFFF00007F000001,
+)]
+
+
+@pytest.mark.parametrize("address", _NONPUBLIC_TEST_ADDRESSES)
+def test_fetch_rejects_all_nonpublic_dns_addresses(page_network, address):
+    page_network["dns"]["unsafe.example"] = [address]
+    assert asyncio.run(web_provider.fetch_page("https://unsafe.example/secret")) is None
+    assert not page_network["calls"]
+
+
+def test_fetch_rejects_mixed_public_and_private_dns_answers(page_network):
+    page_network["dns"]["mixed.example"] = ["93.184.216.34", _NONPUBLIC_TEST_ADDRESSES[1]]
+    assert asyncio.run(web_provider.fetch_page("https://mixed.example/")) is None
+    assert not page_network["calls"]
+
+
+@pytest.mark.parametrize("destination", [
+    f"http://{_NONPUBLIC_TEST_ADDRESSES[0]}/admin",
+    f"http://{_NONPUBLIC_TEST_ADDRESSES[4]}/latest/meta-data",
+    "http://internal.example/secret",
+])
+def test_redirect_cannot_enter_private_network(page_network, destination):
+    page_network["dns"]["internal.example"] = [_NONPUBLIC_TEST_ADDRESSES[3]]
+    page_network["handler"] = lambda request: _page_response(status=302, headers={"location": destination})
+    assert asyncio.run(web_provider.fetch_page("https://news.example/start")) is None
+    assert len(page_network["calls"]) == 1
+
+
+def test_relative_redirect_is_validated_again_and_limit_is_bounded(page_network):
+    page_network["handler"] = lambda request: _page_response(status=302, headers={"location": "/loop"})
+    assert asyncio.run(web_provider.fetch_page("https://news.example/start")) is None
+    assert len(page_network["calls"]) == 4
+    assert len(page_network["resolutions"]) == 4
+
+
+def test_public_redirect_can_fetch_final_article(page_network):
+    def handler(request):
+        if request.url.path == "/start":
+            return _page_response(status=302, headers={"location": "https://other.example/full"})
+        return _page_response("<p>完整经过正文。</p>")
+
+    page_network["handler"] = handler
+    page = asyncio.run(web_provider.fetch_page("https://news.example/start"))
+    assert page["url"] == "https://other.example/full"
+    assert page["text"] == "完整经过正文。"
+    assert page_network["resolutions"] == ["news.example", "other.example"]
+    assert page_network["calls"][1].headers["host"] == "other.example"
+
+
+def test_stream_byte_limit_applies_before_body_is_buffered(page_network, monkeypatch):
+    monkeypatch.setattr(settings, "search_max_page_bytes", 16)
+    stream = _PageStream([b"x" * 17, b"this must not be read"])
+    page_network["handler"] = lambda request: _page_response(stream=stream)
+    assert asyncio.run(web_provider.fetch_page("https://news.example/huge")) is None
+    assert stream.read_count == 1 and stream.closed
+
+
+def test_content_length_can_reject_without_reading_any_body(page_network, monkeypatch):
+    monkeypatch.setattr(settings, "search_max_page_bytes", 16)
+    stream = _PageStream([b"large"])
+    page_network["handler"] = lambda request: _page_response(headers={"content-length": "1000000"}, stream=stream)
+    assert asyncio.run(web_provider.fetch_page("https://news.example/huge")) is None
+    assert stream.read_count == 0 and stream.closed
+
+
+def test_compressed_response_cannot_trigger_unbounded_decompression(page_network):
+    stream = _PageStream([b"gzip bytes should not be consumed"])
+    page_network["handler"] = lambda request: _page_response(headers={"content-encoding": "gzip"}, stream=stream)
+    assert asyncio.run(web_provider.fetch_page("https://news.example/compressed")) is None
+    assert stream.read_count == 0 and stream.closed
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost./", "http://user:pass@news.example/", "http://news.example:99999/",
+    f"http://news.example\\@{_NONPUBLIC_TEST_ADDRESSES[0]}/",
+    f"http://[{_NONPUBLIC_TEST_ADDRESSES[-1]}]/", f"http://{_NONPUBLIC_TEST_ADDRESSES[6]}/",
+])
+def test_additional_unsafe_url_forms_never_reach_network(page_network, url):
+    assert asyncio.run(web_provider.fetch_page(url)) is None
+    assert not page_network["calls"] and not page_network["resolutions"]
+
+
+def test_page_total_timeout_includes_dns(page_network, monkeypatch):
+    monkeypatch.setattr(settings, "search_timeout", 0.015)
+    cancelled = []
+
+    async def hanging_dns(self, *args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", hanging_dns)
+    assert asyncio.run(web_provider.fetch_page("https://news.example/")) is None
+    assert cancelled and not page_network["calls"]
+
+
+def test_fetch_cancellation_closes_stream_and_propagates(page_network):
+    async def scenario():
+        started = asyncio.Event()
+
+        class Blocking(_PageStream):
+            async def __aiter__(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"never"
+
+        stream = Blocking([])
+        page_network["handler"] = lambda request: _page_response(stream=stream)
+        task = asyncio.create_task(web_provider.fetch_page("https://news.example/"))
+        await asyncio.wait_for(started.wait(), 0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stream.closed
+
+    asyncio.run(scenario())

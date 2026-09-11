@@ -170,3 +170,20 @@ def test_guest_rate_limited_day_cap():
 def test_guest_rate_limited_isolated_per_uid():
     assert guest_rate_limited("10086") is False
     assert guest_rate_limited("20002") is False
+
+
+def test_trace_stage_marks_cancellation():
+    from app.chat.context import TraceContext
+
+    trace = TraceContext()
+
+    async def cancel_stage():
+        with trace.stage("investigation"):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(cancel_stage())
+    assert trace.stages["investigation"] == {
+        "status": "cancelled", "error": "CancelledError"
+    }
+    assert trace.status == "failed"

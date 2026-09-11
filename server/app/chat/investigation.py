@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlparse
 
 from app.chat import web_provider
 from app.chat.llm_json import extract_json_object
@@ -371,6 +371,7 @@ class _Session:
         self.read_urls: set[str] = set()
         self.content: set[str] = set()
         self.searched: list[str] = []
+        self.page_gaps: list[dict] = []
         self.tried = {_key(self.query), _key(web_provider.clean_query(self.query))}
         self.metrics: dict[str, Any] = {"rounds": 0, "queries": 0, "pages_attempted": 0, "pages_read": 0,
                                         "analysis_calls": 0, "analysis_failures": 0, "search_failures": 0,
@@ -417,6 +418,23 @@ class _Session:
             self._source(item, (item["title"] + "\n" + item["summary"]).strip(), "search_snippet", url)
         return accepted
 
+    def _record_page_gap(self, item: dict) -> None:
+        """正文拒绝/失败时生成一次可执行的替代来源查询。"""
+        url = str(item.get("url") or "")
+        host = urlparse(url).netloc.rsplit("@", 1)[-1].split(":", 1)[0]
+        title = _text(item.get("title"), 120)
+        query = f"{_topic(self.query)} {title} 原始来源 完整经过"
+        if host:
+            query += f" -site:{host}"
+        gap = {
+            "id": "source_access_" + _digest(url),
+            "question": f"原文无法读取，是否存在同一事实的可读替代来源：{title}",
+            "why": "当前条目只有搜索摘要或正文被拒，不能让它单独支撑关键判断。",
+            "query": query[:400], "priority": 110,
+        }
+        if not any(g.get("id") == gap["id"] for g in self.page_gaps):
+            self.page_gaps.append(gap)
+
     async def _read_pages(self, candidates: list[dict], count: int) -> None:
         count = min(count, self.max_pages - self.metrics["pages_attempted"])
         ordered = sorted(candidates, key=lambda item: -_relevance(self.query, item))
@@ -433,16 +451,19 @@ class _Session:
                 page = await asyncio.wait_for(web_provider.fetch_page(item["url"]), timeout=timeout)
                 if not isinstance(page, dict) or not _text(page.get("text"), MAX_TEXT):
                     self.metrics["page_failures"] += 1
+                    self._record_page_gap(item)
                     return
                 page_url = _text(page.get("url"), 2000) or item["url"]
                 if not web_provider._is_safe_url(page_url):
                     self.metrics["page_failures"] += 1
+                    self._record_page_gap(item)
                     return
                 self.read_urls.add(page_url)
                 self._source(item, _text(page.get("text"), MAX_TEXT), "webpage", page_url)
                 self.metrics["pages_read"] += 1
             except Exception:  # 子任务失败不丢其它来源；CancelledError 不在 Exception 内
                 self.metrics["page_failures"] += 1
+                self._record_page_gap(item)
 
         await _parallel([read(item) for item in selected])
 
@@ -503,7 +524,7 @@ class _Session:
             status = "addressed" if addressed and not any(c["status"] == "disputed" for c in relevant) else "unknown"
             self.dimensions[dimension] = {"status": status, "claim_ids": [c["id"] for c in relevant] if addressed else [],
                                           "note": _text(raw.get("note"), 160) if addressed else "材料或绑定不充分，继续保留缺口"}
-        gaps = list(validation_gaps)
+        gaps = list(validation_gaps) + list(self.page_gaps)
         for raw in _items(payload.get("gaps"), 4):
             if not isinstance(raw, dict) or not _text(raw.get("question"), 240):
                 continue
@@ -531,6 +552,9 @@ class _Session:
         for dimension in _DIMENSIONS:
             if not any(g["id"] == dimension for g in self.gaps):
                 self.gaps.append(_gap(dimension, self.query))
+        for gap in self.page_gaps:
+            if not any(item.get("id") == gap["id"] for item in self.gaps):
+                self.gaps.append(gap)
         self.gaps = sorted(self.gaps, key=lambda g: -g["priority"])[:MAX_GAPS]
 
     async def _analyze(self) -> None:
@@ -599,7 +623,12 @@ class _Session:
             try:
                 results = await asyncio.wait_for(web_provider.web_search(q, category="general", time_range="", limit=4), timeout=timeout)
                 # 成功的子任务立即入证据：另一个超时/失败不能令它丢失。
-                added.extend(self._ingest(results))
+                gained = self._ingest(results)
+                added.extend(gained)
+                if gained:
+                    # 该查询就是针对某条被拒正文生成的替代来源探针；有新条目
+                    # 到达后，关闭原“不可读”缺口，保留 page_failures 统计。
+                    self.page_gaps = [g for g in self.page_gaps if g.get("query") != q]
             except Exception:
                 self.metrics["search_failures"] += 1
 

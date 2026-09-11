@@ -351,6 +351,31 @@ def test_single_page_failure_does_not_discard_other_original(monkeypatch):
     assert any(s["text"] == ACTION for s in result.evidence["sources"])
 
 
+def test_page_failure_creates_exclusion_query_for_readable_alternative(monkeypatch):
+    searched = []
+
+    async def fetch(url):
+        if url.endswith("bad"):
+            return None
+        return {"url": url, "text": ACTION}
+
+    async def search(query, **kwargs):
+        searched.append(query)
+        if "-site:" in query:
+            return [item("alternate", ACTION, title="事件A可读原文")]
+        return []
+
+    monkeypatch.setattr(inv.web_provider, "fetch_page", fetch)
+    monkeypatch.setattr(inv.web_provider, "web_search", search)
+    result = run(runtime(investigation_max_rounds=1), [item("bad")])
+    assert any("-site:news.example" in query for query in searched)
+    assert result.metrics["page_failures"] == 1
+    assert result.metrics["pages_read"] == 1
+    assert any(source["kind"] == "webpage" and source["url"].endswith("alternate")
+               for source in result.evidence["sources"])
+    assert any(gap["id"].startswith("source_access_") for gap in result.evidence["gaps"]) is False
+
+
 def test_initial_reads_max_two_relevant_pages_and_global_page_cap(monkeypatch):
     read, queried = [], []
 

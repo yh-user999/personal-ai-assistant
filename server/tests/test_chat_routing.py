@@ -50,6 +50,64 @@ def test_dispatch_skips_guest_blocked_and_falls_through():
 
 # ── 快捷时间问答（零 LLM）───────────────────────────────────
 
+def _identity_context(message: str, *, is_owner: bool) -> ChatContext:
+    return ChatContext(
+        request=type("Request", (), {"state": type("State", (), {})()})(),
+        request_model=ChatRequest(message=message),
+        message=message,
+        uid="owner" if is_owner else "guest-test",
+        is_owner=is_owner,
+    )
+
+
+def test_admin_identity_query_is_detected_without_matching_identity_settings():
+    assert routing.is_admin_identity_query("你的管理员是谁")
+    assert routing.is_admin_identity_query("主人有几个")
+    assert routing.is_admin_identity_query("某某是不是管理员")
+    assert routing.is_admin_identity_query("管理员的 QQ 号是多少")
+    assert not routing.is_admin_identity_query("你叫什么名字")
+    assert not routing.is_admin_identity_query("你是不是 AI")
+
+
+def test_guest_admin_identity_query_never_confirms_or_denies():
+    reply = asyncio.run(
+        routing._identity(
+            _identity_context("你的管理员是谁", is_owner=False),
+            SimpleNamespace(),
+        )
+    )
+    assert reply is not None and reply.reply == "这个我不透露。"
+    assert "管理员" not in reply.reply
+    assert "不是" not in reply.reply
+
+
+def test_dispatch_allows_guest_identity_privacy_handler_before_guest_gate():
+    ctx = _identity_context("管理员是谁", is_owner=False)
+    result = asyncio.run(routing.dispatch(ctx, SimpleNamespace()))
+    assert result is not None and result.reply == "这个我不透露。"
+    assert ctx.trace.route_name == "command:identity"
+
+
+def test_authenticated_owner_can_confirm_own_admin_identity():
+    reply = asyncio.run(
+        routing._identity(
+            _identity_context("我是不是管理员", is_owner=True),
+            SimpleNamespace(),
+        )
+    )
+    assert reply is not None and "已通过管理员身份认证" in reply.reply
+
+
+def test_owner_cannot_query_third_party_admin_identity():
+    reply = asyncio.run(
+        routing._identity(
+            _identity_context("某某是不是管理员", is_owner=True),
+            SimpleNamespace(),
+        )
+    )
+    assert reply is not None and reply.reply == "这个我不透露。"
+
+
 def test_parse_time_question_hits_and_misses():
     assert "现在是" in routing.parse_time_question("几点了")
     assert "现在是" in routing.parse_time_question("今天星期几")

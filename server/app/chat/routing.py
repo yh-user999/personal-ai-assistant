@@ -21,6 +21,17 @@ from app.chat.context import (
 )
 
 TIME_QUESTION = re.compile(r"几点了|现在几点|今天星期几|今天几号|今天几月几号|今天日期|现在时间|什么时间了")
+_ADMIN_IDENTITY_TERM = r"(?:管理员|管理者|主人|所有者|维护者|负责人|老板)"
+_ADMIN_IDENTITY_QUERY = re.compile(
+    rf"(?:{_ADMIN_IDENTITY_TERM}).*(?:谁|哪位|什么人|名字|姓名|QQ|扣扣|号码|几个|多少|是不是|是否|吗|呢)|"
+    rf"(?:谁|哪位|什么人).*(?:{_ADMIN_IDENTITY_TERM})|"
+    rf"(?:是不是|是否|是).*(?:{_ADMIN_IDENTITY_TERM})|"
+    rf"(?:{_ADMIN_IDENTITY_TERM}).*(?:告诉我|能不能说|能否说明|公开)"
+)
+_ADMIN_SELF_IDENTITY_QUERY = re.compile(
+    rf"(?:我|本人|自己).*(?:是不是|是否|是).*(?:{_ADMIN_IDENTITY_TERM})|"
+    rf"(?:{_ADMIN_IDENTITY_TERM}).*(?:是不是|是否|就是).*(?:我|本人|自己)"
+)
 TZ = ZoneInfo("Asia/Shanghai")
 
 GUEST_BLOCKED_HANDLERS = frozenset(
@@ -516,7 +527,33 @@ async def _search(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None
     )
 
 
+def is_admin_identity_query(message: str) -> bool:
+    """识别询问管理员/主人身份的问法，不解析用户自称或授予权限。"""
+    return bool(_ADMIN_IDENTITY_QUERY.search((message or "").strip()))
+
+
+def is_admin_self_identity_query(message: str) -> bool:
+    """识别“我是不是管理员”这类自我确认问法。"""
+    return bool(_ADMIN_SELF_IDENTITY_QUERY.search((message or "").strip()))
+
+
+async def _admin_identity_privacy(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
+    """身份问题走确定性口径，避免把管理员身份交给 LLM 自由发挥。
+
+    仅已认证管理员本人可确认自己的身份；其他询问既不确认也不否认，
+    不解释权限实现，避免通过回答做身份探测。
+    """
+    if not is_admin_identity_query(ctx.message):
+        return None
+    if ctx.is_owner and is_admin_self_identity_query(ctx.message):
+        return ChatResponse(reply="是，你已通过管理员身份认证。", memories_used=0)
+    return ChatResponse(reply="这个我不透露。", memories_used=0)
+
+
 async def _identity(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
+    privacy_response = await _admin_identity_privacy(ctx, runtime)
+    if privacy_response is not None:
+        return privacy_response
     if not ctx.is_owner:
         return None
     identity_guard = runtime.services.identity_guard
@@ -765,7 +802,10 @@ async def dispatch(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
         return None
     for name, handler in _COMMAND_HANDLERS:
         if not ctx.is_owner and name in GUEST_BLOCKED_HANDLERS:
-            continue
+            # 身份问题不是身份设定/权限命令；允许它进入确定性保密口径，
+            # 但不让访客进入真正的 identity_guard 修改流程。
+            if name != "identity" or not is_admin_identity_query(ctx.message):
+                continue
         response = await handler(
             ctx.message,
             ctx.request,

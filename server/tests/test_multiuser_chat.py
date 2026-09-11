@@ -98,9 +98,10 @@ def test_guest_chat_isolated_context(env, captured):
     assert len(msgs) == 1
     system = msgs[0][0]["content"]
 
-    # 访客边界声明注入
-    assert "QQ 用户 10002（访客" in system
-    assert "功能对你不可用" in system
+    # 访客边界声明注入；不得用“访客/不是管理员”暴露身份排除信息。
+    assert "QQ 用户 10002。" in system
+    assert "管理员/主人身份信息不得透露、确认、否认或暗示" in system
+    assert "功能对你不可用" not in system
     # 主人数据零注入
     assert "青鸾" not in system, "主人的事实泄漏给访客"
     assert "回复别用 emoji" not in system, "主人的教训泄漏给访客"

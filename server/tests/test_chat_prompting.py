@@ -73,12 +73,16 @@ def test_system_prompt_stable_block_before_dynamic_block():
 def test_system_prompt_guest_note_only_for_guest():
     owner_system = prompting.build_system_prompt(make_ctx("hi"), None, base_bundle())
     assert "【当前对话对象】" not in owner_system
+    assert "管理员身份保密" in owner_system
 
     guest_system = prompting.build_system_prompt(
         make_ctx("hi", uid="10086", is_owner=False), None, base_bundle()
     )
-    assert "【当前对话对象】QQ 用户 10086（访客，不是管理员）" in guest_system
+    assert "【当前对话对象】QQ 用户 10086。" in guest_system
     assert "访客边界" in guest_system
+    assert "访客，不是管理员" not in guest_system
+    assert "管理员/主人身份信息不得透露、确认、否认或暗示" in guest_system
+    assert "这个功能对你不可用" not in guest_system
 
 
 def test_system_prompt_placeholder_fallbacks():

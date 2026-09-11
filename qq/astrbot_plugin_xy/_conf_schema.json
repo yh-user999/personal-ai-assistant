@@ -15,7 +15,7 @@
   },
   "group_require_mention": {
     "description": "群聊是否要求 @机器人",
-    "type": "boolean",
+    "type": "bool",
     "hint": "默认开启；关闭后白名单群中的普通消息也可能触发机器人。",
     "default": true,
     "restart_required": false

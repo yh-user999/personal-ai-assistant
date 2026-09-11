@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -234,6 +235,13 @@ def test_text_request_routes_owner_and_visitor_tokens():
     asyncio.run(plugin.on_message(visitor_event))
     assert client.kwargs["headers"]["Authorization"] == "Bearer qq-token"
     assert client.kwargs["headers"]["X-QQ-User-ID"] == "456"
+
+
+def test_group_schema_uses_astrbot_supported_types():
+    schema = json.loads(Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8"))
+    assert schema["group_require_mention"]["type"] == "bool"
+    assert schema["group_cooldown_seconds"]["type"] == "float"
+    assert schema["group_max_replies_per_hour"]["type"] == "int"
 
 
 def test_group_configuration_parsing_is_fail_closed():

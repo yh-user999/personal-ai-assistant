@@ -100,7 +100,13 @@ def _digest(value: str) -> str:
 
 
 def _topic(query: str) -> str:
-    return re.sub(r"(?:怎么看|如何评价|有何看法|你怎么看|怎么样)[？?。\s]*$", "", web_provider.clean_query(query)).strip()[:160] or query[:160]
+    # 检索主题不能带判断包装，否则标题里没有“谁的错/怎么看”的报道会被
+    # 相关性过滤掉，调查器看不到正文，只能错误地走未知降级。
+    return re.sub(
+        r"(?:怎么看|如何评价|有何看法|你怎么看|怎么样|谁的错|谁对|合理吗|"
+        r"你支持谁|什么看法|什么态度)[？?。\s]*$",
+        "", web_provider.clean_query(query),
+    ).strip()[:160] or query[:160]
 
 
 def _relevance(query: str, item: dict) -> int:

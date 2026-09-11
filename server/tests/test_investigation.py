@@ -13,6 +13,11 @@ ACTION = "事件A中，2026年8月1日甲先后退，乙随后推了甲。"
 DENIAL = "事件A中，2026年8月1日乙否认自己推了甲，称完整监控不支持这一说法。"
 
 
+def test_topic_strips_judgment_wrapper_before_relevance_matching():
+    assert inv._topic("湖南四岁幼童事件谁的错") == "湖南四岁幼童事件"
+    assert inv._topic("湖南四岁幼童事件你怎么看") == "湖南四岁幼童事件"
+
+
 def item(path="payout", text=PAYOUT, title="事件A报道", host="news.example"):
     return {"title": title, "url": f"https://{host}/{path}", "source": host,
             "published_at": "2026-08-02", "summary": text}

@@ -146,8 +146,17 @@ def group_triggered(
     if not self_id:
         return False
     for component in getattr(event, "get_messages", lambda: [])() or []:
-        kind = str(getattr(component, "type", "") or type(component).__name__).casefold()
-        if kind not in {"at", "mention"}:
+        # AstrBot 的 type 是枚举（str(...) 得到 "ComponentType.At"），不能直接比字面量：
+        # 早期实现按 == "at" 判断，导致真实 @ 永远匹配不上、群里被点名也不回。
+        # 这里同时接受枚举 value、枚举名和类名，取最后一段再比较。
+        raw_kind = getattr(component, "type", None)
+        candidates = {
+            str(getattr(raw_kind, "value", "") or "").casefold(),
+            str(getattr(raw_kind, "name", "") or "").casefold(),
+            str(raw_kind or "").rsplit(".", 1)[-1].casefold(),
+            type(component).__name__.casefold(),
+        }
+        if not candidates & {"at", "mention"}:
             continue
         target = ""
         for name in ("qq", "target", "user_id", "id"):

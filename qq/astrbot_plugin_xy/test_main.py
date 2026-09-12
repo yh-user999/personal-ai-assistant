@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import importlib.util
 import json
 import sys
@@ -38,11 +39,21 @@ def _install_astrbot_stubs():
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
+    class _ComponentType(enum.Enum):
+        """与 AstrBot 一致：type 是枚举，str() 得到 "ComponentType.At"。
+
+        早期桩用字符串 "At"，掩盖了真实枚举匹配不上的 bug（群里被 @ 却不回）。
+        """
+
+        At = "At"
+        Plain = "Plain"
+
     class At:
-        type = "At"
+        type = _ComponentType.At
 
         def __init__(self, qq):
             self.qq = qq
+            self.name = None
 
     class File:
         pass
@@ -315,6 +326,35 @@ def test_group_mode_requires_whitelist_and_mention():
     asyncio.run(plugin.on_message(other_group))
     assert other_group.sent == []
     assert client.kwargs is None
+
+
+def test_at_component_with_enum_type_is_recognized_as_mention():
+    """AstrBot 的 At.type 是枚举，必须能识别为唤醒。
+
+    线上实测：str(枚举) 是 "ComponentType.At"，旧实现按 =="at" 比较导致
+    群里 @ 机器人却被判为"未唤醒"，完全不回复。
+    """
+    At = sys.modules["astrbot.api.message_components"].At
+
+    class _Event:
+        def __init__(self, comps):
+            self._c = comps
+
+        def get_messages(self):
+            return self._c
+
+        def get_message_str(self):
+            return "@小月 你是谁"
+
+        def get_self_id(self):
+            return "999"
+
+    # 枚举型 type（真实形态）
+    assert _MOD.group_triggered(_Event([At("999")])) is True
+    # @ 的是别人，不应唤醒
+    assert _MOD.group_triggered(_Event([At("123")])) is False
+    # 没有 At 组件，不应唤醒
+    assert _MOD.group_triggered(_Event([])) is False
 
 
 def test_group_default_has_no_cooldown_so_mentions_always_get_answered():

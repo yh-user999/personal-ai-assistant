@@ -313,8 +313,21 @@ def test_group_chat_does_not_persist_personal_messages_or_trigger_personal_hooks
     conn = connect()
     try:
         assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+        # 群消息原文不得出现在任何可检索的表里。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE content LIKE '%群里的一句话%'"
+        ).fetchone()[0] == 0
     finally:
         conn.close()
+
+    # 但本轮问答应留在进程内存，供同群后续追问使用。
+    from app.chat import group_context
+
+    context = group_context.recent_messages("456")
+    assert [item["role"] for item in context] == ["user", "assistant"]
+    assert "群里的一句话" in context[0]["content"]
+    assert "123" not in context[0]["content"], "上下文不得暴露发言人 QQ 号"
+    group_context.clear()
 
 
 def test_group_admin_identity_query_uses_privacy_route_without_llm(db_env, monkeypatch):

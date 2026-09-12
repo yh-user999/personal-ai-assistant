@@ -529,7 +529,13 @@ async def _run_chat(
             "system_total": len(assembly.system),
         }
 
-    if not ctx.is_group:
+    if ctx.is_group:
+        # 群消息只进进程内存的短期上下文，绝不落库：不进 memories，
+        # 因此不会被检索命中，也不进备份与向量索引。
+        from app.chat import group_context
+
+        group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
+    else:
         memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
         with ctx.trace.stage("persistence.user"):
             await memory.write_message(
@@ -578,7 +584,11 @@ async def _run_chat(
     if on_delta is not None and buffered_reply:
         await on_delta(reply)
 
-    if not ctx.is_group:
+    if ctx.is_group:
+        from app.chat import group_context
+
+        group_context.remember(ctx.group_id, "assistant", reply)
+    else:
         with ctx.trace.stage("persistence.assistant"):
             await memory.write_message("assistant", reply, user_id=ctx.uid)
         if bundle.mems:

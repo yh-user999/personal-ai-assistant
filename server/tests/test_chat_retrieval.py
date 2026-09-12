@@ -10,6 +10,16 @@ from app.core import memory as memory_module
 from app.models.database import init_db, reset_connections
 
 
+@pytest.fixture(autouse=True)
+def _clean_group_context():
+    """群上下文是进程内存，必须逐测试清理，避免用例间互相污染。"""
+    from app.chat import group_context
+
+    group_context.clear()
+    yield
+    group_context.clear()
+
+
 @pytest.fixture
 def db_env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "t.db"))
@@ -251,12 +261,17 @@ def make_ctx(message, uid="", is_owner=True, group_id=""):
 
 
 def test_group_retrieve_returns_empty_personal_scope():
+    """群检索不得引入任何个人数据；history 只允许来自本群内存上下文。"""
+    from app.chat import group_context
+
+    group_context.clear()
     ctx = make_ctx("群里的一句话", uid="10086", is_owner=False, group_id="456")
     runtime = type("Runtime", (), {"settings": settings, "memory": object(), "knowledge": object(), "services": object()})()
     preparation = retrieval.prepare_turn(ctx, runtime)
     bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
 
     assert preparation.last_ai is None
+    # 无内存上下文时为空：不会去读个人历史来填充。
     assert bundle.history == []
     assert bundle.evidence == {}
     assert bundle.mems == []

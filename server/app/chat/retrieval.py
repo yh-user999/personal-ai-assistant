@@ -414,7 +414,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     services = runtime.services
     msg = ctx.message
     if ctx.is_group:
-        # 群模式首版只使用当轮消息：不检索个人记忆/知识，不联网，不创建调查上下文。
+        # 群模式只带"本群最近几轮"的进程内存上下文：能接住追问，但不检索个人
+        # 记忆/知识、不联网、不创建调查上下文，也不把群消息写进任何表。
+        from app.chat import group_context
+
         return RetrievalBundle(
             trace={
                 "routing": {}, "path": "group", "degraded": 0,
@@ -427,7 +430,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     "entity_hits": 0, "healed_chunks": 0,
                 },
             },
-            history=[],
+            history=group_context.recent_messages(ctx.group_id),
             evidence={},
         )
     evidence: dict[str, Any] = {}

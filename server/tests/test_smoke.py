@@ -85,6 +85,62 @@ def test_ready_allows_keyword_fallback_when_vectors_are_unavailable(monkeypatch)
     assert payload["failures"] == []
 
 
+def test_ready_reports_integrity_reasons_when_check_fails(monkeypatch):
+    """integrity_check 返回多行错误时必须判失败并带上可诊断原因。
+
+    旧实现只取首行，既无法排障，也会在首行为提示文本时误判。
+    """
+    from app.models import database
+
+    real_connect = database.connect
+    failure_rows = [
+        ("*** in database main ***",),
+        ("Page 42 is never used",),
+    ]
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = list(rows)
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class _FakeConn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            if sql.strip().upper().startswith("PRAGMA INTEGRITY_CHECK"):
+                return _FakeCursor(failure_rows)
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def fake_connect():
+        return _FakeConn(real_connect())
+
+    with TestClient(app) as client:
+        client.get("/api/ready")
+        monkeypatch.setattr(database, "connect", fake_connect)
+        response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    db_check = response.json()["checks"]["database"]
+    assert db_check["ok"] is False
+    assert db_check["integrity"] is False
+    assert db_check["integrity_errors"] == [
+        "*** in database main ***",
+        "Page 42 is never used",
+    ]
+
+
 def test_heartbeat_does_not_expose_activity_on_health():
     with TestClient(app) as client:
         r = client.post(

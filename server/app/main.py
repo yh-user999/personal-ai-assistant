@@ -227,17 +227,28 @@ async def ready(request: Request):
                 "SELECT version FROM schema_version WHERE id=1"
             ).fetchone()
             version = int(version_row[0]) if version_row else None
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            # integrity_check 失败时会返回多行原因；只取首行既无法诊断，
+            # 也会在首行恰为提示性文本时误判。这里保留原因用于排障。
+            integrity_rows = [
+                str(row[0]) for row in conn.execute("PRAGMA integrity_check").fetchall()
+            ]
+            integrity_ok = integrity_rows == ["ok"]
             foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
-            ok = not missing and version == database.SCHEMA_VERSION and integrity == "ok" and not foreign_keys
-            return {
+            ok = not missing and version == database.SCHEMA_VERSION and integrity_ok and not foreign_keys
+            result = {
                 "status": "ok" if ok else "failed",
                 "ok": ok,
                 "schema_version": version,
                 "missing_tables": missing,
-                "integrity": integrity == "ok",
+                "integrity": integrity_ok,
                 "foreign_keys": len(foreign_keys) == 0,
             }
+            if not integrity_ok:
+                # 结构性诊断信息（页号/索引名），不含用户数据。
+                reasons = [text[:200] for text in integrity_rows[:5]]
+                result["integrity_errors"] = reasons
+                logger.error("数据库 integrity_check 未通过: %s", "; ".join(reasons))
+            return result
 
     try:
         checks["database"] = await asyncio.to_thread(_database_check)

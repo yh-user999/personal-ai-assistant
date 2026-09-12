@@ -437,6 +437,11 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                     "不得声称已经查清全部事实或没有遗漏，也不得将未知部分下肯定结论。"
                 )
         system = system + "\n\n" + "\n".join(block)
+        if ctx.is_group and "care_signal" in (plan.get("social_reasons") or []):
+            system += (
+                "\n\n【轻量关怀约束】只用一句自然、不过度追问的关心回应当前情绪；"
+                "不要追问隐私、诊断健康问题、承诺解决危机或把情绪内容写成长期画像。"
+            )
     evidence = getattr(bundle, "evidence", {})
     if evidence and plan.get("investigation_status"):
         from app.chat.investigation import render_evidence

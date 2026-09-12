@@ -72,6 +72,26 @@ def test_sensitive_and_command_messages_are_hard_rejected():
         assert reason in result.reasons
 
 
+def test_familiar_emotion_message_gets_light_care_signal(db_env):
+    for _ in range(14):
+        group_relationship.observe_message("fixture-group", "000001", "普通群聊", directed=False)
+    relationship = group_relationship.get_snapshot("fixture-group", "000001")
+    result = score_group_interjection(
+        "最近有点累",
+        history=[],
+        scene={
+            "atmosphere": "casual",
+            "has_recent_bot_reply": False,
+            "relationship": relationship,
+        },
+        robot_state={"energy": 1.0},
+        threshold=0.72,
+    )
+    assert result.action == "interject"
+    assert result.score >= 0.72
+    assert "care_signal" in result.reasons
+
+
 def test_gate_allows_first_message_then_enforces_cooldown_and_gap():
     gate = GroupInterjectGate()
     config = InterjectionConfig(
@@ -267,7 +287,12 @@ def test_group_state_and_learning_injections_are_isolated(db_env):
     assert collected["self_state"] == ""
 
     bundle = retrieval.RetrievalBundle(**collected)
+    ctx.trace.response_plan = {
+        "mode": "casual_chat",
+        "social_reasons": ["care_signal"],
+    }
     prompt = prompting.build_system_prompt(ctx, runtime, bundle)
+    assert "轻量关怀约束" in prompt
     assert "群内关系参考" in prompt
     assert "隐藏功能" in prompt
     assert "小月当前状态" in prompt

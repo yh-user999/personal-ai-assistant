@@ -534,6 +534,7 @@ async def _run_chat(
             except Exception as exc:  # noqa: BLE001
                 runtime.logger.debug("机器人群状态更新失败: %s", type(exc).__name__)
         relationship_service = getattr(services, "group_relationship", None)
+        relationship_snapshot: dict[str, Any] = {}
         if relationship_service:
             try:
                 await asyncio.to_thread(
@@ -543,6 +544,10 @@ async def _run_chat(
                     msg,
                     directed=ctx.group_directed,
                 )
+                relationship_snapshot = await asyncio.to_thread(
+                    relationship_service.get_snapshot, ctx.group_id, ctx.uid
+                )
+                social_scene["relationship"] = relationship_snapshot
             except Exception as exc:  # noqa: BLE001
                 runtime.logger.debug("群关系更新失败: %s", type(exc).__name__)
 

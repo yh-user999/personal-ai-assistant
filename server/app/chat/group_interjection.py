@@ -348,19 +348,36 @@ def score_group_interjection(
         if "has_recent_bot_reply" in scene
         else any(item["role"] == "assistant" for item in recent[-2:])
     )
+    relationship = scene.get("relationship") or {}
+    try:
+        familiarity = _clamp(float(relationship.get("familiarity", 0.0)))
+        affinity = max(-1.0, min(1.0, float(relationship.get("affinity", 0.0))))
+    except (AttributeError, TypeError, ValueError):
+        familiarity, affinity = 0.0, 0.0
+    care_signal = bool(
+        _EMOTION_RE.search(text)
+        and not has_recent_bot
+        and familiarity >= 0.2
+        and affinity >= -0.15
+    )
+    if care_signal:
+        social_signal = max(social_signal, 0.9)
+        reasons.append("care_signal")
     conversation_gap = 0.15 if has_recent_bot else 0.85
     if not has_recent_bot:
         reasons.append("bot_gap")
     else:
         reasons.append("recent_bot_reply")
 
-    atmosphere = str(scene.get("atmosphere") or "casual").strip().lower()
+    atmosphere = "emotional" if care_signal else str(
+        scene.get("atmosphere") or "casual"
+    ).strip().lower()
     scene_fit = {
         "celebration": 0.95,
         "casual": 0.85,
         "questioning": 0.80,
         "technical": 0.65,
-        "emotional": 0.35,
+        "emotional": 0.72 if care_signal else 0.35,
         "tense": 0.15,
     }.get(atmosphere, 0.55)
     if atmosphere in {"emotional", "tense"}:
@@ -394,7 +411,7 @@ def score_group_interjection(
         penalties["high_activity"] = 0.20
         reasons.append("high_activity")
     if atmosphere in {"emotional", "tense"}:
-        penalties["sensitive_atmosphere"] = 0.30
+        penalties["sensitive_atmosphere"] = 0.05 if care_signal else 0.30
     try:
         energy = _clamp(float(robot_state.get("energy", 1.0)))
     except (TypeError, ValueError):
@@ -404,6 +421,9 @@ def score_group_interjection(
         reasons.append("low_energy")
 
     score = _clamp(weighted - sum(penalties.values()))
+    if care_signal:
+        # 轻量关怀允许比普通闲聊稍积极，但仍由冷却/预算/安全门禁兜底。
+        score = _clamp(score + 0.12)
     # 没有明显社交信号时不允许靠其他因子凑出主动插话分数。
     if social_signal < 0.5:
         score = min(score, 0.49)

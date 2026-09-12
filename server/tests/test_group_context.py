@@ -22,6 +22,14 @@ def db_env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "t.db"))
     reset_connections()
     init_db()
+
+    # 群检索会走向量通道，桩掉 embedding 避免测试依赖外部服务。
+    import app.core.embedding as _embedding
+
+    async def fake_embed(texts):
+        return [[0.0] * settings.embedding_dimension for _ in texts]
+
+    monkeypatch.setattr(_embedding, "embed", fake_embed)
     yield
     reset_connections()
 
@@ -50,18 +58,26 @@ def test_recent_messages_returns_context_in_order():
     assert items[2]["content"].endswith("科幻")
 
 
-def test_group_retrieve_includes_recent_context():
+def test_group_retrieve_includes_recent_context(db_env):
+    """内存上下文优先用于 history；群检索限定在本群作用域内。"""
+    import logging
+    from types import SimpleNamespace
+
+    from app.core import memory as memory_module
+
     group_context.remember("456", "user", "推荐本书", user_id="10086")
     group_context.remember("456", "assistant", "看什么类型的？")
 
-    runtime = type("Runtime", (), {
-        "settings": settings, "memory": object(), "knowledge": object(), "services": object(),
-    })()
+    runtime = SimpleNamespace(
+        settings=settings, memory=memory_module, knowledge=object(),
+        services=object(), logger=logging.getLogger("t"),
+    )
     bundle = asyncio.run(retrieve(make_ctx("科幻"), runtime, None))
 
     assert len(bundle.history) == 2
-    # 仍不得引入个人记忆或证据
-    assert bundle.mems == [] and bundle.evidence == {}
+    # 群检索不产生调查证据；库里没有本群历史时也不应报错
+    assert bundle.evidence == {}
+    assert bundle.trace["path"] == "group"
 
 
 # ── 隔离边界（核心隐私保证）─────────────────────────────────

@@ -116,12 +116,12 @@ def collect_evidence(days: int = DEFAULT_DAYS, user_id: str | None = None) -> di
         # 话题演进：consolidation 提取的 topics
         topic_rows = conn.execute(
             f"SELECT topics FROM memories WHERE topics NOT IN ('', '[]') "
-            f"AND topics IS NOT NULL AND ts >= ? AND {clause}",
+            f"AND topics IS NOT NULL AND ts >= ? AND {clause} AND group_id=''",
             (cutoff_utc, *args),
         ).fetchall()
 
         turns = conn.execute(
-            f"SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ? AND {clause}",
+            f"SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ? AND {clause} AND group_id=''",
             (cutoff_utc, *args),
         ).fetchone()["c"]
 

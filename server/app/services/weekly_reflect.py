@@ -73,7 +73,7 @@ async def run_weekly_reflect(
     conn = connect()
     try:
         summaries = conn.execute(
-            f"SELECT summary, topics, ts FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} LIMIT 200",
+            f"SELECT summary, topics, ts FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} AND group_id='' LIMIT 200",
             (since, *uargs),
         ).fetchall()
         logs = conn.execute(

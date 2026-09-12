@@ -51,7 +51,7 @@ def weekly_stats(days: int = 7, user_id: str | None = None) -> dict:
         ).fetchone()["cnt"]
         # 对话条数（主人专属统计，v0.4 不含访客）
         msgs = conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ? AND {clause}",
+            f"SELECT COUNT(*) AS cnt FROM memories WHERE ts >= ? AND {clause} AND group_id=''",
             (since, *args),
         ).fetchone()["cnt"]
     finally:
@@ -86,7 +86,7 @@ def top_topics(days: int = 7, limit: int = 5, user_id: str | None = None) -> lis
     conn = connect()
     try:
         rows = conn.execute(
-            f"SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND {clause}",
+            f"SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND {clause} AND group_id=''",
             (since, *args),
         )
         for r in rows:

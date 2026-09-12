@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL DEFAULT '',    -- 用户标识：主人 QQ 号 / 'owner'（未配置时）；访客为其 QQ 号
+  group_id TEXT NOT NULL DEFAULT '',   -- 群作用域：''=私聊，非空=该群。群与私聊记忆互不检索
   sender TEXT NOT NULL,               -- 'user' / 'assistant'
   content TEXT NOT NULL,
   summary TEXT DEFAULT '',
@@ -1178,6 +1179,11 @@ def _migrate_user_id(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE {t} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
             )
+
+    # 群作用域：老数据全部是私聊，默认 '' 即正确，无需回填。
+    # 群记忆与私聊记忆必须分开检索，否则同一个人在群里说的话会进他的私聊上下文。
+    if _table_exists(conn, "memories") and not _column_exists(conn, "memories", "group_id"):
+        conn.execute("ALTER TABLE memories ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
 
     # ② 重建型：facts（UNIQUE 三列 → 四列）
     if _table_exists(conn, "facts") and not _column_exists(conn, "facts", "user_id"):

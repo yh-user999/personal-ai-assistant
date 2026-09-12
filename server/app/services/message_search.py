@@ -82,13 +82,15 @@ def search_messages(keyword: str, limit: int = MAX_HITS, user_id: str | None = N
     ]
     conn = connect()
     try:
+        # 只搜私聊：这是主人的"搜索聊天记录"命令（群聊已在路由层禁用），
+        # 若不限定作用域，私聊搜索会翻出群里第三方的发言。
         total = conn.execute(
-            f"SELECT COUNT(*) AS n FROM memories WHERE {clause} AND {where}",
+            f"SELECT COUNT(*) AS n FROM memories WHERE {clause} AND group_id='' AND {where}",
             (*uargs, *params),
         ).fetchone()["n"]
         rows = conn.execute(
-            f"SELECT id, sender, content, ts FROM memories WHERE {clause} AND {where} "
-            "ORDER BY id DESC LIMIT ?",
+            f"SELECT id, sender, content, ts FROM memories WHERE {clause} AND group_id='' "
+            f"AND {where} ORDER BY id DESC LIMIT ?",
             (*uargs, *params, limit),
         ).fetchall()
     finally:

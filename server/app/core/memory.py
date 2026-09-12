@@ -63,6 +63,16 @@ def _user_scope(uid: str, col: str = "user_id") -> tuple[str, tuple]:
     return f"{col} = ?", (uid,)
 
 
+def _group_scope(group_id: str | None, prefix: str = "") -> tuple[str, tuple]:
+    """群作用域过滤子句：私聊只查 group_id=''，群聊只查该群。
+
+    两侧都必须显式限定：否则同一个人在群里说的话会被他的私聊检索到，
+    群里也会读到他的私聊内容。
+    """
+    col = f"{prefix}group_id" if prefix else "group_id"
+    return f"{col} = ?", (str(group_id or "").strip(),)
+
+
 # ── FTS5 全文索引（替代 Python 全表扫描）───────────────────
 # unicode61 tokenizer 对中文不分词，写入时把文本切成 2-gram 空格分隔——
 # 与旧 Python BM25 的 2-gram 语义完全一致，但倒排索引查询 O(log n)，
@@ -105,7 +115,9 @@ def _fts_backfill(conn) -> None:
     conn.commit()
 
 
-def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]:
+def _fts_query(
+    query: str, top_k: int, user_id: str | None = None, group_id: str | None = None
+) -> list[dict]:
     """FTS5 MATCH + 内置 bm25() 排序（替代 Python BM25/深挖两次全扫）。
 
     查询词同样 gram 化；OR 语义（命中任一 gram 即候选，bm25 权重自然偏向
@@ -118,16 +130,19 @@ def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]
     match = " OR ".join(f'"{g}"' for g in grams)
     uid = normalize_user_id(user_id)
     clause, uargs = _user_scope(uid, col="f.user_id")
+    # 群作用域直接过滤 memories 表：FTS 表没有 group_id 列，
+    # 但它必须 JOIN memories 取正文，所以在 m 上过滤同样严密且无需重建索引。
+    gclause, gargs = _group_scope(group_id, prefix="m.")
     conn = connect()
     try:
         rows = conn.execute(
             f"""
             SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance, m.topics
             FROM memories_fts f JOIN memories m ON m.id = f.memory_id
-            WHERE memories_fts MATCH ? AND {clause}
+            WHERE memories_fts MATCH ? AND {clause} AND {gclause}
             ORDER BY bm25(memories_fts) LIMIT ?
             """,
-            (match, *uargs, top_k),
+            (match, *uargs, *gargs, top_k),
         ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as e:
@@ -139,21 +154,27 @@ def _fts_query(query: str, top_k: int, user_id: str | None = None) -> list[dict]
 
 # ── 写入 ──────────────────────────────────────────────────
 
-def _write_message_sync(sender: str, content: str, uid: str) -> int | None:
-    """write_message 的同步 DB 段：精确去重 + 插入 + FTS 同步写。"""
+def _write_message_sync(sender: str, content: str, uid: str, gid: str = "") -> int | None:
+    """write_message 的同步 DB 段：精确去重 + 插入 + FTS 同步写。
+
+    去重也必须带上群作用域：同一句话在私聊和群里各说一次是两条独立记忆，
+    不能因内容相同就把群里那条丢掉。
+    """
     conn = connect()
     try:
-        # 精确去重：24h 内完全相同内容不重复入库
+        # 精确去重：24h 内同一作用域下完全相同内容不重复入库
         dup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         dup = conn.execute(
-            "SELECT id FROM memories WHERE user_id=? AND sender=? AND content=? AND ts >= ? LIMIT 1",
-            (uid, sender, content, dup_cutoff),
+            "SELECT id FROM memories WHERE user_id=? AND group_id=? AND sender=? "
+            "AND content=? AND ts >= ? LIMIT 1",
+            (uid, gid, sender, content, dup_cutoff),
         ).fetchone()
         if dup:
             return None
         cur = conn.execute(
-            "INSERT INTO memories (user_id, sender, content, ts, importance) VALUES (?, ?, ?, ?, 0.9)",
-            (uid, sender, content, _now()),
+            "INSERT INTO memories (user_id, group_id, sender, content, ts, importance) "
+            "VALUES (?, ?, ?, ?, ?, 0.9)",
+            (uid, gid, sender, content, _now()),
         )
         memory_id = cur.lastrowid
         _fts_insert(conn, memory_id, uid, content, "")  # FTS 同步写入
@@ -180,6 +201,7 @@ async def write_message(
     content: str,
     user_id: str | None = None,
     precomputed_vec: list[float] | None = None,
+    group_id: str | None = None,
 ) -> int | None:
     """写入一条对话记忆并向量化。返回 memory_id（重复时返回 None）。
 
@@ -196,9 +218,10 @@ async def write_message(
     from app.services.sanitize import sanitize
 
     uid = normalize_user_id(user_id)
+    gid = str(group_id or "").strip()
     content = sanitize(content)
     # 同步 SQLite 迁出事件循环线程：聊天热路径每个请求都要走这里
-    memory_id = await asyncio.to_thread(_write_message_sync, sender, content, uid)
+    memory_id = await asyncio.to_thread(_write_message_sync, sender, content, uid, gid)
     if memory_id is None:
         return None
 
@@ -285,22 +308,26 @@ def _compute_topic_boost(topics_json: str, freq: Counter) -> float:
     return 1.0 + min(0.5, max_freq / 20.0)
 
 
-def _bm25_memories(query: str, top_k: int = 20, user_id: str | None = None) -> list[dict]:
+def _bm25_memories(
+    query: str, top_k: int = 20, user_id: str | None = None, group_id: str | None = None
+) -> list[dict]:
     """记忆 BM25：FTS5 倒排 + 内置 bm25() 排序（限定当前用户）。
 
     旧实现把全表载入 Python 打 2-gram BM25 分——记忆只增不减，每条消息
     2~3 次全表扫描，一年后单条消息延迟秒级。FTS 索引查询 O(log n)，
     gram 化语义与旧实现完全一致。
     """
-    return _fts_query(query, top_k, user_id=user_id)
+    return _fts_query(query, top_k, user_id=user_id, group_id=group_id)
 
 
-def deep_keyword_search(query: str, top_k: int = 5, user_id: str | None = None) -> list[dict]:
+def deep_keyword_search(
+    query: str, top_k: int = 5, user_id: str | None = None, group_id: str | None = None
+) -> list[dict]:
     """全库关键词深挖兜底：FTS OR 匹配 + bm25 权重（限定当前用户）。
 
     旧实现全表逐条数命中 gram；同语义改由 FTS 倒排完成。
     """
-    hits = _fts_query(query, top_k, user_id=user_id)
+    hits = _fts_query(query, top_k, user_id=user_id, group_id=group_id)
     grams_n = max(1, len(_grams_text(query).split()))
     for d in hits:
         d["score"] = min(1.0, 1.0 / grams_n)  # 保守命中分（与旧实现同量级）
@@ -324,18 +351,20 @@ def take_query_vec(text: str) -> list[float] | None:
     return None
 
 
-def _knn_fetch(vec_json: str, uid: str) -> list[dict]:
-    """vec0 KNN 查询 + 用户过滤（同步 DB 段，供 to_thread 调用）。
+def _knn_fetch(vec_json: str, uid: str, gid: str = "") -> list[dict]:
+    """vec0 KNN 查询 + 用户/群过滤（同步 DB 段，供 to_thread 调用）。
 
     vec0 的 KNN 是全局近邻（无用户维度），取 k=100 后在 Python 层过滤再取
     20——避免"访客记忆离得近，把主人自己的记忆挤出 KNN 窗口"的漏检。
+    群作用域一并在这里过滤：语义相近最容易跨作用域串味，漏掉这层
+    会让群里说过的话被私聊检索命中。
     """
     conn = connect()
     try:
         cur = conn.execute(
             """
             SELECT m.id, m.sender, m.content, m.summary, m.ts, m.importance,
-                   m.topics, m.user_id, v.distance
+                   m.topics, m.user_id, m.group_id, v.distance
             FROM memory_vectors v
             JOIN memories m ON m.id = v.memory_id
             WHERE v.embedding MATCH ? AND k = ?
@@ -344,6 +373,8 @@ def _knn_fetch(vec_json: str, uid: str) -> list[dict]:
         )
         rows: list[dict] = []
         for r in cur.fetchall():
+            if (r["group_id"] or "") != gid:
+                continue
             if r["user_id"] == uid or (is_owner_user(uid) and r["user_id"] == ""):
                 rows.append(dict(r))
         return rows[:20]
@@ -360,7 +391,11 @@ def _topic_boost_for(uid: str) -> dict:
 
 
 async def search(
-    query: str, top_k: int = 8, min_similarity: float = 0.35, user_id: str | None = None
+    query: str,
+    top_k: int = 8,
+    min_similarity: float = 0.35,
+    user_id: str | None = None,
+    group_id: str | None = None,
 ) -> list[dict]:
     """检索相关记忆：向量 + BM25 双通道 RRF 融合（6.22 课升级）。
 
@@ -369,6 +404,7 @@ async def search(
     v0.4 多人隔离：双通道都只返回 user_id 自己的记忆。
     """
     uid = normalize_user_id(user_id)
+    gid = str(group_id or "").strip()
     vec_rows: list[dict] = []
     # 每次检索先清除当前任务的旧缓存，避免 embedding 失败时误复用陈旧向量。
     _last_query_vec.set(None)
@@ -381,13 +417,15 @@ async def search(
         from app.services.sanitize import sanitize as _sanitize
 
         _last_query_vec.set((_sanitize(query), qvec))
-        vec_rows = await asyncio.to_thread(_knn_fetch, json.dumps(qvec), uid)
+        vec_rows = await asyncio.to_thread(_knn_fetch, json.dumps(qvec), uid, gid)
     except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, ValueError, TypeError) as e:
         # 向量检索失败退化为关键词，但留痕排障（key 失效/服务宕机不该无声无息）
         logger.warning("向量检索失败，退化为关键词检索: %s", e)
 
     # 2) BM25 通道（精确词召回，与向量并行融合）
-    bm25_rows = await asyncio.to_thread(_bm25_memories, query, top_k=20, user_id=uid)
+    bm25_rows = await asyncio.to_thread(
+        _bm25_memories, query, top_k=20, user_id=uid, group_id=gid
+    )
 
     # 3) RRF 融合（k=60）：双通道排名合并，取 top_k*2 候选
     rrf: dict[int, float] = {}
@@ -518,18 +556,22 @@ def get_facts_injection(limit: int = 40, user_id: str | None = None) -> str:
 
 # ── 多轮历史（v0.10：修复"单轮失忆"——"再确认一下"接不上上下文）──
 
-def get_recent_history(limit: int = 8, user_id: str | None = None) -> list[dict]:
+def get_recent_history(
+    limit: int = 8, user_id: str | None = None, group_id: str | None = None
+) -> list[dict]:
     """最近 N 条对话（正序），作为多轮上下文传给 LLM。每条截断 500 字符。
 
     v0.4：只取当前用户自己的最近对话。
     """
     uid = normalize_user_id(user_id)
     clause, uargs = _user_scope(uid)
+    gclause, gargs = _group_scope(group_id)
     conn = connect()
     try:
         rows = conn.execute(
-            f"SELECT sender, content FROM memories WHERE content != '' AND {clause} ORDER BY id DESC LIMIT ?",
-            (*uargs, limit),
+            f"SELECT sender, content FROM memories WHERE content != '' AND {clause} "
+            f"AND {gclause} ORDER BY id DESC LIMIT ?",
+            (*uargs, *gargs, limit),
         ).fetchall()
     finally:
         conn.close()
@@ -539,7 +581,12 @@ def get_recent_history(limit: int = 8, user_id: str | None = None) -> list[dict]
     ]
 
 
-def get_older_summaries(window_size: int = 8, limit: int = 4, user_id: str | None = None) -> list[str]:
+def get_older_summaries(
+    window_size: int = 8,
+    limit: int = 4,
+    user_id: str | None = None,
+    group_id: str | None = None,
+) -> list[str]:
     """窗口之外更早对话的摘要（正序），把"顺序感"续到 8 轮以后。
 
     优先级：summary（consolidation 已提炼）→ 原文短截断（4h 内尚未提炼的兜底）。
@@ -547,12 +594,13 @@ def get_older_summaries(window_size: int = 8, limit: int = 4, user_id: str | Non
     """
     uid = normalize_user_id(user_id)
     clause, uargs = _user_scope(uid)
+    gclause, gargs = _group_scope(group_id)
     conn = connect()
     try:
         rows = conn.execute(
             f"""SELECT content, summary FROM memories
-               WHERE content != '' AND {clause} ORDER BY id DESC LIMIT ?""",
-            (*uargs, window_size + limit * 6),  # 多取一些，summary 可能为空/__merged__
+               WHERE content != '' AND {clause} AND {gclause} ORDER BY id DESC LIMIT ?""",
+            (*uargs, *gargs, window_size + limit * 6),  # 多取一些，summary 可能为空/__merged__
         ).fetchall()
     finally:
         conn.close()

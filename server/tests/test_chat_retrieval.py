@@ -260,13 +260,27 @@ def make_ctx(message, uid="", is_owner=True, group_id=""):
     )
 
 
-def test_group_retrieve_returns_empty_personal_scope():
-    """群检索不得引入任何个人数据；history 只允许来自本群内存上下文。"""
+def test_group_retrieve_returns_empty_personal_scope(db_env, monkeypatch):
+    """群检索不得引入任何个人数据；空库时 history 与 mems 均为空。"""
+    import app.core.embedding as _embedding
+
+    async def fake_embed(texts):
+        return [[0.0] * settings.embedding_dimension for _ in texts]
+
+    monkeypatch.setattr(_embedding, "embed", fake_embed)
     from app.chat import group_context
 
     group_context.clear()
+    import logging
+    from types import SimpleNamespace
+
+    from app.core import memory as _memory
+
     ctx = make_ctx("群里的一句话", uid="10086", is_owner=False, group_id="456")
-    runtime = type("Runtime", (), {"settings": settings, "memory": object(), "knowledge": object(), "services": object()})()
+    runtime = SimpleNamespace(
+        settings=settings, memory=_memory, knowledge=object(),
+        services=object(), logger=logging.getLogger("t"),
+    )
     preparation = retrieval.prepare_turn(ctx, runtime)
     bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
 

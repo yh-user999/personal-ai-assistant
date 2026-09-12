@@ -414,11 +414,24 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     services = runtime.services
     msg = ctx.message
     if ctx.is_group:
-        # 群模式只带"本群最近几轮"的进程内存上下文：能接住追问，但不检索个人
-        # 记忆/知识、不联网、不创建调查上下文，也不把群消息写进任何表。
+        # 群模式：检索限定在本群作用域内（group_id），既能查历史又不会碰到
+        # 私聊记忆或别的群；不注入个人画像以外的私人数据、不联网、不做调查。
         from app.chat import group_context
 
+        group_mems: list[dict[str, Any]] = []
+        try:
+            group_mems = await memory.search(
+                msg, top_k=5, user_id=ctx.uid, group_id=ctx.group_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 检索失败只是少了历史参考，不能让群回复整体失败。
+            runtime.logger.warning("群历史检索失败（不影响回复）: %s", exc)
+
         return RetrievalBundle(
+            mems=group_mems,
+            injections=(
+                memory.format_injection(group_mems) if group_mems else ""
+            ),
             trace={
                 "routing": {}, "path": "group", "degraded": 0,
                 "healer_words": [], "search_ms": 0,
@@ -430,7 +443,14 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     "entity_hits": 0, "healed_chunks": 0,
                 },
             },
-            history=group_context.recent_messages(ctx.group_id),
+            # 上下文优先用进程内存（最新、零查询）；重启或过期后回落到库里
+            # 本群的最近记录，这样"隔天再聊"也能接上。
+            history=(
+                group_context.recent_messages(ctx.group_id)
+                or memory.get_recent_history(
+                    settings.history_limit, user_id=ctx.uid, group_id=ctx.group_id
+                )
+            ),
             evidence={},
         )
     evidence: dict[str, Any] = {}

@@ -530,11 +530,19 @@ async def _run_chat(
         }
 
     if ctx.is_group:
-        # 群消息只进进程内存的短期上下文，绝不落库：不进 memories，
-        # 因此不会被检索命中，也不进备份与向量索引。
+        # 群消息落库到本群作用域（group_id 非空），可长期检索；同时留一份
+        # 进程内存上下文，用于接住"那你说说"这类紧邻追问而不必查库。
         from app.chat import group_context
 
         group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
+        with ctx.trace.stage("persistence.user"):
+            await memory.write_message(
+                "user",
+                msg,
+                user_id=ctx.uid,
+                group_id=ctx.group_id,
+                precomputed_vec=memory.take_query_vec(services.sanitize.sanitize(msg)),
+            )
     else:
         memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
         with ctx.trace.stage("persistence.user"):
@@ -588,6 +596,10 @@ async def _run_chat(
         from app.chat import group_context
 
         group_context.remember(ctx.group_id, "assistant", reply)
+        with ctx.trace.stage("persistence.assistant"):
+            await memory.write_message(
+                "assistant", reply, user_id=ctx.uid, group_id=ctx.group_id
+            )
         # 群成员画像提取放后台：它要调 LLM，不能拖慢群回复；
         # 失败也只是少记一条，绝不影响本轮回复。
         if getattr(settings, "group_profile_enabled", True):

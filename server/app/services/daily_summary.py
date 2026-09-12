@@ -91,7 +91,7 @@ async def run_daily_summary(
         if exists:
             return {"skipped": True, "reason": "今日小结已存在"}
         summaries = conn.execute(
-            f"SELECT summary, topics FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} LIMIT 50",
+            f"SELECT summary, topics FROM memories WHERE summary != '' AND summary != '__merged__' AND ts >= ? AND {clause} AND group_id='' LIMIT 50",
             (day_start, *uargs),
         ).fetchall()
         logs = conn.execute(

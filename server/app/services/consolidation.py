@@ -40,9 +40,11 @@ async def _consolidate_user(
     logical_id = request_id or logical_request_id("consolidation", uid, since[:19])
     conn = connect()
     try:
+        # 只提炼私聊：群消息属于各群自己的作用域，与私聊混进同一批会让
+        # 生成的 summary 横跨两个作用域，之后无论从哪边检索都会串味。
         rows = conn.execute(
-            "SELECT id, content, ts FROM memories WHERE user_id=? AND sender='user' "
-            "AND summary='' AND ts >= ? ORDER BY ts LIMIT 50",
+            "SELECT id, content, ts FROM memories WHERE user_id=? AND group_id='' "
+            "AND sender='user' AND summary='' AND ts >= ? ORDER BY ts LIMIT 50",
             (uid, since),
         ).fetchall()
         if not rows:
@@ -110,7 +112,7 @@ async def consolidate_recent(
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT DISTINCT user_id FROM memories WHERE sender='user' AND summary='' AND ts >= ?",
+            "SELECT DISTINCT user_id FROM memories WHERE group_id='' AND sender='user' AND summary='' AND ts >= ?",
             (since,),
         ).fetchall()
     finally:

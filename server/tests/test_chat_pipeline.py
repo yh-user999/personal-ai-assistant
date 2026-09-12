@@ -286,49 +286,45 @@ def test_generation_double_failure_not_persisted(db_env, monkeypatch):
         conn.close()
 
 
-def test_group_chat_does_not_persist_personal_messages_or_trigger_personal_hooks(db_env, monkeypatch):
+def test_group_chat_persists_into_group_scope_and_skips_personal_hooks(db_env, monkeypatch):
+    """群聊落库到本群作用域，但不触发个人专属副作用。
+
+    群消息可检索（group_id 非空），同时不得进入私聊作用域、不得触发情绪
+    记录/主动关怀这些属于主人的行为。
+    """
     llm = _LLM(reply="群里收到。")
     runtime = make_runtime(llm=llm)
-    calls = {"mood": 0, "initiative": 0, "write": 0}
+    calls = {"mood": 0, "initiative": 0}
 
     original_record_mood = runtime.services.mood.record_mood
     runtime.services.mood.record_mood = lambda *a, **k: calls.__setitem__("mood", calls["mood"] + 1)
     runtime.services.initiative.mark_responded = lambda *a, **k: calls.__setitem__("initiative", calls["initiative"] + 1)
-    original_write = memory_module.write_message
-    monkeypatch.setattr(
-        memory_module,
-        "write_message",
-        lambda *a, **k: calls.__setitem__("write", calls["write"] + 1),
-    )
     try:
         ctx = make_ctx("群里的一句话", uid="123", is_owner=False, group_id="456")
         resp = asyncio.run(run_chat(ctx, runtime))
     finally:
         runtime.services.mood.record_mood = original_record_mood
-        monkeypatch.setattr(memory_module, "write_message", original_write)
 
     assert resp.reply == "群里收到。"
     assert llm.calls
-    assert calls == {"mood": 0, "initiative": 0, "write": 0}
+    assert calls == {"mood": 0, "initiative": 0}, "群聊不得触发主人专属副作用"
+
     conn = connect()
     try:
-        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
-        # 群消息原文不得出现在任何可检索的表里。
+        rows = conn.execute(
+            "SELECT group_id, sender FROM memories WHERE user_id='123' ORDER BY id"
+        ).fetchall()
+        assert [r["sender"] for r in rows] == ["user", "assistant"]
+        assert all(r["group_id"] == "456" for r in rows), "群消息必须带本群作用域"
+        # 私聊作用域必须干净
         assert conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE content LIKE '%群里的一句话%'"
-        ).fetchone()[0] == 0
+            "SELECT COUNT(*) FROM memories WHERE group_id=''"
+        ).fetchone()[0] == 0, "群消息不得写入私聊作用域"
+        assert conn.execute("SELECT COUNT(*) FROM profile").fetchone()[0] == 0
     finally:
         conn.close()
 
-    # 群画像绝不能串进私聊 profile 表。
-    conn = connect()
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM profile").fetchone()[0] == 0, \
-            "群聊不得写入私聊画像表"
-    finally:
-        conn.close()
-
-    # 但本轮问答应留在进程内存，供同群后续追问使用。
+    # 本轮问答同时留在进程内存，供同群紧邻追问使用。
     from app.chat import group_context
 
     context = group_context.recent_messages("456")

@@ -61,11 +61,11 @@ def get_self_state_injection(user_id: str | None = None) -> str:
     conn = connect()
     try:
         turns = conn.execute(
-            f"SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ? AND {clause}",
+            f"SELECT COUNT(*) AS c FROM memories WHERE sender='user' AND ts >= ? AND {clause} AND group_id=''",
             (day_start, *args),
         ).fetchone()["c"]
         prev = conn.execute(
-            f"SELECT ts FROM memories WHERE sender='user' AND ts < ? AND {clause} "
+            f"SELECT ts FROM memories WHERE sender='user' AND ts < ? AND {clause} AND group_id='' "
             "ORDER BY id DESC LIMIT 1",
             (day_start, *args),
         ).fetchone()

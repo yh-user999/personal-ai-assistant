@@ -41,7 +41,7 @@ def _load_topic_index(user_id: str) -> dict[str, list[int]]:
     try:
         rows = conn.execute(
             f"SELECT id, topics FROM memories WHERE topics IS NOT NULL "
-            f"AND topics != '[]' AND {clause}",
+            f"AND topics != '[]' AND {clause} AND group_id=''",
             args,
         ).fetchall()
     finally:
@@ -113,7 +113,7 @@ def expand(hits: list[dict], user_id: str | None = None,
     try:
         rows = conn.execute(
             f"SELECT id, content, summary, ts FROM memories "
-            f"WHERE id IN ({','.join('?' * len(picked))}) AND {clause}",
+            f"WHERE id IN ({','.join('?' * len(picked))}) AND {clause} AND group_id=''",
             (*picked, *args),
         ).fetchall()
     finally:

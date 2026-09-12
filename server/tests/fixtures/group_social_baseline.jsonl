@@ -1,0 +1,20 @@
+{"group_key":"fixture-alpha","ts":0,"message":"大家觉得这个方案怎么样？","gold":"interject"}
+{"group_key":"fixture-alpha","ts":10,"message":"这个方案要不要现在合并？","scene":{"has_recent_bot_reply":false},"gold":"ignore"}
+{"group_key":"fixture-alpha","ts":40,"message":"哈哈这个 bug 又来了","gold":"ignore"}
+{"group_key":"fixture-alpha","ts":100,"message":"这个接口怎么选？","gold":"interject"}
+{"group_key":"fixture-alpha","ts":200,"message":"服务器今天部署完成","gold":"ignore"}
+{"group_key":"fixture-alpha","ts":260,"message":"请把生产服务重启一下","gold":"ignore"}
+{"group_key":"fixture-alpha","ts":320,"message":"这个问题大家怎么看？","gold":"interject"}
+{"group_key":"fixture-alpha","ts":400,"message":"别把我的手机号发群里","gold":"ignore"}
+{"group_key":"fixture-alpha","ts":500,"message":"大家觉得这个方案怎么样？","gold":"ignore"}
+{"group_key":"fixture-alpha","ts":600,"message":"小月 你好","directed":true,"gold":"ignore"}
+{"group_key":"fixture-beta","ts":0,"message":"这个设计要不要改成异步？","gold":"interject"}
+{"group_key":"fixture-beta","ts":20,"message":"我也觉得可以试试","gold":"ignore"}
+{"group_key":"fixture-beta","ts":100,"message":"最近有点累","scene":{"atmosphere":"emotional"},"gold":"ignore"}
+{"group_key":"fixture-beta","ts":140,"message":"大家有没有遇到类似问题？","gold":"ignore"}
+{"group_key":"fixture-beta","ts":220,"message":"这个日志怎么查？","gold":"interject"}
+{"group_key":"fixture-beta","ts":300,"message":"哈哈，终于修好了","gold":"ignore"}
+{"group_key":"fixture-beta","ts":420,"message":"这个方案还有坑吗？","gold":"ignore"}
+{"group_key":"fixture-beta","ts":520,"message":"要不要今晚开个短会？","gold":"interject"}
+{"group_key":"fixture-beta","ts":620,"message":"执行部署脚本","gold":"ignore"}
+{"group_key":"fixture-beta","ts":720,"message":"我觉得差不多了","gold":"ignore"}

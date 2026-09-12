@@ -13,6 +13,13 @@
     "default": "",
     "restart_required": false
   },
+  "group_dryrun_ids": {
+    "description": "群聊演练群（只判定不回复）",
+    "type": "string",
+    "hint": "上线前观察用：这些群会走完整门禁判定并把结果写日志，但绝不发言、不写库、不建画像。留空=关闭。与白名单重复时白名单优先。",
+    "default": "",
+    "restart_required": false
+  },
   "group_require_mention": {
     "description": "群聊是否要求 @机器人",
     "type": "bool",

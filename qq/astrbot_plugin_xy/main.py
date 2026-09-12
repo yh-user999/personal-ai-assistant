@@ -504,6 +504,29 @@ class XiaoYuePlugin(Star):
             max_replies_per_hour=self.cfg.get("group_max_replies_per_hour", 30),
         )
 
+    def _group_dryrun(self, group_id: str) -> bool:
+        """该群是否处于演练模式：只判定并记日志，不回复、不落库。"""
+        return str(group_id or "").strip() in parse_group_allowed_ids(
+            self.cfg.get("group_dryrun_ids", "")
+        )
+
+    def _log_group_dryrun(self, event: AstrMessageEvent, group_id: str) -> None:
+        """记录"如果放开这个群，本条消息会不会被回复"。
+
+        上线前用来确认唤醒判定与限流是否符合预期。只输出判定结果与消息长度，
+        不输出消息原文，也不记录发言人身份——观察的是功能，不是群成员。
+        """
+        triggered = self._group_triggered(event)
+        if not triggered:
+            logger.info("[xy][演练] 不会回复（未唤醒）group=%s", group_id)
+            return
+        # 限流是有状态判定，演练不能占用真实配额，否则会影响正式群的计数。
+        logger.info(
+            "[xy][演练] 会回复（已唤醒）group=%s 消息长度=%d",
+            group_id,
+            len(str(getattr(event, "get_message_str", lambda: "")() or "")),
+        )
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         msg = event.get_message_str() or ""
@@ -523,7 +546,12 @@ class XiaoYuePlugin(Star):
             # 拒绝原因按 INFO 记录：debug 级别在宿主默认日志级别下会被丢弃，
             # 导致"群里没反应但日志什么都没有"，无法判断是哪一道门禁拦的。
             if not self._group_allowed(group_scope):
-                logger.info("[xy] 群聊未在白名单，忽略 group=%s", group_scope)
+                # 演练群：走完整判定并记录"本会如何处理"，但绝不回复、绝不入库。
+                # 分支放在白名单之后：白名单优先，演练群永远走不到发言路径。
+                if self._group_dryrun(group_scope):
+                    self._log_group_dryrun(event, group_scope)
+                else:
+                    logger.info("[xy] 群聊未在白名单，忽略 group=%s", group_scope)
                 event.should_call_llm(True)
                 return
             if not self._group_triggered(event):

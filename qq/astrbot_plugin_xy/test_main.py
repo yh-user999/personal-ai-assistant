@@ -379,6 +379,58 @@ def test_group_hourly_limit_still_guards_against_abuse():
     assert _MOD.group_rate_limited("456", max_replies_per_hour=3, now=1000 + 3601) is False
 
 
+def test_dryrun_group_never_replies_and_never_calls_service():
+    """演练群只判定不回复：不得发言，也不得调用服务端（因此不会入库/建画像）。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_dryrun_ids"] = "789"
+
+    At = sys.modules["astrbot.api.message_components"].At
+    # 即使被 @ 了，演练群也必须沉默
+    event = _Event([At("999")], "@小月 你好", sender="456", group="789", self_id="999")
+    asyncio.run(plugin.on_message(event))
+    assert event.sent == [], "演练群不得发言"
+    assert client.kwargs is None, "演练群不得调用服务端"
+
+    # 未被 @ 同样沉默
+    quiet = _Event([], "群里闲聊", sender="456", group="789", self_id="999")
+    asyncio.run(plugin.on_message(quiet))
+    assert quiet.sent == [] and client.kwargs is None
+
+
+def test_whitelist_takes_precedence_over_dryrun():
+    """同一群同时出现在白名单与演练名单时，白名单优先（正常回复）。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_allowed_ids"] = "456"
+    plugin.cfg["group_dryrun_ids"] = "456"
+
+    At = sys.modules["astrbot.api.message_components"].At
+    event = _Event([At("999")], "@小月 你好", sender="123", group="456", self_id="999")
+    asyncio.run(plugin.on_message(event))
+    assert event.sent, "白名单群应正常回复"
+    assert client.kwargs["json"]["group_id"] == "456"
+
+
+def test_dryrun_does_not_consume_real_rate_limit_quota():
+    """演练判定不得占用真实限流配额，否则会影响正式群的回复次数。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    plugin = _plugin()
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_dryrun_ids"] = "789"
+
+    At = sys.modules["astrbot.api.message_components"].At
+    for _ in range(3):
+        asyncio.run(plugin.on_message(
+            _Event([At("999")], "@小月 在吗", sender="456", group="789", self_id="999")
+        ))
+    assert "789" not in _MOD._GROUP_REPLY_TIMES, "演练不应写入限流计数"
+
+
 def test_group_rate_limit_is_per_group():
     _MOD._GROUP_REPLY_TIMES.clear()
     assert _MOD.group_rate_limited("456", cooldown_seconds=10, max_replies_per_hour=2, now=100) is False

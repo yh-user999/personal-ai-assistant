@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -663,6 +663,42 @@ CREATE TABLE IF NOT EXISTS slang_terms (
   UNIQUE(user_id, term, context_hint)
 );
 CREATE INDEX IF NOT EXISTS idx_slang_term ON slang_terms(term);
+
+-- ㉚ 群内关系状态：按群+用户隔离，只保存抽象互动统计，不保存原始消息。
+CREATE TABLE IF NOT EXISTS group_relationships (
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  familiarity REAL NOT NULL DEFAULT 0,
+  affinity REAL NOT NULL DEFAULT 0,
+  banter_tolerance REAL NOT NULL DEFAULT 0.2,
+  interaction_count INTEGER NOT NULL DEFAULT 0,
+  positive_count INTEGER NOT NULL DEFAULT 0,
+  negative_count INTEGER NOT NULL DEFAULT 0,
+  last_seen_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_relationships_group_seen
+  ON group_relationships(group_id, last_seen_at DESC);
+
+-- ㉛ 群聊表达模式/黑话：只保留白名单短标签和脱敏释义，按群隔离。
+CREATE TABLE IF NOT EXISTS group_expression_patterns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'expression',
+  value TEXT NOT NULL,
+  meaning TEXT NOT NULL DEFAULT '',
+  situation TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(group_id, kind, value, situation)
+);
+CREATE INDEX IF NOT EXISTS idx_group_expression_lookup
+  ON group_expression_patterns(group_id, kind, confidence DESC, use_count DESC);
+
 CREATE TABLE IF NOT EXISTS index_corrections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target TEXT NOT NULL,

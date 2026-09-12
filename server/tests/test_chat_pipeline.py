@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.chat import group_interjection
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
 import app.chat.pipeline as pipeline_module
@@ -314,6 +315,37 @@ def test_non_directed_group_social_ignore_skips_llm_and_personal_hooks(db_env, m
         ).fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_non_directed_group_interject_passes_gate_and_records_send(db_env, monkeypatch):
+    """启用主动插话且评分通过时才调用 LLM，并在成功后记账。"""
+    monkeypatch.setattr(settings, "semantic_planner_enabled", False)
+    monkeypatch.setattr(settings, "group_social_enabled", True)
+    monkeypatch.setattr(settings, "group_social_interject_enabled", True)
+    monkeypatch.setattr(settings, "group_social_interject_shadow_only", False)
+    monkeypatch.setattr(settings, "group_social_interject_threshold", 0.65)
+    monkeypatch.setattr(settings, "group_social_interject_cooldown_seconds", 0)
+    monkeypatch.setattr(settings, "group_social_interject_min_gap_messages", 0)
+    monkeypatch.setattr(settings, "group_profile_enabled", False)
+    monkeypatch.setattr(settings, "group_reflection_enabled", False)
+    group_interjection.interject_gate.reset()
+    llm = _LLM(reply="我也觉得可以先合并。")
+    runtime = make_runtime(llm=llm)
+    ctx = make_ctx(
+        "大家觉得这个方案怎么样？",
+        uid="000001",
+        is_owner=False,
+        group_id="social-test-group",
+        group_directed=False,
+    )
+
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert resp.reply == "我也觉得可以先合并。"
+    assert llm.calls, "评分通过后才调用主 LLM"
+    assert ctx.trace.social_judgment["action"] == "interject"
+    assert ctx.trace.social_judgment["gate_allowed"] is True
+    assert group_interjection.interject_gate.snapshot("social-test-group")["social-test-group"]["hourly_count"] == 1
 
 
 def test_generation_double_failure_not_persisted(db_env, monkeypatch):

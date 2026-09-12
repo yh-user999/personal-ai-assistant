@@ -23,6 +23,7 @@ _PROMPT = """从这条群聊发言中提取说话人的对话偏好，只输出 
 - preferred_name: 希望被怎么称呼（明确说过才填）
 - topics: 感兴趣的话题领域
 - style: 表达风格（如"说话简短""爱用梗"）
+- patterns: 群内表达模式或明确黑话；kind 只能是 expression/jargon，jargon 必须有原文明确含义
 
 严格禁止：不要推断或记录政治立场、宗教、健康状况、性取向、收入、
 住址、电话、身份证号、家庭情况、种族。这些一律不填。
@@ -32,7 +33,7 @@ _PROMPT = """从这条群聊发言中提取说话人的对话偏好，只输出 
 发言：{message}
 
 输出格式：
-{"updates": [{"dimension": "topics", "value": "简短描述", "confidence": 0.6}]}"""
+{"updates": [{"dimension": "topics", "value": "简短描述", "confidence": 0.6}], "patterns": [{"kind": "expression", "value": "常接梗", "situation": "闲聊", "confidence": 0.6}]}"""
 
 
 async def maybe_extract(
@@ -66,4 +67,16 @@ async def maybe_extract(
                 written += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("群画像入库失败: %s", exc)
+
+    # 表达模式/黑话按群隔离，失败不影响原有画像结果。
+    try:
+        from app.services import group_expression
+
+        for pattern in group_expression.parse_patterns(payload):
+            try:
+                group_expression.save_pattern(group_id, **pattern)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("群表达模式入库跳过: %s", type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("群表达模式学习跳过: %s", type(exc).__name__)
     return written

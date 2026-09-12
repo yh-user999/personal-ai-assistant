@@ -490,6 +490,10 @@ class XiaoYuePlugin(Star):
     def _group_requires_mention(self) -> bool:
         return parse_bool(self.cfg.get("group_require_mention", True), default=True)
 
+    def _group_interject_enabled(self) -> bool:
+        """是否把白名单群的非直达消息交给服务端主动插话评分。"""
+        return parse_bool(self.cfg.get("group_interject_enabled", False), default=False)
+
     def _group_triggered(self, event: AstrMessageEvent) -> bool:
         return group_triggered(
             event,
@@ -548,6 +552,7 @@ class XiaoYuePlugin(Star):
         owner = str(self.cfg.get("owner_qq", "") or "").strip()
 
         group_scope = str(group or "").strip()
+        group_directed = True
         if group_scope:
             # personal 模式保持旧行为：群消息静默并阻断宿主默认 LLM。
             if not self._group_mode_enabled():
@@ -567,11 +572,14 @@ class XiaoYuePlugin(Star):
                     logger.info("[xy] 群聊未在白名单，忽略 group=%s", group_scope)
                 event.should_call_llm(True)
                 return
-            if not self._group_triggered(event):
-                logger.info("[xy] 群聊未唤醒（需@或前缀），忽略 group=%s", group_scope)
-                event.should_call_llm(True)
-                return
-            if self._group_rate_limited(group_scope):
+            group_directed = self._group_triggered(event)
+            if not group_directed:
+                if not self._group_interject_enabled():
+                    logger.info("[xy] 群聊未唤醒（需@或前缀），忽略 group=%s", group_scope)
+                    event.should_call_llm(True)
+                    return
+                logger.info("[xy] 群聊未直达，交给主动插话评分 group=%s", group_scope)
+            elif self._group_rate_limited(group_scope):
                 logger.info("[xy] 群聊限流，忽略 group=%s", group_scope)
                 event.should_call_llm(True)
                 return
@@ -632,7 +640,7 @@ class XiaoYuePlugin(Star):
                     "request_id": request_id,
                     **({
                         "group_id": group_scope,
-                        "group_directed": True,
+                        "group_directed": group_directed,
                     } if group_scope else {}),
                 },
                 headers=self._api_headers(sender, request_id, group_id=group_scope),

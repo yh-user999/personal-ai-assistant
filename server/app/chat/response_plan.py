@@ -101,6 +101,15 @@ class ResponsePlan:
     social_addressed: bool = False
     social_atmosphere: str = "casual"
     social_topic_shift: bool = False
+    social_score: float = 0.0
+    social_factors: dict[str, float] = field(default_factory=dict)
+    social_penalties: dict[str, float] = field(default_factory=dict)
+    social_gate_reason: str = ""
+    social_gate_allowed: bool = False
+    social_gate_would_allow: bool = False
+    social_cooldown_remaining: float = 0.0
+    social_hourly_count: int = 0
+    social_message_gap: int = 0
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -128,6 +137,15 @@ class ResponsePlan:
             "social_addressed": self.social_addressed,
             "social_atmosphere": self.social_atmosphere[:32],
             "social_topic_shift": bool(self.social_topic_shift),
+            "social_score": round(max(0.0, min(1.0, self.social_score)), 3),
+            "social_factors": {key: round(max(0.0, min(1.0, float(value))), 3) for key, value in self.social_factors.items()},
+            "social_penalties": {key: round(max(0.0, min(1.0, float(value))), 3) for key, value in self.social_penalties.items()},
+            "social_gate_reason": self.social_gate_reason[:80],
+            "social_gate_allowed": bool(self.social_gate_allowed),
+            "social_gate_would_allow": bool(self.social_gate_would_allow),
+            "social_cooldown_remaining": round(max(0.0, self.social_cooldown_remaining), 3),
+            "social_hourly_count": max(0, int(self.social_hourly_count)),
+            "social_message_gap": max(0, int(self.social_message_gap)),
             # constraints 必须带上：提示词靠它注入模式约束。
             # 漏掉会让道德/无来源/动作等约束全部静默失效。
             "constraints": list(self.constraints),

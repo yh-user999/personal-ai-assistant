@@ -349,6 +349,15 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                 "\n\n【这位群友的已知情况】（仅用于把话接得自然，"
                 "不要主动复述，也不要说明你有记录）\n" + member_note
             )
+        relationship = getattr(bundle, "group_relationship", "")
+        expression = getattr(bundle, "group_expression", "")
+        bot_state = getattr(bundle, "robot_state", "")
+        if relationship:
+            system += "\n\n【群内关系参考】" + relationship
+        if expression:
+            system += "\n\n" + expression
+        if bot_state:
+            system += "\n\n【小月当前状态】" + bot_state
         system += "\n\n" + group_tone_hint(ctx)
         social_hint = group_social_action_hint(ctx)
         if social_hint:

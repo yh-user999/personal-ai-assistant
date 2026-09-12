@@ -34,6 +34,13 @@
     "default": "",
     "restart_required": false
   },
+  "group_interject_enabled": {
+    "description": "启用群聊主动插话",
+    "type": "bool",
+    "hint": "默认关闭；仅对白名单群的非@消息交给服务端评分，服务端仍受冷却、频率和安全闸门控制。只收集群永不插话。",
+    "default": false,
+    "restart_required": false
+  },
   "group_cooldown_seconds": {
     "description": "群聊冷却秒数",
     "type": "float",

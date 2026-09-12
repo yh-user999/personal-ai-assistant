@@ -9,10 +9,11 @@ import asyncio
 import inspect
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from openai import OpenAIError
 
-from app.chat import prompting, providers, response_plan, retrieval, routing, review
+from app.chat import group_interjection, prompting, providers, response_plan, retrieval, routing, review
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
     OWNER_MAX_MSG_CHARS,
@@ -510,11 +511,77 @@ async def _run_chat(
     if routed is not None:
         return routed
 
+    social_score = None
+    social_gate = None
+    social_interject_allowed = False
+    social_scene: dict[str, Any] = {}
+    interject_config = group_interjection.config_from_settings(settings)
     if ctx.is_group:
         from app.chat import group_context
 
         # planner 只读取当前群的有界内存上下文；绝不把私聊历史带进群判断。
         planner_history = group_context.recent_messages(ctx.group_id)
+        social_scene = group_context.scene_summary(ctx.group_id)
+        robot_service = getattr(services, "robot_state", None)
+        robot_snapshot: dict[str, Any] = {}
+        if robot_service:
+            try:
+                robot_service.observe_group_message(
+                    ctx.group_id,
+                    atmosphere=str(social_scene.get("atmosphere") or "casual"),
+                )
+                robot_snapshot = robot_service.snapshot(ctx.group_id)
+            except Exception as exc:  # noqa: BLE001
+                runtime.logger.debug("机器人群状态更新失败: %s", type(exc).__name__)
+        relationship_service = getattr(services, "group_relationship", None)
+        if relationship_service:
+            try:
+                await asyncio.to_thread(
+                    relationship_service.observe_message,
+                    ctx.group_id,
+                    ctx.uid,
+                    msg,
+                    directed=ctx.group_directed,
+                )
+            except Exception as exc:  # noqa: BLE001
+                runtime.logger.debug("群关系更新失败: %s", type(exc).__name__)
+
+        # 每条进入服务端的群消息推进序号；主动插话配额只在发送成功后记账。
+        group_interjection.interject_gate.observe_message(ctx.group_id)
+        if not ctx.group_directed:
+            social_score = group_interjection.score_group_interjection(
+                msg,
+                planner_history,
+                social_scene,
+                robot_snapshot,
+                directed=False,
+                threshold=interject_config.threshold,
+            )
+            social_gate = group_interjection.interject_gate.check(
+                ctx.group_id,
+                social_score,
+                config=interject_config,
+            )
+            if not social_gate.allowed:
+                # 评分、shadow、冷却和预算拒绝都在主 LLM 前短路；只保留群作用域事件。
+                ctx.trace.route_name = (
+                    "group:social_shadow"
+                    if social_gate.reason == "shadow_only"
+                    else "group:social_ignore"
+                )
+                ctx.trace.social_judgment = {
+                    **social_score.as_dict(),
+                    "action": "interject" if social_gate.would_allow else "ignore",
+                    "addressed": False,
+                    "atmosphere": str(social_scene.get("atmosphere") or "casual"),
+                    "gate": social_gate.as_dict(),
+                    "interject_enabled": interject_config.enabled,
+                }
+                with ctx.trace.stage("social_gate"):
+                    group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
+                    await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
+                return ChatResponse(reply="", memories_used=0)
+            social_interject_allowed = True
     else:
         planner_history = await asyncio.to_thread(
             memory.get_recent_history,
@@ -546,10 +613,26 @@ async def _run_chat(
             enabled=getattr(settings, "group_social_enabled", True),
             interject_enabled=getattr(settings, "group_social_interject_enabled", False),
             min_confidence=getattr(settings, "group_social_min_confidence", 0.6),
-            scene=group_context.scene_summary(ctx.group_id),
+            scene=social_scene,
         )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
+    if social_score is not None:
+        # 通过评分和闸门的非直达消息只能以 interject 进入生成链路，不能被 planner 改成普通回答。
+        plan.social_action = "interject"
+        plan.social_confidence = social_score.score
+        plan.social_reasons = list(social_score.reasons)
+        plan.social_addressed = False
+        plan.social_atmosphere = str(social_scene.get("atmosphere") or "casual")[:32]
+        plan.social_score = social_score.score
+        plan.social_factors = dict(social_score.factors)
+        plan.social_penalties = dict(social_score.penalties)
+        plan.social_gate_reason = social_gate.reason if social_gate else ""
+        plan.social_gate_allowed = bool(social_gate and social_gate.allowed)
+        plan.social_gate_would_allow = bool(social_gate and social_gate.would_allow)
+        plan.social_cooldown_remaining = social_gate.cooldown_remaining if social_gate else 0.0
+        plan.social_hourly_count = social_gate.hourly_count if social_gate else 0
+        plan.social_message_gap = social_gate.message_gap if social_gate else 0
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
         plan.fact_result = providers.current_datetime(msg)
     # 提示词与检索只读「生效计划」；planner 的判断另存 planned_* 供观察。
@@ -570,14 +653,17 @@ async def _run_chat(
             "addressed": plan.social_addressed,
             "atmosphere": plan.social_atmosphere,
             "topic_shift": plan.social_topic_shift,
+            "score": plan.social_score,
+            "factors": plan.social_factors,
+            "penalties": plan.social_penalties,
+            "gate_reason": plan.social_gate_reason,
+            "gate_allowed": plan.social_gate_allowed,
+            "gate_would_allow": plan.social_gate_would_allow,
+            "cooldown_remaining": plan.social_cooldown_remaining,
+            "hourly_count": plan.social_hourly_count,
+            "message_gap": plan.social_message_gap,
             "interject_enabled": bool(getattr(settings, "group_social_interject_enabled", False)),
         }
-        if plan.social_action == "ignore" and not ctx.group_directed:
-            ctx.trace.route_name = "group:social_ignore"
-            with ctx.trace.stage("social_gate"):
-                group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
-                await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
-            return ChatResponse(reply="", memories_used=0)
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
     if ctx.is_owner and settings.healer_enabled:
@@ -694,6 +780,27 @@ async def _run_chat(
             await memory.write_message(
                 "assistant", reply, user_id=ctx.uid, group_id=ctx.group_id
             )
+        if social_interject_allowed and reply.strip():
+            # 服务端生成并通过审校后才消耗主动插话配额；空回复不计数。
+            group_interjection.interject_gate.record_sent(ctx.group_id)
+        robot_service = getattr(services, "robot_state", None)
+        if robot_service:
+            try:
+                robot_service.record_group_reply(ctx.group_id)
+            except Exception as exc:  # noqa: BLE001
+                runtime.logger.debug("机器人群状态记录失败: %s", type(exc).__name__)
+        relationship_service = getattr(services, "group_relationship", None)
+        if relationship_service:
+            try:
+                await asyncio.to_thread(
+                    relationship_service.record_reply,
+                    ctx.group_id,
+                    ctx.uid,
+                    action=plan.social_action or "answer",
+                    success=bool(reply.strip()),
+                )
+            except Exception as exc:  # noqa: BLE001
+                runtime.logger.debug("群关系回复记录失败: %s", type(exc).__name__)
         # 群成员画像提取放后台：它要调 LLM，不能拖慢群回复；
         # 失败也只是少记一条，绝不影响本轮回复。
         if getattr(settings, "group_profile_enabled", True):

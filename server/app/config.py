@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # 非直接消息的主动插话默认关闭，避免开启 group 模式后突然刷屏。
     group_social_interject_enabled: bool = False
     group_social_min_confidence: float = 0.60
+    group_social_interject_threshold: float = 0.72
+    group_social_interject_cooldown_seconds: float = 90.0
+    group_social_interject_hourly_limit: int = 6
+    group_social_interject_min_gap_messages: int = 2
+    # 开启主动插话后仍可先 shadow 观察，只有显式关闭才真正发言。
+    group_social_interject_shadow_only: bool = True
 
     # ── LLM 自主响应规划（普通非流式聊天）───────────────
     # shadow_only=True 时只记录计划不改行为；默认全量生效。

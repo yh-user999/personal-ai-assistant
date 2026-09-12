@@ -228,6 +228,9 @@ class RetrievalBundle:
     mood: str = ""
     mood_state: str = ""
     self_state: str = ""
+    group_relationship: str = ""
+    group_expression: str = ""
+    robot_state: str = ""
     extra_blocks: list[str] = field(default_factory=list)
     # 当轮证据只驻留内存，供生成与审校共用；落库只保存限长脱敏调查摘要。
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -321,20 +324,43 @@ def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dic
     "工作线程里没有事件循环"的限制在这里不存在。
     执行顺序与拆分前逐项一致，保持注入语义不变。
     """
+    settings = runtime.settings
+    services = runtime.services
+    owner = ctx.is_owner
     if ctx.is_group:
         # 群模式不注入私聊专属事实、目标、教训、历史摘要或行为数据；
         # 当前 QQ 号的统一画像由 prompting 按 user_id 单独读取。
+        relationship = ""
+        expression = ""
+        bot_state = ""
+        try:
+            relationship_service = getattr(services, "group_relationship", None)
+            if relationship_service:
+                relationship = relationship_service.get_injection(ctx.group_id, ctx.uid)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("群关系注入失败: %s", type(exc).__name__)
+        try:
+            expression_service = getattr(services, "group_expression", None)
+            if expression_service:
+                expression = expression_service.get_injection(ctx.group_id, msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("群表达注入失败: %s", type(exc).__name__)
+        try:
+            robot_service = getattr(services, "robot_state", None)
+            if robot_service:
+                bot_state = robot_service.get_group_injection(ctx.group_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("机器人群状态注入失败: %s", type(exc).__name__)
         return {
             "profile": "", "lessons": "", "concerns": "", "jargon": "",
             "style_examples": "", "facts": "", "behavior": "", "goals_text": "",
             "open_issues": "", "slang": "", "mood": "", "mood_state": "",
-            "self_state": "", "older": [], "extra_blocks": [],
+            "self_state": "", "group_relationship": relationship,
+            "group_expression": expression, "robot_state": bot_state,
+            "older": [], "extra_blocks": [],
         }
-    settings = runtime.settings
-    services = runtime.services
-    memory = runtime.memory
-    owner = ctx.is_owner
 
+    memory = runtime.memory
     profile = services.profile.get_profile_injection(user_id=ctx.uid)
     lessons = services.self_reflect.get_lessons_injection(user_id=ctx.uid) if owner else ""
     concerns = services.concern_tracker.get_concerns_injection(user_id=ctx.uid)
@@ -399,6 +425,9 @@ def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dic
         "mood": mood_text,
         "mood_state": mood_state,
         "self_state": self_state,
+        "group_relationship": "",
+        "group_expression": "",
+        "robot_state": "",
         "older": older,
         "extra_blocks": extra_blocks,
     }
@@ -829,6 +858,9 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         mood=collected["mood"],
         mood_state=collected["mood_state"],
         self_state=collected["self_state"],
+        group_relationship=collected["group_relationship"],
+        group_expression=collected["group_expression"],
+        robot_state=collected["robot_state"],
         older=collected["older"],
         extra_blocks=collected["extra_blocks"],
         evidence=evidence,

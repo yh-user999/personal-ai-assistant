@@ -45,6 +45,57 @@ def _summary_map(value: object, *, allowed: set[str], numeric: set[str] = set())
     return result
 
 
+_SOCIAL_FACTOR_KEYS = frozenset({
+    "topic_fit", "social_signal", "novelty", "conversation_gap", "scene_fit",
+    "message_quality", "recent_bot_reply", "duplicate", "high_activity",
+    "sensitive_atmosphere", "low_energy",
+})
+_SOCIAL_SCALAR_KEYS = frozenset({
+    "action", "confidence", "score", "eligible", "addressed", "atmosphere",
+    "topic_shift", "gate_reason", "gate_allowed", "gate_would_allow",
+    "cooldown_remaining", "hourly_count", "message_gap", "interject_enabled",
+    "shadow_only",
+})
+
+
+def _safe_social_judgment(value: object) -> dict:
+    """仅保留社交评分/闸门摘要，不保存 prompt、消息正文或身份字段。"""
+    if not isinstance(value, dict):
+        return {}
+    result: dict = {}
+    for key in _SOCIAL_SCALAR_KEYS:
+        if key not in value:
+            continue
+        raw = value[key]
+        if isinstance(raw, bool):
+            result[key] = raw
+        elif isinstance(raw, (int, float)):
+            result[key] = round(max(-1.0, min(1.0, float(raw))), 4) if key in {
+                "confidence", "score"
+            } else raw
+        else:
+            result[key] = _safe_text(raw, 80)
+    for bucket in ("factors", "penalties"):
+        raw_bucket = value.get(bucket)
+        if not isinstance(raw_bucket, dict):
+            continue
+        result[bucket] = {}
+        for key, raw in raw_bucket.items():
+            if key not in _SOCIAL_FACTOR_KEYS:
+                continue
+            try:
+                result[bucket][key] = round(max(0.0, min(1.0, float(raw))), 4)
+            except (TypeError, ValueError):
+                continue
+    reasons = value.get("reasons")
+    if isinstance(reasons, (list, tuple)):
+        result["reasons"] = [_safe_text(item, 80) for item in list(reasons)[:8]]
+    gate = value.get("gate")
+    if isinstance(gate, dict):
+        result["gate"] = _safe_social_judgment(gate)
+    return result
+
+
 def _investigation_text(value: object, limit: int = 180) -> str:
     text = _safe_text(value, limit)
     # 调查摘要不是技术日志：额外去掉地址和长数字标识，不保存可识别账号。
@@ -228,12 +279,7 @@ def record(
             summary = safe_investigation_summary(response_plan.get("investigation_summary"))
             if summary:
                 safe_plan["investigation_summary"] = summary
-        safe_social = _summary_map(
-            social_judgment,
-            allowed={"action", "confidence", "reasons", "addressed", "atmosphere", "topic_shift",
-                     "interject_enabled"},
-            numeric=set(),
-        )
+        safe_social = _safe_social_judgment(social_judgment)
         safe_trace_id = _safe_text(trace_id, 160)
         safe_request_id = _safe_text(request_id, 160)
         safe_channel = _safe_text(channel or "chat", 40)

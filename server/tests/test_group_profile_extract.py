@@ -5,7 +5,7 @@ import pytest
 
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
-from app.services import group_profile_extract
+from app.services import group_expression, group_profile_extract
 from app.services import profile as profile_service
 
 
@@ -58,6 +58,21 @@ def test_extracts_allowed_dimensions(db_env, monkeypatch):
 
 
 # ── 归属：按 QQ 号，而非按场景 ──────────────────────────────
+
+def test_extracts_group_expression_patterns_without_cross_group_leak(db_env, monkeypatch):
+    _fake_llm(monkeypatch, {
+        "updates": [{"dimension": "topics", "value": "关注航天", "confidence": 0.8}],
+        "patterns": [
+            {"kind": "expression", "value": "爱接梗", "situation": "闲聊", "confidence": 0.8},
+            {"kind": "jargon", "value": "彩蛋", "meaning": "隐藏功能", "confidence": 0.9},
+        ],
+    })
+    assert asyncio.run(
+        group_profile_extract.maybe_extract("fixture-group", "000001", "我平时会关注航天，也喜欢找彩蛋")
+    ) == 1
+    assert "爱接梗" in group_expression.get_injection("fixture-group", "这个彩蛋不错")
+    assert group_expression.get_injection("other-group", "这个彩蛋不错") == ""
+
 
 def test_profile_belongs_to_qq_number_not_scene(db_env, monkeypatch):
     """同一 QQ 号在群里形成的画像，私聊时同样可用——画像以人为单位。"""

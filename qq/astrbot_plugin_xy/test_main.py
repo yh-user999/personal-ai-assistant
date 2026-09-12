@@ -261,6 +261,8 @@ def test_group_schema_uses_astrbot_supported_types():
     assert schema["group_require_mention"]["type"] == "bool"
     assert schema["group_cooldown_seconds"]["type"] == "float"
     assert schema["group_max_replies_per_hour"]["type"] == "int"
+    assert schema["group_interject_enabled"]["type"] == "bool"
+    assert schema["group_interject_enabled"]["default"] is False
     # 默认不设冷却：被 @ 就应回复，节流交给每小时上限兜底。
     assert schema["group_cooldown_seconds"]["default"] == 0
 
@@ -308,6 +310,23 @@ def test_group_mode_owner_uses_visitor_token_and_scope():
     assert client.kwargs["headers"]["X-QQ-User-ID"] == "123"
     assert client.kwargs["json"]["group_id"] == "456"
     assert client.kwargs["json"]["group_directed"] is True
+
+
+def test_group_mode_can_forward_non_directed_for_scoring():
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_interject_enabled"] = True
+    event = _Event([], "大家觉得这个方案怎么样？", sender="456", group="456", self_id="999")
+
+    asyncio.run(plugin.on_message(event))
+
+    assert event.stopped is True
+    assert event.sent
+    assert client.kwargs["json"]["group_id"] == "456"
+    assert client.kwargs["json"]["group_directed"] is False
+    assert _MOD._GROUP_REPLY_TIMES == {}
 
 
 def test_group_mode_requires_whitelist_and_mention():

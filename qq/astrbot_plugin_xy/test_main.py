@@ -57,7 +57,12 @@ def _install_astrbot_stubs():
     def register(*_args, **_kwargs):
         return lambda cls: cls
 
-    api.logger = types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
+    api.logger = types.SimpleNamespace(
+        debug=lambda *a, **k: None,
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
     api.AstrBotConfig = dict
     event.AstrMessageEvent = object
     event.filter = _Filter
@@ -189,8 +194,8 @@ def _plugin(client=None, max_bytes=10 * 1024 * 1024):
         "assistant_mode": "personal",
         "group_allowed_ids": "456",
         "group_require_mention": True,
-        "group_cooldown_seconds": 60,
-        "group_max_replies_per_hour": 6,
+        "group_cooldown_seconds": 0,
+        "group_max_replies_per_hour": 30,
     }
     plugin._vision_timeout_seconds = 90
     plugin._vision_max_image_bytes = max_bytes
@@ -242,6 +247,8 @@ def test_group_schema_uses_astrbot_supported_types():
     assert schema["group_require_mention"]["type"] == "bool"
     assert schema["group_cooldown_seconds"]["type"] == "float"
     assert schema["group_max_replies_per_hour"]["type"] == "int"
+    # 默认不设冷却：被 @ 就应回复，节流交给每小时上限兜底。
+    assert schema["group_cooldown_seconds"]["default"] == 0
 
 
 def test_group_configuration_parsing_is_fail_closed():
@@ -308,6 +315,28 @@ def test_group_mode_requires_whitelist_and_mention():
     asyncio.run(plugin.on_message(other_group))
     assert other_group.sent == []
     assert client.kwargs is None
+
+
+def test_group_default_has_no_cooldown_so_mentions_always_get_answered():
+    """默认配置下连续 @ 必须都能回复：被点名却沉默对用户就是坏了。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    for i in range(5):
+        assert _MOD.group_rate_limited("456", now=1000 + i) is False, f"第{i + 1}次连续提问被冷却挡住"
+
+    # 非法值也不能退回"有冷却"，否则配置写错就变成静默故障。
+    _MOD._GROUP_REPLY_TIMES.clear()
+    assert _MOD.group_rate_limited("456", cooldown_seconds="bad", now=2000) is False
+    assert _MOD.group_rate_limited("456", cooldown_seconds="bad", now=2001) is False
+
+
+def test_group_hourly_limit_still_guards_against_abuse():
+    """冷却默认关闭，但每小时上限仍要拦住滥用。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    for i in range(3):
+        assert _MOD.group_rate_limited("456", max_replies_per_hour=3, now=1000 + i) is False
+    assert _MOD.group_rate_limited("456", max_replies_per_hour=3, now=1003) is True
+    # 超过一小时后窗口滚动，重新放行。
+    assert _MOD.group_rate_limited("456", max_replies_per_hour=3, now=1000 + 3601) is False
 
 
 def test_group_rate_limit_is_per_group():

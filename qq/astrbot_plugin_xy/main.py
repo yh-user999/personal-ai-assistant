@@ -163,11 +163,16 @@ def group_triggered(
 def group_rate_limited(
     group_id: str,
     *,
-    cooldown_seconds: float = 60.0,
-    max_replies_per_hour: int = 6,
+    cooldown_seconds: float = 0.0,
+    max_replies_per_hour: int = 30,
     now: float | None = None,
 ) -> bool:
-    """按群执行冷却和小时上限；返回 True 表示本次不应回复。"""
+    """按群执行冷却和小时上限；返回 True 表示本次不应回复。
+
+    被点名提问必须能得到回答，所以冷却默认关闭（0 秒）：群聊机器人被 @ 却
+    沉默，对用户就是"坏了"。每小时上限保留，用于兜底防刷；把它当成滥用闸门，
+    而不是正常对话节流。需要压制刷屏时再显式配置冷却。
+    """
     group = str(group_id or "").strip()
     if not group:
         return True
@@ -175,11 +180,11 @@ def group_rate_limited(
     try:
         cooldown = max(0.0, float(cooldown_seconds))
     except (TypeError, ValueError):
-        cooldown = 60.0
+        cooldown = 0.0
     try:
         hourly_limit = max(1, int(max_replies_per_hour))
     except (TypeError, ValueError):
-        hourly_limit = 6
+        hourly_limit = 30
     events = _GROUP_REPLY_TIMES.setdefault(group, [])
     while events and current - events[0] >= 3600:
         events.pop(0)
@@ -486,8 +491,8 @@ class XiaoYuePlugin(Star):
     def _group_rate_limited(self, group_id: str) -> bool:
         return group_rate_limited(
             group_id,
-            cooldown_seconds=self.cfg.get("group_cooldown_seconds", 60),
-            max_replies_per_hour=self.cfg.get("group_max_replies_per_hour", 6),
+            cooldown_seconds=self.cfg.get("group_cooldown_seconds", 0),
+            max_replies_per_hour=self.cfg.get("group_max_replies_per_hour", 30),
         )
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -506,11 +511,18 @@ class XiaoYuePlugin(Star):
                 event.should_call_llm(True)
                 return
             # group 模式默认 fail-closed：白名单、唤醒和按群限流全部通过才进入服务。
-            if not self._group_allowed(group_scope) or not self._group_triggered(event):
+            # 拒绝原因按 INFO 记录：debug 级别在宿主默认日志级别下会被丢弃，
+            # 导致"群里没反应但日志什么都没有"，无法判断是哪一道门禁拦的。
+            if not self._group_allowed(group_scope):
+                logger.info("[xy] 群聊未在白名单，忽略 group=%s", group_scope)
+                event.should_call_llm(True)
+                return
+            if not self._group_triggered(event):
+                logger.info("[xy] 群聊未唤醒（需@或前缀），忽略 group=%s", group_scope)
                 event.should_call_llm(True)
                 return
             if self._group_rate_limited(group_scope):
-                logger.debug("[xy] 群聊限流 group=%s", group_scope)
+                logger.info("[xy] 群聊限流，忽略 group=%s", group_scope)
                 event.should_call_llm(True)
                 return
             # 触发后的群消息由本插件独占；请求仍使用访客 token，不能暴露 owner。

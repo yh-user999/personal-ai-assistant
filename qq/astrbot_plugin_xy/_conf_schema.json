@@ -30,15 +30,15 @@
   "group_cooldown_seconds": {
     "description": "群聊冷却秒数",
     "type": "float",
-    "hint": "同一群两次回复之间的最小间隔，默认 60 秒。",
-    "default": 60,
+    "hint": "同一群两次回复的最小间隔，默认 0=不限制（被 @ 就回）。仅在需要压制刷屏时才调大。",
+    "default": 0,
     "restart_required": false
   },
   "group_max_replies_per_hour": {
     "description": "每群每小时最大回复数",
     "type": "int",
-    "hint": "超过后该群暂不响应，默认每小时 6 次。",
-    "default": 6,
+    "hint": "防滥用兜底上限，默认每小时 30 次；正常对话不应触及。",
+    "default": 30,
     "restart_required": false
   },
   "owner_qq": {

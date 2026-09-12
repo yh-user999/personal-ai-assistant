@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from app.chat import group_interjection
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
 from app.services import observability, request_trace
@@ -111,3 +112,32 @@ def test_observability_api_is_owner_only(db_env, monkeypatch):
             headers={"Authorization": "Bearer qq-token"},
         )
         assert denied.status_code == 403
+
+
+def test_group_interjection_diagnostic_is_owner_only_and_redacted(db_env, monkeypatch):
+    monkeypatch.setattr(settings, "api_token", "owner-token")
+    monkeypatch.setattr(settings, "qq_api_token", "qq-token")
+    group_interjection.interject_gate.reset()
+    group_interjection.interject_gate.observe_message("fixture-group", now=0)
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/api/observability/group-interjection")
+        assert unauthorized.status_code == 401
+
+        response = client.get(
+            "/api/observability/group-interjection",
+            headers={"Authorization": "Bearer owner-token"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["config"]["mode"] == "disabled"
+        assert body["gate"]["tracked_groups"] == 1
+        encoded = json.dumps(body, ensure_ascii=False)
+        assert "fixture-group" not in encoded
+        assert "group_id" not in encoded
+        assert "user_id" not in encoded
+        assert "token" not in encoded.lower()
+    group_interjection.interject_gate.reset()

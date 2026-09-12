@@ -6,11 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.chat import group_interjection as group_interjection_module
 from app.chat import prompting, retrieval
 from app.chat.context import ChatContext, ChatRequest
 from app.chat.group_interjection import (
     GroupInterjectGate,
     InterjectionConfig,
+    config_diagnostic,
+    diagnostic_snapshot,
     score_group_interjection,
 )
 from app.chat.social_replay import ReplayEvent, evaluate_social_replay
@@ -137,6 +140,51 @@ def test_gate_enforces_hourly_limit_and_shadow_mode():
     assert decision.allowed is False
     assert decision.would_allow is True
     assert decision.reason == "shadow_only"
+
+
+def test_config_diagnostic_normalizes_values_without_exposing_raw_config():
+    settings_stub = SimpleNamespace(
+        group_social_enabled=True,
+        group_social_interject_enabled="true",
+        group_social_interject_shadow_only="true",
+        group_social_interject_threshold=1.5,
+        group_social_interject_cooldown_seconds=-4,
+        group_social_interject_hourly_limit=0,
+        group_social_interject_min_gap_messages=-2,
+    )
+    diagnostic = config_diagnostic(settings_stub)
+    assert diagnostic["mode"] == "shadow"
+    assert diagnostic["enabled"] is True
+    assert diagnostic["shadow_only"] is True
+    assert diagnostic["threshold"] == 1.0
+    assert diagnostic["cooldown_seconds"] == 0.0
+    assert diagnostic["hourly_limit"] == 1
+    assert diagnostic["min_gap_messages"] == 0
+    assert diagnostic["valid"] is False
+    assert "group_social_interject_threshold:out_of_range" in diagnostic["warnings"]
+    assert "group_social_interject_cooldown_seconds:out_of_range" in diagnostic["warnings"]
+    assert "1.5" not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_gate_diagnostic_is_aggregate_only():
+    group_interjection_module.interject_gate.reset()
+    group_interjection_module.interject_gate.observe_message("fixture-group", now=0)
+    diagnostic = diagnostic_snapshot(SimpleNamespace(
+        group_social_enabled=True,
+        group_social_interject_enabled=True,
+        group_social_interject_shadow_only=True,
+        group_social_interject_threshold=0.72,
+        group_social_interject_cooldown_seconds=90,
+        group_social_interject_hourly_limit=6,
+        group_social_interject_min_gap_messages=2,
+    ))
+    assert diagnostic["config"]["mode"] == "shadow"
+    assert diagnostic["gate"]["tracked_groups"] == 1
+    encoded = json.dumps(diagnostic, ensure_ascii=False)
+    assert "fixture-group" not in encoded
+    assert "group_id" not in encoded
+    assert "user_id" not in encoded
+    group_interjection_module.interject_gate.reset()
 
 
 def test_robot_state_is_bounded_and_recovers():

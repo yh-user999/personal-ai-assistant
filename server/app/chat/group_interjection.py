@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import re
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -270,6 +271,18 @@ class GroupInterjectGate:
                 }
             return output
 
+    def diagnostics(self, *, now: float | None = None) -> dict[str, Any]:
+        """只返回聚合闸门状态，不暴露群键、消息或用户身份。"""
+        snapshot = self.snapshot(now=now)
+        hourly_counts = [int(item["hourly_count"]) for item in snapshot.values()]
+        message_sequences = [int(item["message_seq"]) for item in snapshot.values()]
+        return {
+            "tracked_groups": len(snapshot),
+            "groups_with_sent": sum(1 for count in hourly_counts if count > 0),
+            "hourly_sent_total": sum(hourly_counts),
+            "max_message_seq": max(message_sequences, default=0),
+        }
+
 
 def _now(value: float | None) -> float:
     import time
@@ -277,23 +290,101 @@ def _now(value: float | None) -> float:
     return time.time() if value is None else float(value)
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    raise ValueError("invalid boolean")
+
+
 def config_from_settings(settings: Any) -> InterjectionConfig:
     """从 Settings/测试替身读取参数，并对非法配置安全收敛。"""
-    values = {
-        "enabled": bool(
-            getattr(settings, "group_social_enabled", True)
-            and getattr(settings, "group_social_interject_enabled", False)
-        ),
-        "shadow_only": getattr(settings, "group_social_interject_shadow_only", True),
-        "threshold": getattr(settings, "group_social_interject_threshold", 0.72),
-        "cooldown_seconds": getattr(settings, "group_social_interject_cooldown_seconds", 90.0),
-        "hourly_limit": getattr(settings, "group_social_interject_hourly_limit", 6),
-        "min_gap_messages": getattr(settings, "group_social_interject_min_gap_messages", 2),
-    }
     try:
+        social_enabled = _coerce_bool(getattr(settings, "group_social_enabled", True), True)
+        interject_enabled = _coerce_bool(
+            getattr(settings, "group_social_interject_enabled", False), False
+        )
+        values = {
+            "enabled": social_enabled and interject_enabled,
+            "shadow_only": _coerce_bool(
+                getattr(settings, "group_social_interject_shadow_only", True), True
+            ),
+            "threshold": getattr(settings, "group_social_interject_threshold", 0.72),
+            "cooldown_seconds": getattr(settings, "group_social_interject_cooldown_seconds", 90.0),
+            "hourly_limit": getattr(settings, "group_social_interject_hourly_limit", 6),
+            "min_gap_messages": getattr(settings, "group_social_interject_min_gap_messages", 2),
+        }
         return InterjectionConfig(**values).normalized()
     except (TypeError, ValueError):
         return InterjectionConfig().normalized()
+
+
+def config_diagnostic(settings: Any) -> dict[str, Any]:
+    """返回不含原始配置值的有效配置诊断。"""
+    warnings: list[str] = []
+    bool_fields = {
+        "group_social_enabled": True,
+        "group_social_interject_enabled": False,
+        "group_social_interject_shadow_only": True,
+    }
+    for name, default in bool_fields.items():
+        try:
+            _coerce_bool(getattr(settings, name, default), default)
+        except (TypeError, ValueError):
+            warnings.append(f"{name}:invalid")
+
+    numeric_fields = (
+        ("group_social_interject_threshold", 0.0, 1.0, float),
+        ("group_social_interject_cooldown_seconds", 0.0, None, float),
+        ("group_social_interject_hourly_limit", 1.0, None, int),
+        ("group_social_interject_min_gap_messages", 0.0, None, int),
+    )
+    for name, minimum, maximum, converter in numeric_fields:
+        raw = getattr(settings, name, None)
+        try:
+            value = converter(raw)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError
+            if value < minimum or (maximum is not None and value > maximum):
+                warnings.append(f"{name}:out_of_range")
+        except (TypeError, ValueError, OverflowError):
+            warnings.append(f"{name}:invalid")
+
+    config = config_from_settings(settings)
+    mode = "disabled"
+    if config.enabled:
+        mode = "shadow" if config.shadow_only else "active"
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "enabled": config.enabled,
+        "shadow_only": config.shadow_only,
+        "threshold": config.threshold,
+        "cooldown_seconds": config.cooldown_seconds,
+        "hourly_limit": config.hourly_limit,
+        "min_gap_messages": config.min_gap_messages,
+        "max_groups": config.max_groups,
+        "valid": not warnings,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def diagnostic_snapshot(settings: Any) -> dict[str, Any]:
+    """组合有效配置和聚合闸门状态，供 owner/internal 只读诊断。"""
+    return {
+        "schema_version": 1,
+        "config": config_diagnostic(settings),
+        "gate": interject_gate.diagnostics(),
+    }
 
 
 def score_group_interjection(

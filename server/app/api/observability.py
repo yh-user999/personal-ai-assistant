@@ -7,6 +7,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.auth import require_roles
+from app.chat import group_interjection
+from app.config import settings
 from app.core.memory import owner_user_id
 from app.services import observability
 
@@ -65,3 +67,10 @@ async def retrieval_debug(
     uid = _subject(request)
     summary = await asyncio.to_thread(observability.summary, uid, days=days)
     return {"scope": "owner", "summary": summary}
+
+
+@router.get("/observability/group-interjection")
+async def group_interjection_debug(request: Request) -> dict:
+    """主动插话的有效配置和聚合闸门状态；仅 owner/internal 可读。"""
+    _subject(request)
+    return await asyncio.to_thread(group_interjection.diagnostic_snapshot, settings)

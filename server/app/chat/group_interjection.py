@@ -5,12 +5,15 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import re
+import sqlite3
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Callable, Protocol
 
 SOCIAL_ACTION = "interject"
 _IGNORE_ACTION = "ignore"
@@ -148,16 +151,233 @@ class _GroupGateState:
     last_seen_at: float = 0.0
 
 
-class GroupInterjectGate:
-    """按群隔离的进程内频率闸门。
+class InterjectionStateStore(Protocol):
+    """主动插话闸门的持久化替换接口。"""
 
-    当前服务按单进程运行，因此不引入数据库计数；状态只含时间、计数和序号，
-    不含消息、用户 ID 或 prompt。多进程部署时应将此类替换成 SQLite 原子计数。
+    def update(
+        self,
+        group_id: str,
+        updater: Callable[[_GroupGateState], None],
+        *,
+        now: float | None = None,
+    ) -> _GroupGateState: ...
+
+    def read(self, group_id: str, *, now: float | None = None) -> _GroupGateState: ...
+
+    def snapshot(self, group_id: str | None = None, *, now: float | None = None) -> dict[str, Any]: ...
+
+    def diagnostics(self, *, now: float | None = None) -> dict[str, Any]: ...
+
+    def reset(self, group_id: str | None = None) -> None: ...
+
+
+class SqliteInterjectionStore:
+    """跨进程/重启可恢复的 SQLite 闸门状态存储。
+
+    每次 update 使用 ``BEGIN IMMEDIATE``，只保存计数、时间和消息序号；不保存
+    消息正文、用户 ID 或 prompt。GroupInterjectGate 通过构造注入使用它，默认
+    仍不改变现有进程内路径。
     """
 
-    def __init__(self, *, max_groups: int = 256) -> None:
+    def __init__(self, path: str | Path, *, max_groups: int = 256) -> None:
+        self.path = str(Path(path).expanduser())
+        self.max_groups = max(8, int(max_groups))
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def _initialize(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS group_interjection_state ("
+                "group_key TEXT PRIMARY KEY, message_seq INTEGER NOT NULL DEFAULT 0, "
+                "last_sent_at REAL, last_sent_seq INTEGER, sent_at TEXT NOT NULL DEFAULT '[]', "
+                "last_seen_at REAL NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_group_interjection_seen "
+                "ON group_interjection_state(last_seen_at DESC)"
+            )
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _group(group_id: str) -> str:
+        group = str(group_id or "").strip()
+        if not group:
+            raise ValueError("group_id is required")
+        return group
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row | None, current: float) -> _GroupGateState:
+        if row is None:
+            return _GroupGateState(last_seen_at=current)
+        try:
+            raw_sent = json.loads(row["sent_at"] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_sent = []
+        sent_at = deque()
+        for value in raw_sent if isinstance(raw_sent, list) else []:
+            try:
+                number = float(value)
+                if math.isfinite(number):
+                    sent_at.append(number)
+            except (TypeError, ValueError):
+                continue
+        return _GroupGateState(
+            message_seq=max(0, int(row["message_seq"] or 0)),
+            last_sent_at=(float(row["last_sent_at"]) if row["last_sent_at"] is not None else None),
+            last_sent_seq=(int(row["last_sent_seq"]) if row["last_sent_seq"] is not None else None),
+            sent_at=sent_at,
+            last_seen_at=float(row["last_seen_at"] or current),
+        )
+
+    @staticmethod
+    def _write(conn: sqlite3.Connection, group: str, state: _GroupGateState) -> None:
+        conn.execute("DELETE FROM group_interjection_state WHERE group_key=?", (group,))
+        conn.execute(
+            "INSERT INTO group_interjection_state "
+            "(group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                group,
+                max(0, int(state.message_seq)),
+                state.last_sent_at,
+                state.last_sent_seq,
+                json.dumps(list(state.sent_at), separators=(",", ":")),
+                state.last_seen_at,
+            ),
+        )
+
+    def update(
+        self,
+        group_id: str,
+        updater: Callable[[_GroupGateState], None],
+        *,
+        now: float | None = None,
+    ) -> _GroupGateState:
+        group = self._group(group_id)
+        current = _now(now)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                "FROM group_interjection_state WHERE group_key=?",
+                (group,),
+            ).fetchone()
+            state = self._from_row(row, current)
+            state.last_seen_at = current
+            updater(state)
+            GroupInterjectGate._prune_sent(state, current)
+            self._write(conn, group, state)
+            conn.execute(
+                "DELETE FROM group_interjection_state WHERE group_key NOT IN ("
+                "SELECT group_key FROM group_interjection_state "
+                "ORDER BY last_seen_at DESC LIMIT ?)",
+                (self.max_groups,),
+            )
+            conn.commit()
+            return state
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def read(self, group_id: str, *, now: float | None = None) -> _GroupGateState:
+        group = self._group(group_id)
+        current = _now(now)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                "FROM group_interjection_state WHERE group_key=?",
+                (group,),
+            ).fetchone()
+            state = self._from_row(row, current)
+            GroupInterjectGate._prune_sent(state, current)
+            return state
+        finally:
+            conn.close()
+
+    def snapshot(self, group_id: str | None = None, *, now: float | None = None) -> dict[str, Any]:
+        current = _now(now)
+        conn = self._connect()
+        try:
+            if group_id:
+                rows = conn.execute(
+                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                    "FROM group_interjection_state WHERE group_key=?",
+                    (self._group(group_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                    "FROM group_interjection_state"
+                ).fetchall()
+            output: dict[str, Any] = {}
+            for row in rows:
+                state = self._from_row(row, current)
+                GroupInterjectGate._prune_sent(state, current)
+                output[str(row["group_key"])] = {
+                    "message_seq": state.message_seq,
+                    "last_sent_at": state.last_sent_at,
+                    "last_sent_seq": state.last_sent_seq,
+                    "hourly_count": len(state.sent_at),
+                }
+            return output
+        finally:
+            conn.close()
+
+    def diagnostics(self, *, now: float | None = None) -> dict[str, Any]:
+        snapshot = self.snapshot(now=now)
+        hourly_counts = [int(item["hourly_count"]) for item in snapshot.values()]
+        message_sequences = [int(item["message_seq"]) for item in snapshot.values()]
+        return {
+            "tracked_groups": len(snapshot),
+            "groups_with_sent": sum(1 for count in hourly_counts if count > 0),
+            "hourly_sent_total": sum(hourly_counts),
+            "max_message_seq": max(message_sequences, default=0),
+        }
+
+    def reset(self, group_id: str | None = None) -> None:
+        conn = self._connect()
+        try:
+            if group_id:
+                conn.execute(
+                    "DELETE FROM group_interjection_state WHERE group_key=?",
+                    (self._group(group_id),),
+                )
+            else:
+                conn.execute("DELETE FROM group_interjection_state")
+        finally:
+            conn.close()
+
+
+class GroupInterjectGate:
+    """按群隔离的频率闸门，可通过 store 替换为持久化实现。
+
+    默认使用进程内状态；注入 InterjectionStateStore 后，状态读取和更新走外部
+    存储。SqliteInterjectionStore 使用 SQLite 原子事务，适合重启恢复和多进程共享。
+    """
+
+    def __init__(
+        self,
+        *,
+        max_groups: int = 256,
+        store: InterjectionStateStore | None = None,
+    ) -> None:
         self._states: OrderedDict[str, _GroupGateState] = OrderedDict()
         self._max_groups = max(8, int(max_groups))
+        self._store = store
         self._lock = RLock()
 
     def _state(self, group_id: str, current: float) -> _GroupGateState:
@@ -178,11 +398,63 @@ class GroupInterjectGate:
 
     def observe_message(self, group_id: str, *, now: float | None = None) -> int:
         current = _now(now)
+        if self._store is not None:
+            state = self._store.update(
+                group_id,
+                lambda item: setattr(item, "message_seq", item.message_seq + 1),
+                now=current,
+            )
+            return state.message_seq
         with self._lock:
             state = self._state(group_id, current)
             state.message_seq += 1
             self._prune_sent(state, current)
             return state.message_seq
+
+    @staticmethod
+    def _decide(
+        state: _GroupGateState,
+        score: SocialScore,
+        cfg: InterjectionConfig,
+        current: float,
+    ) -> GateDecision:
+        GroupInterjectGate._prune_sent(state, current)
+        hourly_count = len(state.sent_at)
+        message_gap = (
+            state.message_seq - state.last_sent_seq - 1
+            if state.last_sent_seq is not None
+            else state.message_seq
+        )
+        cooldown_remaining = 0.0
+        if state.last_sent_at is not None:
+            cooldown_remaining = max(0.0, cfg.cooldown_seconds - (current - state.last_sent_at))
+
+        reason = "allowed"
+        would_allow = True
+        if not cfg.enabled:
+            reason, would_allow = "disabled", False
+        elif not score.eligible:
+            reason, would_allow = "ineligible", False
+        elif not score.would_interject or score.score < cfg.threshold:
+            reason, would_allow = "score_below_threshold", False
+        elif cooldown_remaining > 0:
+            reason, would_allow = "cooldown", False
+        elif state.last_sent_seq is not None and message_gap < cfg.min_gap_messages:
+            reason, would_allow = "message_gap", False
+        elif hourly_count >= cfg.hourly_limit:
+            reason, would_allow = "hourly_limit", False
+
+        allowed = bool(would_allow and not cfg.shadow_only)
+        if would_allow and cfg.shadow_only:
+            reason = "shadow_only"
+        return GateDecision(
+            allowed=allowed,
+            would_allow=would_allow,
+            reason=reason,
+            cooldown_remaining=cooldown_remaining,
+            hourly_count=hourly_count,
+            message_gap=message_gap,
+        )
 
     def check(
         self,
@@ -194,51 +466,29 @@ class GroupInterjectGate:
     ) -> GateDecision:
         cfg = (config or InterjectionConfig()).normalized()
         current = _now(now)
+        if self._store is not None:
+            try:
+                state = self._store.read(group_id, now=current)
+            except ValueError:
+                return GateDecision(False, False, "group_missing")
+            return self._decide(state, score, cfg, current)
         with self._lock:
             try:
                 state = self._state(group_id, current)
             except ValueError:
                 return GateDecision(False, False, "group_missing")
-            self._prune_sent(state, current)
-            hourly_count = len(state.sent_at)
-            message_gap = (
-                state.message_seq - state.last_sent_seq - 1
-                if state.last_sent_seq is not None
-                else state.message_seq
-            )
-            cooldown_remaining = 0.0
-            if state.last_sent_at is not None:
-                cooldown_remaining = max(0.0, cfg.cooldown_seconds - (current - state.last_sent_at))
-
-            reason = "allowed"
-            would_allow = True
-            if not cfg.enabled:
-                reason, would_allow = "disabled", False
-            elif not score.eligible:
-                reason, would_allow = "ineligible", False
-            elif not score.would_interject or score.score < cfg.threshold:
-                reason, would_allow = "score_below_threshold", False
-            elif cooldown_remaining > 0:
-                reason, would_allow = "cooldown", False
-            elif state.last_sent_seq is not None and message_gap < cfg.min_gap_messages:
-                reason, would_allow = "message_gap", False
-            elif hourly_count >= cfg.hourly_limit:
-                reason, would_allow = "hourly_limit", False
-
-            allowed = bool(would_allow and not cfg.shadow_only)
-            if would_allow and cfg.shadow_only:
-                reason = "shadow_only"
-            return GateDecision(
-                allowed=allowed,
-                would_allow=would_allow,
-                reason=reason,
-                cooldown_remaining=cooldown_remaining,
-                hourly_count=hourly_count,
-                message_gap=message_gap,
-            )
+            return self._decide(state, score, cfg, current)
 
     def record_sent(self, group_id: str, *, now: float | None = None) -> None:
         current = _now(now)
+        if self._store is not None:
+            def mark_sent(state: _GroupGateState) -> None:
+                state.last_sent_at = current
+                state.last_sent_seq = state.message_seq
+                state.sent_at.append(current)
+
+            self._store.update(group_id, mark_sent, now=current)
+            return
         with self._lock:
             state = self._state(group_id, current)
             self._prune_sent(state, current)
@@ -247,6 +497,9 @@ class GroupInterjectGate:
             state.sent_at.append(current)
 
     def reset(self, group_id: str | None = None) -> None:
+        if self._store is not None:
+            self._store.reset(group_id)
+            return
         with self._lock:
             if group_id is None:
                 self._states.clear()
@@ -254,6 +507,8 @@ class GroupInterjectGate:
                 self._states.pop(str(group_id).strip(), None)
 
     def snapshot(self, group_id: str | None = None, *, now: float | None = None) -> dict[str, Any]:
+        if self._store is not None:
+            return self._store.snapshot(group_id, now=now)
         current = _now(now)
         with self._lock:
             keys = [str(group_id).strip()] if group_id else list(self._states)
@@ -273,6 +528,8 @@ class GroupInterjectGate:
 
     def diagnostics(self, *, now: float | None = None) -> dict[str, Any]:
         """只返回聚合闸门状态，不暴露群键、消息或用户身份。"""
+        if self._store is not None:
+            return self._store.diagnostics(now=now)
         snapshot = self.snapshot(now=now)
         hourly_counts = [int(item["hourly_count"]) for item in snapshot.values()]
         message_sequences = [int(item["message_seq"]) for item in snapshot.values()]

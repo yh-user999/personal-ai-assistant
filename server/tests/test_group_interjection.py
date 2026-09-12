@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from app.chat.context import ChatContext, ChatRequest
 from app.chat.group_interjection import (
     GroupInterjectGate,
     InterjectionConfig,
+    SqliteInterjectionStore,
     config_diagnostic,
     diagnostic_snapshot,
     score_group_interjection,
@@ -185,6 +187,51 @@ def test_gate_diagnostic_is_aggregate_only():
     assert "group_id" not in encoded
     assert "user_id" not in encoded
     group_interjection_module.interject_gate.reset()
+
+
+def test_sqlite_store_survives_gate_replacement(tmp_path):
+    path = tmp_path / "interjection-gate.db"
+    config = InterjectionConfig(
+        enabled=True,
+        shadow_only=False,
+        threshold=0.72,
+        cooldown_seconds=90,
+        hourly_limit=4,
+        min_gap_messages=0,
+    )
+    score = _score()
+    first_gate = GroupInterjectGate(store=SqliteInterjectionStore(path))
+    first_gate.observe_message("fixture-group", now=0)
+    assert first_gate.check("fixture-group", score, config=config, now=0).allowed is True
+    first_gate.record_sent("fixture-group", now=0)
+
+    restarted_gate = GroupInterjectGate(store=SqliteInterjectionStore(path))
+    restarted_gate.observe_message("fixture-group", now=30)
+    decision = restarted_gate.check("fixture-group", score, config=config, now=30)
+    assert decision.reason == "cooldown"
+    snapshot = restarted_gate.snapshot("fixture-group", now=30)["fixture-group"]
+    assert snapshot["message_seq"] == 2
+    assert snapshot["hourly_count"] == 1
+
+
+def test_sqlite_store_atomic_message_sequence_across_instances(tmp_path):
+    path = tmp_path / "interjection-shared.db"
+    gates = [
+        GroupInterjectGate(store=SqliteInterjectionStore(path)),
+        GroupInterjectGate(store=SqliteInterjectionStore(path)),
+    ]
+
+    def observe(index):
+        return gates[index % 2].observe_message("fixture-group", now=float(index))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(observe, range(20)))
+
+    snapshot = gates[0].snapshot("fixture-group", now=20)["fixture-group"]
+    assert snapshot["message_seq"] == 20
+    diagnostic = gates[1].diagnostics(now=20)
+    assert diagnostic["tracked_groups"] == 1
+    assert "fixture-group" not in json.dumps(diagnostic, ensure_ascii=False)
 
 
 def test_robot_state_is_bounded_and_recovers():

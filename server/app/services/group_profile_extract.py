@@ -1,15 +1,16 @@
-"""从群发言中提取成员画像（后台执行，失败静默）。
+"""从群发言中提取对话偏好，写入按 QQ 号归属的统一画像（后台执行，失败静默）。
 
-只提取"怎么接着聊"需要的三项：称呼、话题偏好、表达风格。
-提示词明确禁止推断敏感属性，且入库前再由 group_profile 白名单二次过滤——
-模型可能被群消息里的注入语句诱导，单靠提示词约束不够。
+只提取"怎么接着聊"需要的三项：称呼、话题偏好、表达风格。画像与私聊共用
+``profile`` 表——同一个人在哪说话都是他自己的画像，按 user_id 天然隔离。
+提示词禁止推断敏感属性，入库前再由 profile 白名单二次过滤：素材来自群聊，
+可能含注入语句，单靠提示词约束不够。
 """
 from __future__ import annotations
 
 import logging
 
 from app.core import llm
-from app.services import group_profile
+from app.services import profile as profile_service
 
 logger = logging.getLogger("assistant.group_profile")
 
@@ -59,9 +60,9 @@ async def maybe_extract(
         return 0
 
     written = 0
-    for dimension, value, confidence in group_profile.parse_updates(payload):
+    for dimension, value, confidence in profile_service.parse_updates(payload):
         try:
-            if group_profile.remember(group_id, member_id, dimension, value, confidence):
+            if profile_service.remember(member_id, dimension, value, confidence):
                 written += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("群画像入库失败: %s", exc)

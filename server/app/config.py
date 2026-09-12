@@ -242,9 +242,9 @@ class Settings(BaseSettings):
     # 占 prompt；想重开需同时开采集器通道与这个开关。
     behavior_inject_enabled: bool = False
 
-    # 群成员画像：为可持续对话记住"聊过的人"。只存称呼/话题/风格三个维度，
-    # 落在独立表 group_member_profile，与私聊 profile 物理隔离。
-    # 涉及第三方个人数据，需要时可整体关闭并清理历史。
+    # 群聊是否提取对话偏好（称呼/话题/风格）写入画像。画像按 user_id（QQ 号）
+    # 归属并与私聊共用 profile 表——同一个人在哪说话都是他自己的画像。
+    # 涉及第三方个人数据，需要时可整体关闭。
     group_profile_enabled: bool = True
 
     # ── 私人 MCP（默认关闭；独立 stdio 进程启动）────────────────

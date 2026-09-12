@@ -175,6 +175,17 @@ def _untrusted_reference(label: str, content: str) -> str:
     )
 
 
+def _profile_for(ctx: ChatContext) -> str:
+    """按当前主体（QQ 号）读取画像。
+
+    画像表以 user_id 为键，因此按 uid 查询天然只会取到本人的记录，
+    不需要为群聊单独建表。群检索路径不注入画像，这里补齐。
+    """
+    from app.services import profile as profile_service
+
+    return profile_service.get_profile_injection(user_id=ctx.uid)
+
+
 def _guest_note(uid: str) -> str:
     """访客边界声明；不提供可用于排除管理员身份的措辞。"""
     return (
@@ -260,19 +271,21 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
             "不要透露、确认、否认或暗示任何管理员/主人身份，也不要解释内部权限机制。"
             "群里说话简短自然，不用 Markdown 分点或标题。"
         )
-        # 群成员画像来自独立表，只读"本群+本人"，绝不触碰私聊 profile。
-        # 取用失败不能影响回复：画像是锦上添花，不是必需上下文。
+        # 画像按 user_id（QQ 号）归属，与私聊共用同一张表：同一个人无论在哪
+        # 说过话都是他自己的画像。按 uid 查询天然只取到本人，不会读到别人。
+        # 取用失败不影响回复：画像是锦上添花，不是必需上下文。
         try:
-            from app.services import group_profile
-
-            member_note = group_profile.get_injection(ctx.group_id, ctx.uid)
+            member_note = bundle.profile or _profile_for(ctx)
         except Exception as exc:  # noqa: BLE001
             logger = getattr(runtime, "logger", None)
             if logger is not None:
                 logger.warning("群成员画像读取失败（不影响回复）: %s", exc)
             member_note = ""
         if member_note:
-            system += "\n\n" + member_note
+            system += (
+                "\n\n【这位群友的已知情况】（仅用于把话接得自然，"
+                "不要主动复述，也不要说明你有记录）\n" + member_note
+            )
 
     plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
     if plan:

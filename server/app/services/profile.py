@@ -17,7 +17,19 @@ DIMENSIONS = [
     "work_habit",
     "learning_rhythm",
     "project_info",
+    # 对话偏好：私聊与群聊共用。画像按 user_id（QQ 号）归属，
+    # 同一个人在哪个场景说的都算他自己的画像，不再分表。
+    "preferred_name",
+    "topics",
+    "style",
 ]
+
+# 明确禁止的敏感维度：即使 LLM 返回也丢弃。群聊放开后素材来自第三方发言，
+# 仅靠提示词约束不足以防注入或模型自作主张。
+BLOCKED_DIMENSIONS = frozenset({
+    "politics", "religion", "health", "sexual_orientation", "income",
+    "address", "phone", "id_number", "family", "race", "ethnicity",
+})
 
 REFLECT_PROMPT = """你是用户画像分析师。基于本周提取的事实三元组与现有画像，输出：
 {{
@@ -82,7 +94,7 @@ async def refresh_profile(
     try:
         for u in result.get("updates", []):
             dim = u.get("dimension", "")
-            if dim not in DIMENSIONS:
+            if dim not in DIMENSIONS or dim in BLOCKED_DIMENSIONS:
                 continue
             conn.execute(
                 """INSERT INTO profile (user_id, dimension, value, confidence, updated_at)
@@ -114,3 +126,83 @@ def get_profile_injection(user_id: str | None = None) -> str:
         return ""
     lines = [f"[{r['dimension']}] {r['value'][:120]}" for r in rows]
     return "\n".join(lines)
+
+
+MAX_VALUE_CHARS = 200
+
+
+def remember(user_id: str, dimension: str, value: str, confidence: float = 0.6) -> bool:
+    """写入/更新一条画像。维度不在白名单或属敏感项则丢弃。
+
+    画像按 user_id（QQ 号）归属：同一个人无论在私聊还是群里说的，
+    都记到他自己名下，因此不需要按场景分表。
+    """
+    from app.core.memory import normalize_user_id
+
+    dim = str(dimension or "").strip()
+    text = " ".join(str(value or "").split())[:MAX_VALUE_CHARS]
+    if not text or dim not in DIMENSIONS or dim in BLOCKED_DIMENSIONS:
+        return False
+    uid = normalize_user_id(user_id)
+    conn = connect()
+    try:
+        conn.execute(
+            """INSERT INTO profile (user_id, dimension, value, confidence, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, dimension) DO UPDATE
+                 SET value=excluded.value, confidence=excluded.confidence,
+                     updated_at=excluded.updated_at""",
+            (uid, dim, text, max(0.0, min(1.0, float(confidence))),
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def forget_user(user_id: str) -> int:
+    """删除某人的全部画像（应对"别记我"的要求），返回删除条数。"""
+    from app.core.memory import normalize_user_id
+
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "DELETE FROM profile WHERE user_id=?", (normalize_user_id(user_id),)
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        conn.close()
+
+
+def parse_updates(payload: object) -> list[tuple[str, str, float]]:
+    """解析 LLM 返回的画像更新，入库前收敛非法与敏感维度。
+
+    模型输出不可信（尤其素材来自群聊时可能含注入），必须集中过滤。
+    """
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(payload, dict):
+        return []
+    out: list[tuple[str, str, float]] = []
+    for item in payload.get("updates", []) or []:
+        if not isinstance(item, dict):
+            continue
+        dim = str(item.get("dimension", "")).strip()
+        if dim not in DIMENSIONS or dim in BLOCKED_DIMENSIONS:
+            continue
+        value = " ".join(str(item.get("value", "")).split())[:MAX_VALUE_CHARS]
+        if not value:
+            continue
+        try:
+            conf = max(0.0, min(1.0, float(item.get("confidence", 0.5))))
+        except (TypeError, ValueError):
+            conf = 0.5
+        out.append((dim, value, conf))
+    return out

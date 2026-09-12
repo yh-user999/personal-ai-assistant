@@ -334,6 +334,60 @@ async def _reflect_and_finalize_reply(
     return safe_reply or final
 
 
+async def _reflect_group_reply(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    bundle: retrieval.RetrievalBundle,
+    draft: str,
+) -> str:
+    """群聊轻量相关性审校：最多一次检查/纠偏，不写入个人审校记录。"""
+    reasons = review.should_reflect_group(
+        ctx,
+        bundle,
+        draft,
+        max_reply_chars=getattr(runtime.settings, "group_reflection_max_chars", 900),
+    )
+    if not reasons:
+        ctx.trace.reflection = {
+            "scope": "group",
+            "status": "skipped",
+            "triggers": [],
+            "revision_count": 0,
+        }
+        return draft
+
+    checked, review_ms = await review.review_group_reply(ctx, runtime, bundle, draft)
+    final = checked.revised_reply.strip() if checked.needs_revision else ""
+    if final:
+        plain_text = runtime.services.plain_text
+        if plain_text.has_markdown(final):
+            final = plain_text.strip_markdown(final)
+        if not final:
+            final = ""
+
+    changed = bool(final and final != draft)
+    status = "revised" if changed else checked.status
+    ctx.trace.reflection = {
+        "scope": "group",
+        "status": status,
+        "triggers": reasons,
+        "review_ms": review_ms,
+        "revision_count": 1 if changed else 0,
+        "quality": {
+            key: round(float(checked.scores.get(key, 0.0)), 3)
+            for key in ("relevance", "context_fit", "safety", "tone")
+        },
+        "issue_count": min(6, len(checked.reasons)),
+    }
+    runtime.logger.info(
+        "群聊轻量审校 status=%s triggers=%s revision=%d",
+        status,
+        ",".join(reasons),
+        1 if changed else 0,
+    )
+    return final if changed else draft
+
+
 def _maybe_capture_chapter(
     assembly: prompting.PromptAssembly,
     reply: str,
@@ -557,9 +611,12 @@ async def _run_chat(
                 ),
             )
 
-    # 事件判断必须审完再展示，不能先流出可能错误的指控再试图撤回。
+    # 事件判断与群聊轻量审校都必须审完再展示，不能先流出候选回复后再试图撤回。
     buffered_investigation = bool(ctx.trace.response_plan.get("investigation_status"))
-    buffered_reply = buffered_investigation or bool(
+    group_reflection_enabled = bool(
+        ctx.is_group and getattr(settings, "group_reflection_enabled", True)
+    )
+    buffered_reply = buffered_investigation or group_reflection_enabled or bool(
         ctx.is_owner and settings.reflection_enabled and bundle.evidence.get("sources")
     )
     with ctx.trace.stage("llm"):
@@ -581,7 +638,10 @@ async def _run_chat(
             memories_used=0,
         )
 
-    if not ctx.is_group and settings.reflection_enabled:
+    if ctx.is_group and group_reflection_enabled:
+        with ctx.trace.stage("group_reflection"):
+            reply = await _reflect_group_reply(ctx, runtime, bundle, reply)
+    elif not ctx.is_group and settings.reflection_enabled:
         with ctx.trace.stage("reflection"):
             reply = await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
     elif not ctx.is_group and buffered_investigation:

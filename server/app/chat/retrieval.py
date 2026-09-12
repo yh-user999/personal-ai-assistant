@@ -259,7 +259,8 @@ def _last_assistant_message(runtime: ChatRuntime, uid: str) -> str | None:
 def prepare_turn(ctx: ChatContext, runtime: ChatRuntime) -> TurnPreparation:
     """执行检索前的纠正/风格/事实桥接，并取得上一条 AI 回复。"""
     if ctx.is_group:
-        # 群消息不读写任何个人记忆、教训、示例或事实；首版只处理当轮上下文。
+        # 群聊不走私聊专属的教训/示例/事实准备；群历史与按 QQ 号画像
+        # 分别在检索和提示词阶段按作用域读取。
         return TurnPreparation()
     services = runtime.services
     last_ai = _last_assistant_message(runtime, ctx.uid)
@@ -321,7 +322,8 @@ def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dic
     执行顺序与拆分前逐项一致，保持注入语义不变。
     """
     if ctx.is_group:
-        # 群模式不注入个人画像、事实、目标、教训、历史摘要或用户习惯。
+        # 群模式不注入私聊专属事实、目标、教训、历史摘要或行为数据；
+        # 当前 QQ 号的统一画像由 prompting 按 user_id 单独读取。
         return {
             "profile": "", "lessons": "", "concerns": "", "jargon": "",
             "style_examples": "", "facts": "", "behavior": "", "goals_text": "",

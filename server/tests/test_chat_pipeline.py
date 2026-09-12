@@ -7,6 +7,7 @@ import pytest
 
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
+import app.chat.pipeline as pipeline_module
 from app.config import settings
 from app.core import knowledge as knowledge_module
 from app.core import memory as memory_module
@@ -15,8 +16,11 @@ from app.models.database import connect, init_db, reset_connections
 
 @pytest.fixture
 def db_env(tmp_path, monkeypatch):
+    from app.chat import group_context
+
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(settings, "api_token", "")
+    group_context.clear()
     reset_connections()
     init_db()
     # embedding 是单例模块，memory/knowledge 共享同一对象——一次打点全覆盖
@@ -27,6 +31,7 @@ def db_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_embedding, "embed", fake_embed)
     yield
+    group_context.clear()
     reset_connections()
 
 
@@ -284,6 +289,45 @@ def test_generation_double_failure_not_persisted(db_env, monkeypatch):
         assert rows == [], "两次失败后 assistant 侧不得入库任何文本"
     finally:
         conn.close()
+
+
+def test_group_reply_is_reviewed_and_revised_before_persist(db_env, monkeypatch):
+    """正常回复群的候选回复先审校，持久化和返回值都应使用纠偏后的版本。"""
+    from app.chat import review as review_module
+
+    llm = _LLM(reply="继续聊旧话题。")
+    runtime = make_runtime(llm=llm)
+    calls = []
+
+    async def fake_group_review(ctx, runtime, bundle, draft):
+        calls.append(draft)
+        return review_module.GroupReplyReview(
+            needs_revision=True,
+            reasons=["清晰换题后仍被旧话题带偏"],
+            revised_reply="换个话题也可以，晚饭想吃清淡点还是满足点？",
+            scores={"relevance": 0.2, "context_fit": 0.2, "safety": 1.0, "tone": 0.8},
+            confidence=0.9,
+            status="passed",
+        ), 1
+
+    monkeypatch.setattr(pipeline_module.review, "review_group_reply", fake_group_review)
+    ctx = make_ctx("换个话题，晚饭吃什么？", uid="123", is_owner=False, group_id="456")
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert calls == ["继续聊旧话题。"]
+    assert resp.reply == "换个话题也可以，晚饭想吃清淡点还是满足点？"
+    assert ctx.trace.reflection["scope"] == "group"
+    assert ctx.trace.reflection["status"] == "revised"
+    assert ctx.trace.reflection["revision_count"] == 1
+
+    conn = connect()
+    try:
+        saved = conn.execute(
+            "SELECT content FROM memories WHERE user_id='123' AND sender='assistant'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [row["content"] for row in saved] == [resp.reply]
 
 
 def test_group_chat_persists_into_group_scope_and_skips_personal_hooks(db_env, monkeypatch):

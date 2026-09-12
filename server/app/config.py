@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     # 反思是结构化审校，不默认启用高强度隐藏思维；最终答复设置不受影响。
     reflection_thinking_enabled: bool = False
 
+    # 群聊轻量审校：只检查当前群草稿的相关性、上下文衔接与安全边界。
+    # 只收集群不生成回复，因此不触发这条链路。
+    group_reflection_enabled: bool = True
+    group_reflection_max_chars: int = 900
+    group_reflection_review_timeout: float = 8.0
+    group_reflection_max_tokens: int = 700
+
     # ── LLM 自主响应规划（普通非流式聊天）───────────────
     # shadow_only=True 时只记录计划不改行为；默认全量生效。
     semantic_planner_enabled: bool = True

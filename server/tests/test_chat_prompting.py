@@ -93,7 +93,8 @@ def test_group_system_prompt_has_no_personal_scope_or_admin_identity_hint():
         base_bundle(),
     )
     assert "【群聊运行边界】" in system
-    assert "不读取或写入任何个人记忆" in system
+    assert "群消息会按当前群作用域长期保存并可检索" in system
+    assert "不得读取其他群、其他成员或私聊历史" in system
     assert "管理员/主人身份" in system
     assert "QQ 用户 123" in system
     assert "访客，不是管理员" not in system

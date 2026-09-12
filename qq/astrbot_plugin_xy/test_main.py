@@ -188,9 +188,12 @@ class _PostClient:
     def __init__(self, response=None):
         self.response = response or _PostResponse()
         self.kwargs = None
+        self.calls = []          # 记录请求过的 URL，用于断言走了哪个端点
 
     async def post(self, *args, **kwargs):
         self.kwargs = kwargs
+        if args:
+            self.calls.append(str(args[0]))
         return self.response
 
 
@@ -379,56 +382,72 @@ def test_group_hourly_limit_still_guards_against_abuse():
     assert _MOD.group_rate_limited("456", max_replies_per_hour=3, now=1000 + 3601) is False
 
 
-def test_dryrun_group_never_replies_and_never_calls_service():
-    """演练群只判定不回复：不得发言，也不得调用服务端（因此不会入库/建画像）。"""
+def test_observe_group_stores_but_never_replies():
+    """只收集群：消息送到 observe 端点入库，但绝不发言、绝不请求聊天接口。"""
     _MOD._GROUP_REPLY_TIMES.clear()
     client = _PostClient()
     plugin = _plugin(client)
     plugin.cfg["assistant_mode"] = "group"
-    plugin.cfg["group_dryrun_ids"] = "789"
+    plugin.cfg["group_observe_ids"] = "789"
 
     At = sys.modules["astrbot.api.message_components"].At
-    # 即使被 @ 了，演练群也必须沉默
+    # 即使被 @ 了，只收集群也必须沉默
     event = _Event([At("999")], "@小月 你好", sender="456", group="789", self_id="999")
     asyncio.run(plugin.on_message(event))
-    assert event.sent == [], "演练群不得发言"
-    assert client.kwargs is None, "演练群不得调用服务端"
+    assert event.sent == [], "只收集群不得发言"
+    assert client.kwargs["json"]["group_id"] == "789"
+    assert "/api/chat/observe" in client.calls[-1], "必须走只收录端点，不得走聊天接口"
 
-    # 未被 @ 同样沉默
-    quiet = _Event([], "群里闲聊", sender="456", group="789", self_id="999")
+    # 未被 @ 的普通闲聊同样收录且不回复
+    quiet = _Event([], "群里闲聊内容", sender="456", group="789", self_id="999")
     asyncio.run(plugin.on_message(quiet))
-    assert quiet.sent == [] and client.kwargs is None
+    assert quiet.sent == []
+    assert client.kwargs["json"]["message"] == "群里闲聊内容"
 
 
-def test_whitelist_takes_precedence_over_dryrun():
-    """同一群同时出现在白名单与演练名单时，白名单优先（正常回复）。"""
+def test_observe_group_never_hits_chat_endpoint():
+    """结构性保证：只收集群不得请求 /api/chat（那会产生回复与个人副作用）。"""
+    _MOD._GROUP_REPLY_TIMES.clear()
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_observe_ids"] = "789"
+
+    for text in ("闲聊一句", "再聊一句"):
+        asyncio.run(plugin.on_message(
+            _Event([], text, sender="456", group="789", self_id="999")
+        ))
+    assert all(url.endswith("/api/chat/observe") for url in client.calls)
+
+
+def test_whitelist_takes_precedence_over_observe():
+    """同一群同时在白名单与只收集名单时，白名单优先（正常回复）。"""
     _MOD._GROUP_REPLY_TIMES.clear()
     client = _PostClient()
     plugin = _plugin(client)
     plugin.cfg["assistant_mode"] = "group"
     plugin.cfg["group_allowed_ids"] = "456"
-    plugin.cfg["group_dryrun_ids"] = "456"
+    plugin.cfg["group_observe_ids"] = "456"
 
     At = sys.modules["astrbot.api.message_components"].At
     event = _Event([At("999")], "@小月 你好", sender="123", group="456", self_id="999")
     asyncio.run(plugin.on_message(event))
     assert event.sent, "白名单群应正常回复"
-    assert client.kwargs["json"]["group_id"] == "456"
+    assert client.calls[-1].endswith("/api/chat"), "白名单群走正常聊天接口"
 
 
-def test_dryrun_does_not_consume_real_rate_limit_quota():
-    """演练判定不得占用真实限流配额，否则会影响正式群的回复次数。"""
+def test_observe_does_not_consume_rate_limit_quota():
+    """只收集不占用回复限流配额，避免影响正式群。"""
     _MOD._GROUP_REPLY_TIMES.clear()
     plugin = _plugin()
     plugin.cfg["assistant_mode"] = "group"
-    plugin.cfg["group_dryrun_ids"] = "789"
+    plugin.cfg["group_observe_ids"] = "789"
 
-    At = sys.modules["astrbot.api.message_components"].At
     for _ in range(3):
         asyncio.run(plugin.on_message(
-            _Event([At("999")], "@小月 在吗", sender="456", group="789", self_id="999")
+            _Event([], "闲聊", sender="456", group="789", self_id="999")
         ))
-    assert "789" not in _MOD._GROUP_REPLY_TIMES, "演练不应写入限流计数"
+    assert "789" not in _MOD._GROUP_REPLY_TIMES
 
 
 def test_group_rate_limit_is_per_group():

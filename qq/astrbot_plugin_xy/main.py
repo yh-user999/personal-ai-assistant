@@ -504,28 +504,41 @@ class XiaoYuePlugin(Star):
             max_replies_per_hour=self.cfg.get("group_max_replies_per_hour", 30),
         )
 
-    def _group_dryrun(self, group_id: str) -> bool:
-        """该群是否处于演练模式：只判定并记日志，不回复、不落库。"""
+    def _group_observe_only(self, group_id: str) -> bool:
+        """该群是否为"只收集"：消息入库供检索，但机器人绝不发言。"""
         return str(group_id or "").strip() in parse_group_allowed_ids(
-            self.cfg.get("group_dryrun_ids", "")
+            self.cfg.get("group_observe_ids", "")
         )
 
-    def _log_group_dryrun(self, event: AstrMessageEvent, group_id: str) -> None:
-        """记录"如果放开这个群，本条消息会不会被回复"。
+    async def _observe_group_message(self, group_id: str, sender: str, msg: str) -> None:
+        """把群消息送到只收录端点。绝不回复，失败也只记日志。
 
-        上线前用来确认唤醒判定与限流是否符合预期。只输出判定结果与消息长度，
-        不输出消息原文，也不记录发言人身份——观察的是功能，不是群成员。
+        独立于聊天链路：这里不判断唤醒、不走限流、不请求 /api/chat，
+        因此不存在"观察群里不小心说话"的路径。
         """
-        triggered = self._group_triggered(event)
-        if not triggered:
-            logger.info("[xy][演练] 不会回复（未唤醒）group=%s", group_id)
+        text = str(msg or "").strip()
+        if not text:
             return
-        # 限流是有状态判定，演练不能占用真实配额，否则会影响正式群的计数。
-        logger.info(
-            "[xy][演练] 会回复（已唤醒）group=%s 消息长度=%d",
-            group_id,
-            len(str(getattr(event, "get_message_str", lambda: "")() or "")),
-        )
+        base = str(self.cfg.get("api_base", "") or "").strip().rstrip("/")
+        token, _ = self._selected_api_token(sender, group_id)
+        if not (base and token):
+            logger.warning("[xy][只收集] 配置缺失，跳过收录 group=%s", group_id)
+            return
+        request_id = uuid.uuid4().hex
+        try:
+            response = await self._client.post(
+                f"{base}/api/chat/observe",
+                json={
+                    "message": text,
+                    "user_id": sender,
+                    "request_id": request_id,
+                    "group_id": group_id,
+                },
+                headers=self._api_headers(sender, request_id, group_id=group_id),
+            )
+            response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[xy][只收集] 收录失败 group=%s: %s", group_id, type(exc).__name__)
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -546,10 +559,10 @@ class XiaoYuePlugin(Star):
             # 拒绝原因按 INFO 记录：debug 级别在宿主默认日志级别下会被丢弃，
             # 导致"群里没反应但日志什么都没有"，无法判断是哪一道门禁拦的。
             if not self._group_allowed(group_scope):
-                # 演练群：走完整判定并记录"本会如何处理"，但绝不回复、绝不入库。
-                # 分支放在白名单之后：白名单优先，演练群永远走不到发言路径。
-                if self._group_dryrun(group_scope):
-                    self._log_group_dryrun(event, group_scope)
+                # 只收集群：消息入库供检索，但绝不发言。分支在白名单之后，
+                # 且这里 return 前不经过任何 event.send，结构上保证不会回复。
+                if self._group_observe_only(group_scope):
+                    await self._observe_group_message(group_scope, sender, msg)
                 else:
                     logger.info("[xy] 群聊未在白名单，忽略 group=%s", group_scope)
                 event.should_call_llm(True)

@@ -13,10 +13,10 @@
     "default": "",
     "restart_required": false
   },
-  "group_dryrun_ids": {
-    "description": "群聊演练群（只判定不回复）",
+  "group_observe_ids": {
+    "description": "只收集群（收录消息但绝不发言）",
     "type": "string",
-    "hint": "上线前观察用：这些群会走完整门禁判定并把结果写日志，但绝不发言、不写库、不建画像。留空=关闭。与白名单重复时白名单优先。",
+    "hint": "这些群的消息会存入数据库供长期检索并提取画像，但机器人完全不回复。多个群号用逗号分隔；留空=关闭。与白名单重复时白名单优先（那边会回复）。",
     "default": "",
     "restart_required": false
   },

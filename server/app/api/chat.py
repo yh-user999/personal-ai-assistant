@@ -139,6 +139,38 @@ async def vision_chat(
     return result
 
 
+@router.post("/chat/observe")
+async def observe_group_message(req: ChatRequest, request: Request) -> dict:
+    """只收录群消息：写入本群作用域并提取画像，不调用 LLM、不产生回复。
+
+    用于"只收集不回复"的群：机器人在这些群完全沉默，但消息仍可长期检索。
+    必须带 group_id——本端点不接受私聊，避免被用来绕过正常聊天链路
+    往私聊记忆里写数据。
+    """
+    ctx = build_context(req, request, memory)
+    if not ctx.is_group:
+        raise api_error(400, "group_id_required", "只收录端点仅接受群消息")
+    if not ctx.message:
+        return {"stored": False, "reason": "empty"}
+
+    memory_id = await memory.write_message(
+        "user", ctx.message, user_id=ctx.uid, group_id=ctx.group_id
+    )
+    # 画像提取放后台：它要调 LLM，不能拖慢消息收录。
+    if getattr(settings, "group_profile_enabled", True):
+        from app.services import group_profile_extract
+
+        _bg_tasks.add(
+            task := asyncio.create_task(
+                group_profile_extract.maybe_extract(
+                    ctx.group_id, ctx.uid, ctx.message, request_id=ctx.request_id
+                )
+            )
+        )
+        task.add_done_callback(_bg_tasks.discard)
+    return {"stored": memory_id is not None}
+
+
 def _sse_frame(event: str, data: dict) -> str:
     """编码一条 SSE 事件帧（data 为 JSON，中文不转义以减少传输体积）。"""
     return "event: " + event + "\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n"

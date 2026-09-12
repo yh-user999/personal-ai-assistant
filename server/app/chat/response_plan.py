@@ -9,7 +9,14 @@ from app.chat import values as values_module
 from app.common.timeutil import now_local
 
 _ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
+SOCIAL_ACTIONS = frozenset({"ignore", "interject", "banter", "answer", "tease", "ask_back"})
 _HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
+_SOCIAL_SWITCH_RE = re.compile(r"换个话题|另外|顺便(?:问|说)|对了|再问一个|先不说|不聊这个了")
+_SOCIAL_BANTER_RE = re.compile(r"哈哈+|笑死|绷不住|绝了|离谱|好家伙|太真实|破防|6{2,}")
+_SOCIAL_TEASE_RE = re.compile(r"你又|还在|这都|不会吧|真有你的|又来了")
+_SOCIAL_ASK_BACK_RE = re.compile(r"你觉得呢|你说呢|怎么办|咋办|怎么选|选哪个|要不要")
+_SOCIAL_QUESTION_RE = re.compile(r"[?？]|吗[？?。！!\s]*$|(?:怎么|为什么|是否|能不能|有没有|哪个|哪些|什么)")
+_SOCIAL_EMOTION_RE = re.compile(r"焦虑|难受|崩溃|烦|累|沮丧|生气|压力|睡不着|没劲|撑不住|委屈")
 
 # 无来源不判断：价值层的安全底线，必须先于任何道德/事实结论生效
 NO_SOURCE_RULE = "本轮没有任何检索来源时必须回答「未查到」，不得凭模型记忆作答或补细节"
@@ -87,6 +94,13 @@ class ResponsePlan:
     sensitive_subject: bool = False
     stance_required: bool = True
     investigation_required: bool = False
+    # 群聊社交动作与事实/工具响应策略正交：只控制是否/如何接话，不能授予权限。
+    social_action: str = ""
+    social_confidence: float = 0.0
+    social_reasons: list[str] = field(default_factory=list)
+    social_addressed: bool = False
+    social_atmosphere: str = "casual"
+    social_topic_shift: bool = False
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -108,10 +122,153 @@ class ResponsePlan:
             "sensitive_subject": self.sensitive_subject,
             "stance_required": self.stance_required,
             "investigation_required": self.investigation_required,
+            "social_action": self.social_action or None,
+            "social_confidence": round(max(0.0, min(1.0, self.social_confidence)), 3),
+            "social_reasons": list(self.social_reasons)[:6],
+            "social_addressed": self.social_addressed,
+            "social_atmosphere": self.social_atmosphere[:32],
+            "social_topic_shift": bool(self.social_topic_shift),
             # constraints 必须带上：提示词靠它注入模式约束。
             # 漏掉会让道德/无来源/动作等约束全部静默失效。
             "constraints": list(self.constraints),
         }
+
+
+def build_group_social_hint(
+    message: str,
+    history: list[dict[str, Any]] | None = None,
+    *,
+    addressed: bool = True,
+    interject_enabled: bool = False,
+    scene: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """根据群聊消息与有限场景上下文生成可审计的社交动作提示。
+
+    规则只负责安全默认值与明显信号；最终动作可由现有 semantic planner 选择，
+    但调用方仍须经过 ``apply_group_social_requirements`` 的硬门禁。
+    """
+    text = str(message or "").strip()
+    recent = history or []
+    scene = scene or {}
+    reasons: list[str] = []
+    atmosphere = str(scene.get("atmosphere") or "casual").strip()[:32] or "casual"
+
+    if _SOCIAL_EMOTION_RE.search(text):
+        atmosphere = "emotional"
+        reasons.append("emotion_signal")
+    elif _SOCIAL_BANTER_RE.search(text):
+        atmosphere = "casual"
+        reasons.append("banter_signal")
+    elif _SOCIAL_QUESTION_RE.search(text):
+        atmosphere = "questioning"
+    if _SOCIAL_QUESTION_RE.search(text) and "question_signal" not in reasons:
+        reasons.append("question_signal")
+    if _SOCIAL_SWITCH_RE.search(text):
+        reasons.append("topic_switch")
+    if recent and any(str(item.get("role") or "") == "assistant" for item in recent[-4:]):
+        reasons.append("recent_bot_context")
+    if scene.get("topic_shift"):
+        reasons.append("scene_topic_shift")
+
+    if not addressed:
+        if not interject_enabled:
+            action = "ignore"
+            confidence = 1.0
+            reasons.append("not_directed")
+            reasons.append("interject_disabled")
+        elif _SOCIAL_QUESTION_RE.search(text) or _SOCIAL_BANTER_RE.search(text):
+            action = "interject"
+            confidence = 0.55
+            reasons.append("candidate_interjection")
+        else:
+            action = "ignore"
+            confidence = 0.85
+            reasons.append("not_directed")
+    elif _SOCIAL_ASK_BACK_RE.search(text):
+        action = "ask_back"
+        confidence = 0.72
+        reasons.append("needs_choice_or_clarification")
+    elif _SOCIAL_TEASE_RE.search(text):
+        action = "tease"
+        confidence = 0.58
+        reasons.append("teasing_signal")
+    elif _SOCIAL_BANTER_RE.search(text):
+        action = "banter"
+        confidence = 0.68
+    else:
+        action = "answer"
+        confidence = 0.9 if addressed else 0.4
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "reasons": list(dict.fromkeys(reasons))[:6],
+        "atmosphere": atmosphere,
+        "addressed": bool(addressed),
+    }
+
+
+def apply_group_social_requirements(
+    plan: ResponsePlan,
+    *,
+    message: str,
+    history: list[dict[str, Any]] | None = None,
+    addressed: bool = True,
+    enabled: bool = True,
+    interject_enabled: bool = False,
+    min_confidence: float = 0.6,
+    scene: dict[str, Any] | None = None,
+) -> ResponsePlan:
+    """把群聊社交规则合并到 planner 结果，并执行不可绕过的安全边界。"""
+    if not enabled:
+        plan.social_action = ""
+        plan.social_confidence = 0.0
+        plan.social_reasons = []
+        plan.social_addressed = bool(addressed)
+        plan.social_atmosphere = "casual"
+        plan.social_topic_shift = False
+        return plan
+
+    hint = build_group_social_hint(
+        message,
+        history,
+        addressed=addressed,
+        interject_enabled=interject_enabled,
+        scene=scene,
+    )
+    action = plan.social_action if plan.social_action in SOCIAL_ACTIONS else hint["action"]
+    confidence = plan.social_confidence if plan.social_action in SOCIAL_ACTIONS else hint["confidence"]
+    reasons = list(plan.social_reasons) if plan.social_action in SOCIAL_ACTIONS else []
+    reasons.extend(hint["reasons"])
+
+    # 直接唤醒是现有插件的用户契约：不能被模型的社交判断静默掉。
+    if addressed and action in {"ignore", "interject"}:
+        action = "answer"
+        confidence = max(confidence, 0.9)
+        reasons.append("directed_must_answer")
+    # 非直接消息在主动插话开关关闭时严格沉默。
+    if not addressed and not interject_enabled:
+        action = "ignore"
+        confidence = 1.0
+        reasons.extend(("not_directed", "interject_disabled"))
+    # 低置信的模型动作回退到规则结果；直接消息仍以回答为最低保障。
+    if confidence < max(0.0, min(1.0, float(min_confidence))):
+        action = hint["action"]
+        confidence = hint["confidence"]
+        reasons.append("low_confidence_fallback")
+        if addressed and action in {"ignore", "interject"}:
+            action = "answer"
+            reasons.append("directed_must_answer")
+
+    plan.social_action = action
+    plan.social_confidence = max(0.0, min(1.0, float(confidence)))
+    plan.social_reasons = list(dict.fromkeys(str(item)[:80] for item in reasons if str(item).strip()))[:6]
+    plan.social_addressed = bool(addressed)
+    plan.social_atmosphere = str(hint.get("atmosphere") or "casual")[:32]
+    plan.social_topic_shift = bool(
+        (scene and scene.get("topic_shift")) or _SOCIAL_SWITCH_RE.search(str(message or ""))
+    )
+    return plan
 
 
 def _previous_user_text(history: list[dict[str, Any]] | None) -> str:
@@ -302,6 +459,16 @@ def parse_llm_plan(
         action = str(raw.get("action") or "").strip()[:80] or None
         if any(word in (intent + " " + (action or "")) for word in _HIGH_RISK_WORDS):
             risk = "high"
+        raw_social_action = str(raw.get("social_action") or "").strip()
+        social_action = raw_social_action if raw_social_action in SOCIAL_ACTIONS else ""
+        try:
+            social_confidence = max(0.0, min(1.0, float(raw.get("social_confidence", 0.0))))
+        except (TypeError, ValueError):
+            social_confidence = 0.0
+        raw_social_addressed = raw.get("social_addressed")
+        social_addressed = bool(raw_social_addressed) if isinstance(raw_social_addressed, bool) else False
+        social_atmosphere = str(raw.get("social_atmosphere") or "casual").strip()[:32] or "casual"
+        social_topic_shift = raw.get("social_topic_shift") is True
         plan = ResponsePlan(
             mode=mode,
             intent=intent,
@@ -322,6 +489,12 @@ def parse_llm_plan(
             investigation_required=raw.get("investigation_required") is True,
             needs_moral_judgment=raw.get("needs_moral_judgment") is True,
             sensitive_subject=raw.get("sensitive_subject") is True,
+            social_action=social_action,
+            social_confidence=social_confidence,
+            social_reasons=_text_list(raw.get("social_reasons")),
+            social_addressed=social_addressed,
+            social_atmosphere=social_atmosphere,
+            social_topic_shift=social_topic_shift,
         )
         return validate_plan(plan, is_owner=is_owner)
     except (TypeError, ValueError, KeyError) as exc:
@@ -425,6 +598,10 @@ def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
 def build_planner_messages(
     message: str, history: list[dict[str, Any]], rule_hint: ResponsePlan,
     investigation_context: dict[str, Any] | None = None,
+    *,
+    is_group: bool = False,
+    group_directed: bool = True,
+    group_scene: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     import json
 
@@ -446,12 +623,29 @@ def build_planner_messages(
         "tone": "natural",
         "constraints": [],
     }
+    if is_group:
+        schema.update({
+            "social_action": "answer" if group_directed else "ignore",
+            "social_confidence": 0.0,
+            "social_reasons": [],
+            "social_addressed": bool(group_directed),
+        })
     context = [{"role": item.get("role", "user"), "content": str(item.get("content", ""))[:500]} for item in history[-4:]]
+    social_rules = ""
+    if is_group:
+        social_rules = (
+            "这是群聊。除非 social_action 明确允许，否则不要抢话；可选 social_action: "
+            "ignore/interject/banter/answer/tease/ask_back。"
+            "明确 @、前缀或回复机器人时不得选择 ignore/interject，至少选择 answer。"
+            "tease 只能针对当前话题或行为轻微吐槽，不得攻击个人敏感信息。"
+            f"本轮是否明确对机器人说话：{bool(group_directed)}。"
+        )
     return [
         {"role": "system", "content": (
             "你是私人助手的响应策略规划器。不要回答用户，只返回 JSON。"
             "自主判断用户意图和最佳响应模式，但不能授予权限、执行动作或编造事实。"
-            "可选 mode: " + ", ".join(sorted(MODES)) + "。"
+            + social_rules
+            + "可选 mode: " + ", ".join(sorted(MODES)) + "。"
             "确定性时间/计算问题可选择 provider=current_datetime/calculator。"
             "只要问题涉及外部世界的时效信息——新闻、事件、公共人物/机构/地区/"
             "公司的近况与进展、政策或数据的当前值——provider 就填 web_search，"
@@ -471,6 +665,10 @@ def build_planner_messages(
         {"role": "user", "content": json.dumps({
             "message": message[:8000], "recent_history": context,
             "rule_hint": rule_hint.summary(), "recent_investigation": investigation_context or {},
+            "group_social": ({
+                "directed": bool(group_directed),
+                "scene": group_scene or {},
+            } if is_group else {}),
         }, ensure_ascii=False)},
     ]
 
@@ -478,7 +676,28 @@ def build_planner_messages(
 async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | None = None) -> ResponsePlan:
     """LLM 自主选择响应模式；失败时回退到规则安全计划。"""
     prior = getattr(getattr(ctx, "trace", None), "investigation_context", {}) or {}
+    is_group = bool(getattr(ctx, "is_group", False))
+    group_directed = bool(getattr(ctx, "group_directed", True)) if is_group else False
+    group_scene: dict[str, Any] = {}
+    if is_group:
+        try:
+            from app.chat import group_context
+
+            group_scene = group_context.scene_summary(getattr(ctx, "group_id", ""))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            group_scene = {}
     hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner, history=history, investigation_context=prior)
+    if is_group:
+        hint = apply_group_social_requirements(
+            hint,
+            message=ctx.message,
+            history=history,
+            addressed=group_directed,
+            enabled=getattr(runtime.settings, "group_social_enabled", True),
+            interject_enabled=getattr(runtime.settings, "group_social_interject_enabled", False),
+            min_confidence=getattr(runtime.settings, "group_social_min_confidence", 0.6),
+            scene=group_scene,
+        )
     if hint.intent == "current_datetime":
         hint.provider = "current_datetime"
         return hint
@@ -487,7 +706,15 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
     model = str(getattr(runtime.settings, "response_plan_model", "") or "").strip() or runtime.settings.llm_model
     try:
         text = await runtime.llm.chat(
-            build_planner_messages(ctx.message, history or [], hint, investigation_context=prior),
+            build_planner_messages(
+                ctx.message,
+                history or [],
+                hint,
+                investigation_context=prior,
+                is_group=is_group,
+                group_directed=group_directed,
+                group_scene=group_scene,
+            ),
             temperature=0.0,
             max_tokens=max(120, int(runtime.settings.response_plan_max_tokens)),
             response_format={"type": "json_object"},
@@ -505,7 +732,19 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             min_confidence=float(runtime.settings.response_plan_min_confidence),
             fallback=hint,
         )
-        return apply_rule_requirements(planned, hint, is_owner=ctx.is_owner)
+        planned = apply_rule_requirements(planned, hint, is_owner=ctx.is_owner)
+        if is_group:
+            planned = apply_group_social_requirements(
+                planned,
+                message=ctx.message,
+                history=history,
+                addressed=group_directed,
+                enabled=getattr(runtime.settings, "group_social_enabled", True),
+                interject_enabled=getattr(runtime.settings, "group_social_interject_enabled", False),
+                min_confidence=getattr(runtime.settings, "group_social_min_confidence", 0.6),
+                scene=group_scene,
+            )
+        return planned
     except Exception as exc:  # noqa: BLE001
         import logging
         logging.getLogger("assistant.chat.response_plan").warning("响应 planner 失败，回退规则计划: %s", type(exc).__name__)

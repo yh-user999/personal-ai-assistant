@@ -200,14 +200,19 @@ def make_runtime(llm=None):
     )
 
 
-def make_ctx(message, uid="", is_owner=True, group_id=""):
+def make_ctx(message, uid="", is_owner=True, group_id="", group_directed=None):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message, group_id=group_id or None),
+        request_model=ChatRequest(
+            message=message,
+            group_id=group_id or None,
+            group_directed=group_directed,
+        ),
         message=message,
         uid=uid,
         is_owner=is_owner,
         group_id=group_id,
+        group_directed=(group_directed if group_directed is not None else bool(group_id)),
     )
 
 
@@ -269,6 +274,44 @@ def test_generation_retry_then_success(db_env, monkeypatch):
             "SELECT id FROM memories WHERE sender='assistant' AND content='生成的长文'"
         ).fetchone()
         assert row is not None, "重试成功的长文要正常入库"
+    finally:
+        conn.close()
+
+
+def test_non_directed_group_social_ignore_skips_llm_and_personal_hooks(db_env, monkeypatch):
+    """非直达群消息默认沉默：只保留当前群事件，不触发个人副作用。"""
+    monkeypatch.setattr(settings, "semantic_planner_enabled", False)
+    monkeypatch.setattr(settings, "group_social_interject_enabled", False)
+    llm = _LLM(reply="不应调用")
+    runtime = make_runtime(llm=llm)
+    calls = {"mood": 0, "initiative": 0}
+    runtime.services.mood.record_mood = lambda *a, **k: calls.__setitem__("mood", calls["mood"] + 1)
+    runtime.services.initiative.mark_responded = lambda *a, **k: calls.__setitem__("initiative", calls["initiative"] + 1)
+
+    ctx = make_ctx(
+        "群里有人在聊新的显卡",
+        uid="000001",
+        is_owner=False,
+        group_id="social-test-group",
+        group_directed=False,
+    )
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert resp.reply == ""
+    assert llm.calls == []
+    assert ctx.trace.route_name == "group:social_ignore"
+    assert ctx.trace.social_judgment["action"] == "ignore"
+    assert calls == {"mood": 0, "initiative": 0}
+
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT group_id, sender, content FROM memories WHERE user_id='000001'"
+        ).fetchall()
+        assert [(row["group_id"], row["sender"]) for row in rows] == [("social-test-group", "user")]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id='000001' AND group_id=''"
+        ).fetchone()[0] == 0
     finally:
         conn.close()
 

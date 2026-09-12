@@ -259,6 +259,7 @@ async def _record_request_trace(
         stages=ctx.trace.stages,
         reflection=ctx.trace.reflection,
         response_plan=ctx.trace.response_plan,
+        social_judgment=ctx.trace.social_judgment,
         total_latency_ms=ctx.trace.total_latency_ms,
         status=ctx.trace.status,
         error_code=ctx.trace.error_code,
@@ -509,11 +510,17 @@ async def _run_chat(
     if routed is not None:
         return routed
 
-    planner_history = [] if ctx.is_group else await asyncio.to_thread(
-        memory.get_recent_history,
-        getattr(settings, "response_plan_max_history", 4),
-        user_id=ctx.uid,
-    )
+    if ctx.is_group:
+        from app.chat import group_context
+
+        # planner 只读取当前群的有界内存上下文；绝不把私聊历史带进群判断。
+        planner_history = group_context.recent_messages(ctx.group_id)
+    else:
+        planner_history = await asyncio.to_thread(
+            memory.get_recent_history,
+            getattr(settings, "response_plan_max_history", 4),
+            user_id=ctx.uid,
+        )
     if (
         ctx.is_owner
         and getattr(settings, "investigation_enabled", True)
@@ -530,6 +537,17 @@ async def _run_chat(
         msg, is_owner=ctx.is_owner, history=planner_history,
         investigation_context=ctx.trace.investigation_context,
     )
+    if ctx.is_group:
+        hint = response_plan.apply_group_social_requirements(
+            hint,
+            message=msg,
+            history=planner_history,
+            addressed=ctx.group_directed,
+            enabled=getattr(settings, "group_social_enabled", True),
+            interject_enabled=getattr(settings, "group_social_interject_enabled", False),
+            min_confidence=getattr(settings, "group_social_min_confidence", 0.6),
+            scene=group_context.scene_summary(ctx.group_id),
+        )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
@@ -544,6 +562,22 @@ async def _run_chat(
         "planned_source": planned.source,
         "fact_result": plan.fact_result,
     }
+    if ctx.is_group and plan.social_action:
+        ctx.trace.social_judgment = {
+            "action": plan.social_action,
+            "confidence": plan.social_confidence,
+            "reasons": plan.social_reasons,
+            "addressed": plan.social_addressed,
+            "atmosphere": plan.social_atmosphere,
+            "topic_shift": plan.social_topic_shift,
+            "interject_enabled": bool(getattr(settings, "group_social_interject_enabled", False)),
+        }
+        if plan.social_action == "ignore" and not ctx.group_directed:
+            ctx.trace.route_name = "group:social_ignore"
+            with ctx.trace.stage("social_gate"):
+                group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
+                await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
+            return ChatResponse(reply="", memories_used=0)
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
     if ctx.is_owner and settings.healer_enabled:

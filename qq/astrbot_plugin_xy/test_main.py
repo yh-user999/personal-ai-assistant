@@ -307,6 +307,7 @@ def test_group_mode_owner_uses_visitor_token_and_scope():
     assert client.kwargs["headers"]["Authorization"] == "Bearer qq-token"
     assert client.kwargs["headers"]["X-QQ-User-ID"] == "123"
     assert client.kwargs["json"]["group_id"] == "456"
+    assert client.kwargs["json"]["group_directed"] is True
 
 
 def test_group_mode_requires_whitelist_and_mention():
@@ -525,3 +526,14 @@ def test_vision_http_error_has_short_format_message(tmp_path):
     event = _Event([comp], "[image]")
     asyncio.run(plugin._handle_image(event, comp, ""))
     assert "格式不支持" in event.sent[0][0].text
+
+
+def test_empty_chat_reply_is_suppressed_without_host_fallback():
+    client = _PostClient(_PostResponse(payload={"reply": "  "}))
+    plugin = _plugin(client)
+    event = _Event([], "一句话", sender="456")
+
+    asyncio.run(plugin.on_message(event))
+
+    assert event.sent == []
+    assert event.llm_blocked is True

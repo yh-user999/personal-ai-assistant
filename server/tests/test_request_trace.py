@@ -52,6 +52,43 @@ def test_record_and_cleanup(db_env):
     assert "旧问题" not in left and "命丛有哪些" in left
 
 
+def test_social_judgment_trace_is_whitelisted(db_env):
+    import json
+
+    assert request_trace.record(
+        "000001", "群里问个问题", {}, "group", False, [], {}, 0,
+        social_judgment={
+            "action": "tease",
+            "confidence": 0.8,
+            "reasons": ["banter_signal"],
+            "addressed": True,
+            "atmosphere": "casual",
+            "topic_shift": False,
+            "interject_enabled": False,
+            "raw_prompt": "不应保存",
+            "user_id": "fake-user-id",
+        },
+    )
+    conn = connect()
+    try:
+        raw = conn.execute(
+            "SELECT social_judgment FROM request_traces ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    payload = json.loads(raw)
+    assert payload == {
+        "action": "tease",
+        "confidence": 0.8,
+        "reasons": ["banter_signal"],
+        "addressed": True,
+        "atmosphere": "casual",
+        "topic_shift": False,
+        "interject_enabled": False,
+    }
+    assert "raw_prompt" not in raw and "fake-user-id" not in raw
+
+
 def test_record_failure_isolated(monkeypatch):
     """写库失败只记日志返回 False，不抛异常（后台任务的隔离性）。"""
     def boom(*a, **k):

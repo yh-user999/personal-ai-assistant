@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     group_reflection_review_timeout: float = 8.0
     group_reflection_max_tokens: int = 700
 
+    # ── 群聊社交判断（复用 semantic planner，不增加第二个规划调用）──
+    # 只影响已经进入 /api/chat 的群请求；默认保留现有 @/前缀唤醒门禁。
+    group_social_enabled: bool = True
+    # 非直接消息的主动插话默认关闭，避免开启 group 模式后突然刷屏。
+    group_social_interject_enabled: bool = False
+    group_social_min_confidence: float = 0.60
+
     # ── LLM 自主响应规划（普通非流式聊天）───────────────
     # shadow_only=True 时只记录计划不改行为；默认全量生效。
     semantic_planner_enabled: bool = True

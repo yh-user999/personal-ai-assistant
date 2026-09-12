@@ -630,7 +630,10 @@ class XiaoYuePlugin(Star):
                     "message": msg.strip(),
                     "user_id": sender,
                     "request_id": request_id,
-                    **({"group_id": group_scope} if group_scope else {}),
+                    **({
+                        "group_id": group_scope,
+                        "group_directed": True,
+                    } if group_scope else {}),
                 },
                 headers=self._api_headers(sender, request_id, group_id=group_scope),
             )
@@ -641,6 +644,10 @@ class XiaoYuePlugin(Star):
             reply = "😅 小月服务暂时不可达（服务器在重启？），稍后再试"
 
         reply = reply.strip()
+        if not reply:
+            # 社交判断的 ignore 分支返回空 reply：禁止宿主兜底，但不发送空消息。
+            event.should_call_llm(True)
+            return
         if len(reply) > REPLY_MAX_CHARS:
             reply = reply[:REPLY_MAX_CHARS] + "\n…（内容过长已截断，完整版去电脑面板看）"
 

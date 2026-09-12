@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections import OrderedDict
 
@@ -28,6 +29,13 @@ MAX_GROUPS = 64
 
 # group_id -> list[(timestamp, role, speaker_alias, text)]
 _store: OrderedDict[str, list[tuple[float, str, str, str]]] = OrderedDict()
+
+_SCENE_EMOTION_RE = re.compile(r"焦虑|难受|崩溃|烦|累|沮丧|生气|压力|睡不着|委屈|吵|气死")
+_SCENE_TECH_RE = re.compile(r"代码|接口|报错|服务器|数据库|部署|配置|脚本|模型|程序|bug|API", re.IGNORECASE)
+_SCENE_CELEBRATION_RE = re.compile(r"哈哈+|笑死|太爽|绝了|好耶|恭喜|成功|赢了|舒服")
+_SCENE_TENSE_RE = re.compile(r"不对|别吵|闭嘴|滚|冲突|争议|谁的错|骗子|垃圾")
+_SCENE_QUESTION_RE = re.compile(r"[?？]|吗[？?。！!\s]*$|(?:怎么|为什么|是否|能不能|有没有|哪个|哪些|什么)")
+_SCENE_SWITCH_RE = re.compile(r"换个话题|另外|顺便(?:问|说)|对了|再问一个|先不说|不聊这个了")
 
 
 def speaker_alias(user_id: str) -> str:
@@ -78,6 +86,60 @@ def recent_messages(group_id: str, *, now: float | None = None) -> list[dict[str
         {"role": role, "content": (f"{alias}：{text}" if role == "user" else text)}
         for _ts, role, alias, text in items
     ]
+
+
+def _grams(text: str) -> set[str]:
+    clean = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", text or "")
+    return {clean[i : i + 2] for i in range(max(0, len(clean) - 1))}
+
+
+def scene_summary(group_id: str, *, now: float | None = None) -> dict[str, object]:
+    """从现有短期上下文派生有限群场景摘要，不保存额外身份或原文。"""
+    group = str(group_id or "").strip()
+    if not group:
+        return {}
+    current = time.time() if now is None else float(now)
+    items = _prune(_store.get(group, []), current)
+    if not items:
+        _store.pop(group, None)
+        return {}
+    _store[group] = items
+    _store.move_to_end(group)
+
+    texts = [item[3] for item in items]
+    joined = " ".join(texts)
+    if _SCENE_EMOTION_RE.search(joined):
+        atmosphere = "emotional"
+    elif _SCENE_TENSE_RE.search(joined):
+        atmosphere = "tense"
+    elif _SCENE_CELEBRATION_RE.search(joined):
+        atmosphere = "celebration"
+    elif _SCENE_TECH_RE.search(joined):
+        atmosphere = "technical"
+    elif _SCENE_QUESTION_RE.search(texts[-1]):
+        atmosphere = "questioning"
+    else:
+        atmosphere = "casual"
+
+    prior_text = ""
+    for _ts, role, _alias, text in reversed(items[:-1]):
+        if role == "user":
+            prior_text = text
+            break
+    current_grams = _grams(texts[-1])
+    prior_grams = _grams(prior_text)
+    topic_shift = bool(
+        _SCENE_SWITCH_RE.search(texts[-1])
+        or (len(current_grams) >= 3 and len(prior_grams) >= 3 and not current_grams.intersection(prior_grams))
+    )
+    return {
+        "message_count": len(items),
+        "speaker_count": len({alias for _ts, role, alias, _text in items if role == "user"}),
+        "last_role": items[-1][1],
+        "atmosphere": atmosphere,
+        "topic_shift": topic_shift,
+        "has_recent_bot_reply": any(role == "assistant" for _ts, role, _alias, _text in items[-4:]),
+    }
 
 
 def clear(group_id: str | None = None) -> None:

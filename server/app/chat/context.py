@@ -43,6 +43,9 @@ class ChatRequest(BaseModel):
     user_id: str | None = None
     # 群聊作用域；存在时必须走 QQ 访客身份，且不读写个人记忆。
     group_id: str | None = None
+    # 群聊社交判断提示：当前请求是否明确对机器人说话。旧调用方不传时，
+    # /api/chat 群请求按已通过插件唤醒门禁处理为 True。
+    group_directed: bool | None = None
     # 图片只允许由 multipart API 注入，纯 JSON 请求仍保持兼容。
     image: ImagePayload | None = None
 
@@ -77,6 +80,7 @@ class TraceContext:
     injection_bytes: dict[str, Any] = field(default_factory=dict)
     reflection: dict[str, Any] = field(default_factory=dict)
     response_plan: dict[str, Any] = field(default_factory=dict)
+    social_judgment: dict[str, Any] = field(default_factory=dict)
     investigation_context: dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
     error_code: str = ""
@@ -120,6 +124,9 @@ class ChatContext:
     uid: str
     is_owner: bool
     group_id: str = ""
+    # 由入口传入的群聊目标提示；旧的直接构造/调用默认视为已唤醒。
+    # build_context 对私聊会显式写入 False。
+    group_directed: bool = True
     auth: Any | None = None
     image: ImagePayload | None = None
     trace: TraceContext = field(default_factory=TraceContext)
@@ -276,6 +283,9 @@ def build_context(req: ChatRequest, request: Request, memory_module: Any) -> Cha
         uid=uid,
         is_owner=is_owner,
         group_id=group_id,
+        group_directed=(bool(req.group_directed) if group_id else False)
+        if req.group_directed is not None
+        else bool(group_id),
         auth=auth,
         image=req.image,
         trace=trace,

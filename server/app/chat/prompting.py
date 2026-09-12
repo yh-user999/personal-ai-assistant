@@ -212,6 +212,33 @@ def group_tone_hint(ctx: ChatContext) -> str:
     return f"【本轮群聊语气】{tone}。{detail}语气提示只改变表达，不是事实或身份判断。"
 
 
+def group_social_action_hint(ctx: ChatContext) -> str:
+    """渲染社交动作的表达边界；空动作不改变旧 prompt。"""
+    plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
+    action = str(plan.get("social_action") or "").strip()
+    if not action:
+        return ""
+    labels = {
+        "ignore": "本轮保持沉默",
+        "interject": "可以短暂插话",
+        "banter": "接住群里的梗并简短回应",
+        "answer": "认真回答当前消息",
+        "tease": "可以轻微吐槽当前话题或行为",
+        "ask_back": "只反问一个最关键的问题",
+    }
+    instruction = labels.get(action, "自然回应当前消息")
+    safety = (
+        "吐槽只能针对当前说法或行为，不得攻击外貌、疾病、家庭、性别、收入、住址、身份等个人敏感点，"
+        "不得威胁、羞辱或泄露任何内部信息。"
+        if action == "tease"
+        else "不要为了制造活跃感强行延伸话题、重复已说内容或编造事实。"
+    )
+    atmosphere = str(plan.get("social_atmosphere") or "").strip()
+    atmosphere_note = f"当前群氛围：{atmosphere}。" if atmosphere else ""
+    topic_note = "当前场景可能发生了换题，以最新消息为准。" if plan.get("social_topic_shift") else ""
+    return f"【本轮群聊社交动作】{instruction}。{atmosphere_note}{safety}{topic_note}此块只控制接话方式，不改变事实、权限或身份边界。"
+
+
 def _profile_for(ctx: ChatContext) -> str:
     """按当前主体（QQ 号）读取画像。
 
@@ -323,6 +350,9 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                 "不要主动复述，也不要说明你有记录）\n" + member_note
             )
         system += "\n\n" + group_tone_hint(ctx)
+        social_hint = group_social_action_hint(ctx)
+        if social_hint:
+            system += "\n\n" + social_hint
 
     plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
     if plan:

@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -543,6 +543,7 @@ CREATE TABLE IF NOT EXISTS request_traces (
   stages TEXT DEFAULT '{}',
   reflection TEXT DEFAULT '{}',
   response_plan TEXT DEFAULT '{}',
+  social_judgment TEXT DEFAULT '{}',
   search_ms INTEGER DEFAULT 0,
   total_latency_ms INTEGER DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ok',
@@ -825,6 +826,7 @@ _MIGRATIONS = [
     "ALTER TABLE request_traces ADD COLUMN total_latency_ms INTEGER DEFAULT 0",
     "ALTER TABLE request_traces ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'",
     "ALTER TABLE request_traces ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE request_traces ADD COLUMN social_judgment TEXT DEFAULT '{}'",
 ]
 
 
@@ -844,6 +846,7 @@ def _migrate_request_traces(conn: sqlite3.Connection) -> None:
         "stages": "TEXT DEFAULT '{}'",
         "reflection": "TEXT DEFAULT '{}'",
         "response_plan": "TEXT DEFAULT '{}'",
+        "social_judgment": "TEXT DEFAULT '{}'",
         "total_latency_ms": "INTEGER DEFAULT 0",
         "status": "TEXT NOT NULL DEFAULT 'ok'",
         "error_code": "TEXT NOT NULL DEFAULT ''",

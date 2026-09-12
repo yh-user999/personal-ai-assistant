@@ -320,6 +320,14 @@ def test_group_chat_does_not_persist_personal_messages_or_trigger_personal_hooks
     finally:
         conn.close()
 
+    # 群画像绝不能串进私聊 profile 表。
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM profile").fetchone()[0] == 0, \
+            "群聊不得写入私聊画像表"
+    finally:
+        conn.close()
+
     # 但本轮问答应留在进程内存，供同群后续追问使用。
     from app.chat import group_context
 

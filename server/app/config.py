@@ -242,6 +242,11 @@ class Settings(BaseSettings):
     # 占 prompt；想重开需同时开采集器通道与这个开关。
     behavior_inject_enabled: bool = False
 
+    # 群成员画像：为可持续对话记住"聊过的人"。只存称呼/话题/风格三个维度，
+    # 落在独立表 group_member_profile，与私聊 profile 物理隔离。
+    # 涉及第三方个人数据，需要时可整体关闭并清理历史。
+    group_profile_enabled: bool = True
+
     # ── 私人 MCP（默认关闭；独立 stdio 进程启动）────────────────
     # MCP Server 不随 FastAPI/uvicorn 启动，避免 stdout 与普通日志混用。
     mcp_enabled: bool = False

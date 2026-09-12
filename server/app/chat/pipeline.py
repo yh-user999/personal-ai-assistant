@@ -588,6 +588,17 @@ async def _run_chat(
         from app.chat import group_context
 
         group_context.remember(ctx.group_id, "assistant", reply)
+        # 群成员画像提取放后台：它要调 LLM，不能拖慢群回复；
+        # 失败也只是少记一条，绝不影响本轮回复。
+        if getattr(settings, "group_profile_enabled", True):
+            from app.services import group_profile_extract
+
+            retrieval.track_background(
+                runtime,
+                group_profile_extract.maybe_extract(
+                    ctx.group_id, ctx.uid, msg, request_id=ctx.request_id
+                ),
+            )
     else:
         with ctx.trace.stage("persistence.assistant"):
             await memory.write_message("assistant", reply, user_id=ctx.uid)

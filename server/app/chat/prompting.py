@@ -260,6 +260,19 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
             "不要透露、确认、否认或暗示任何管理员/主人身份，也不要解释内部权限机制。"
             "群里说话简短自然，不用 Markdown 分点或标题。"
         )
+        # 群成员画像来自独立表，只读"本群+本人"，绝不触碰私聊 profile。
+        # 取用失败不能影响回复：画像是锦上添花，不是必需上下文。
+        try:
+            from app.services import group_profile
+
+            member_note = group_profile.get_injection(ctx.group_id, ctx.uid)
+        except Exception as exc:  # noqa: BLE001
+            logger = getattr(runtime, "logger", None)
+            if logger is not None:
+                logger.warning("群成员画像读取失败（不影响回复）: %s", exc)
+            member_note = ""
+        if member_note:
+            system += "\n\n" + member_note
 
     plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
     if plan:

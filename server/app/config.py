@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     group_social_interject_reservation_seconds: float = 120.0
     # 留空使用进程内闸门；填写 SQLite 路径后启用重启/多进程共享状态。
     group_social_interject_state_path: str = ""
+    # 是否从既有群记忆恢复短期上下文/机器人摘要；不新增原始消息表。
+    group_state_persistence_enabled: bool = True
     # 开启主动插话后仍可先 shadow 观察，只有显式关闭才真正发言。
     group_social_interject_shadow_only: bool = True
 

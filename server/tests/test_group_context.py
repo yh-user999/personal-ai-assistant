@@ -1,5 +1,6 @@
-"""群聊短期上下文测试：能接住追问，但绝不落库、不建群成员档案。"""
+"""群聊短期上下文测试：能接住追问，按群恢复且不建群成员档案。"""
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -8,6 +9,7 @@ from app.chat.context import ChatContext, ChatRequest
 from app.chat.retrieval import retrieve
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
+from app.services import robot_state
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +100,39 @@ def test_group_context_never_touches_database(db_env):
         assert hits == 0, "群消息不得写入可检索的记忆表"
     finally:
         conn.close()
+
+
+def test_group_context_and_robot_state_hydrate_after_restart(db_env):
+    """清空进程态后，从既有群记忆恢复有限上下文和机器人摘要。"""
+    created = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        conn.executemany(
+            "INSERT INTO memories (user_id, group_id, sender, content, ts) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("member-a", "persist-group", "user", "之前讨论部署", created),
+                ("member-b", "persist-group", "assistant", "先看服务日志", created),
+                ("member-c", "other-group", "user", "不应串入", created),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    group_context.clear()
+    robot_state.reset()
+    assert group_context.hydrate("persist-group") == 2
+    items = group_context.recent_messages("persist-group")
+    assert [item["role"] for item in items] == ["user", "assistant"]
+    assert "之前讨论部署" in items[0]["content"]
+    assert "member-a" not in items[0]["content"]
+
+    assert robot_state.hydrate("persist-group") is True
+    snapshot = robot_state.snapshot("persist-group")
+    assert snapshot["message_count"] == 2
+    assert snapshot["reply_count"] == 1
+    assert group_context.recent_messages("other-group") == []
+    robot_state.reset()
 
 
 def test_speaker_alias_hides_real_identity():

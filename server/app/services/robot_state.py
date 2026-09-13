@@ -1,12 +1,14 @@
 """小月在群聊中的短期自状态。
 
-只保留每群的计数、时间和有限状态，不保存消息正文、用户 ID 或 prompt。状态
-用于调整是否抢话和表达语气，不能授予权限，也不能替代安全门禁。
+内存中保留每群的计数、时间和有限状态；首次进入群时可从既有 memories
+恢复计数、时间和能量摘要，不保存消息正文、用户 ID 或 prompt。状态用于调整
+是否抢话和表达语气，不能授予权限，也不能替代安全门禁。
 """
 from __future__ import annotations
 
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any
@@ -15,6 +17,7 @@ MAX_GROUPS = 256
 RECOVERY_PER_MINUTE = 0.015
 MESSAGE_COST = 0.025
 REPLY_COST = 0.08
+HYDRATE_MAX_MESSAGES = 256
 
 
 @dataclass
@@ -30,12 +33,77 @@ class _State:
 class RobotState:
     def __init__(self, *, max_groups: int = MAX_GROUPS) -> None:
         self._states: OrderedDict[str, _State] = OrderedDict()
+        self._hydrated: OrderedDict[str, None] = OrderedDict()
         self._max_groups = max(8, int(max_groups))
         self._lock = RLock()
 
     @staticmethod
     def _now(value: float | None) -> float:
         return time.time() if value is None else float(value)
+
+    @staticmethod
+    def _timestamp(value: object) -> float | None:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _mark_hydrated(self, group: str) -> None:
+        self._hydrated[group] = None
+        self._hydrated.move_to_end(group)
+        while len(self._hydrated) > self._max_groups:
+            evicted, _ = self._hydrated.popitem(last=False)
+            self._states.pop(evicted, None)
+
+    def hydrate(self, group_id: str) -> bool:
+        """从既有群记忆恢复计数/时间/能量摘要，不读取消息正文。"""
+        group = str(group_id or "").strip()
+        if not group:
+            return False
+        with self._lock:
+            if group in self._hydrated:
+                return group in self._states
+        try:
+            from app.models.database import connect
+
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    "SELECT sender, ts FROM memories "
+                    "WHERE group_id = ? ORDER BY id DESC LIMIT ?",
+                    (group, HYDRATE_MAX_MESSAGES),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            with self._lock:
+                self._mark_hydrated(group)
+            return False
+
+        message_count = len(rows)
+        reply_count = sum(1 for item in rows if item["sender"] == "assistant")
+        last_message_ts = rows[0]["ts"] if rows else None
+        last_reply_ts = next(
+            (item["ts"] for item in rows if item["sender"] == "assistant"),
+            None,
+        )
+        with self._lock:
+            self._mark_hydrated(group)
+            if message_count <= 0:
+                return False
+            state = self._state(group)
+            state.message_count = message_count
+            state.reply_count = reply_count
+            state.last_message_at = self._timestamp(last_message_ts)
+            state.last_reply_at = self._timestamp(last_reply_ts)
+            state.energy = max(
+                0.0,
+                1.0 - message_count * MESSAGE_COST - reply_count * REPLY_COST,
+            )
+            return True
 
     def _state(self, group_id: str) -> _State:
         group = str(group_id or "").strip()
@@ -44,7 +112,8 @@ class RobotState:
         state = self._states.setdefault(group, _State())
         self._states.move_to_end(group)
         while len(self._states) > self._max_groups:
-            self._states.popitem(last=False)
+            evicted, _ = self._states.popitem(last=False)
+            self._hydrated.pop(evicted, None)
         return state
 
     @staticmethod
@@ -118,11 +187,18 @@ class RobotState:
         with self._lock:
             if group_id is None:
                 self._states.clear()
+                self._hydrated.clear()
             else:
-                self._states.pop(str(group_id).strip(), None)
+                group = str(group_id).strip()
+                self._states.pop(group, None)
+                self._hydrated.pop(group, None)
 
 
 state = RobotState()
+
+
+def hydrate(group_id: str) -> bool:
+    return state.hydrate(group_id)
 
 
 def observe_group_message(group_id: str, *, atmosphere: str = "casual", now: float | None = None) -> None:

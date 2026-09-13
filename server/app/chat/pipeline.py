@@ -520,6 +520,9 @@ async def _run_chat(
     if ctx.is_group:
         from app.chat import group_context
 
+        # 重启后只从既有群记忆恢复有限上下文；不新增原始消息存储。
+        if getattr(settings, "group_state_persistence_enabled", True):
+            await asyncio.to_thread(group_context.hydrate, ctx.group_id)
         # planner 只读取当前群的有界内存上下文；绝不把私聊历史带进群判断。
         planner_history = group_context.recent_messages(ctx.group_id)
         social_scene = group_context.scene_summary(ctx.group_id)
@@ -527,6 +530,9 @@ async def _run_chat(
         robot_snapshot: dict[str, Any] = {}
         if robot_service:
             try:
+                hydrate = getattr(robot_service, "hydrate", None)
+                if callable(hydrate) and getattr(settings, "group_state_persistence_enabled", True):
+                    await asyncio.to_thread(hydrate, ctx.group_id)
                 robot_service.observe_group_message(
                     ctx.group_id,
                     atmosphere=str(social_scene.get("atmosphere") or "casual"),

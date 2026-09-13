@@ -1,15 +1,15 @@
-"""群聊短期上下文：仅进程内存，不落库、不检索、不建画像。
+"""群聊短期上下文：内存优先，按需从既有群记忆恢复。
 
 隐私边界（实现约束，不是建议）：
-- **绝不写数据库**：不进 memories/facts/profile 等任何表，因此不会被检索命中，
-  也不会进入备份、导出或向量索引。
+- **不新建原始消息存储**：hydrate 只读取已经按 group_id 隔离的 memories，
+  remember() 本身不写库，因此不会形成第二份长期聊天副本。
 - **仅保留最近若干轮**：按群 FIFO 截断，只为接住"那你说说"这类追问。
 - **不建群成员档案**：发言人只保留一个短的稳定别名（哈希前 6 位），
   不存 QQ 号、昵称，避免形成可累积的人物画像。
-- **有生存期**：超过 TTL 的条目读取时即丢弃；进程重启全部清空。
+- **有生存期**：超过 TTL 的条目读取时即丢弃；hydrate 只恢复 TTL 内内容。
 - **总量上限**：群数与单群条数都有上限，防止长期占用内存。
 
-这样群聊能接住上下文，但不会变成"记录群成员所有聊天记录"的系统。
+这样重启后能恢复有限场景连续性，但不会额外保存群成员身份档案。
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import hashlib
 import re
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 
 # 每群保留的消息条数（用户+助手合计）。够接住追问，不足以拼出长期画像。
 MAX_TURNS_PER_GROUP = 8
@@ -29,6 +30,7 @@ MAX_GROUPS = 64
 
 # group_id -> list[(timestamp, role, speaker_alias, text)]
 _store: OrderedDict[str, list[tuple[float, str, str, str]]] = OrderedDict()
+_hydrated: OrderedDict[str, None] = OrderedDict()
 
 _SCENE_EMOTION_RE = re.compile(r"焦虑|难受|崩溃|烦|累|沮丧|生气|压力|睡不着|委屈|吵|气死")
 _SCENE_TECH_RE = re.compile(r"代码|接口|报错|服务器|数据库|部署|配置|脚本|模型|程序|bug|API", re.IGNORECASE)
@@ -54,6 +56,68 @@ def _prune(items: list[tuple[float, str, str, str]], now: float) -> list[tuple[f
     return fresh[-MAX_TURNS_PER_GROUP:]
 
 
+def _timestamp(value: object, fallback: float) -> float:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+
+
+def _mark_hydrated(group: str) -> None:
+    _hydrated[group] = None
+    _hydrated.move_to_end(group)
+    while len(_hydrated) > MAX_GROUPS:
+        _hydrated.popitem(last=False)
+
+
+def hydrate(group_id: str, *, now: float | None = None) -> int:
+    """从既有群记忆恢复有限短期上下文，不写入新记录。"""
+    group = str(group_id or "").strip()
+    if not group:
+        return 0
+    if group in _hydrated:
+        return len(_store.get(group, []))
+    current = time.time() if now is None else float(now)
+    rows = []
+    try:
+        from app.models.database import connect
+        from app.services.sanitize import sanitize
+
+        conn = connect()
+        try:
+            rows = conn.execute(
+                "SELECT sender, user_id, content, ts FROM memories "
+                "WHERE group_id = ? ORDER BY id DESC LIMIT ?",
+                (group, MAX_TURNS_PER_GROUP),
+            ).fetchall()
+        finally:
+            conn.close()
+        items: list[tuple[float, str, str, str]] = []
+        for row in reversed(rows):
+            timestamp = _timestamp(row["ts"], current)
+            if current - timestamp > TTL_SECONDS:
+                continue
+            content = " ".join(sanitize(str(row["content"] or "")).split())[:MAX_CHARS_PER_ITEM]
+            if not content:
+                continue
+            role = "assistant" if row["sender"] == "assistant" else "user"
+            alias = "小月" if role == "assistant" else speaker_alias(row["user_id"])
+            items.append((timestamp, role, alias, content))
+        if items:
+            _store[group] = items[-MAX_TURNS_PER_GROUP:]
+            _store.move_to_end(group)
+    except Exception:
+        # 持久化只是恢复增强；数据库不可用时仍保持原有内存路径。
+        _store.pop(group, None)
+    _mark_hydrated(group)
+    while len(_store) > MAX_GROUPS:
+        _store.popitem(last=False)
+    return len(_store.get(group, []))
+
+
 def remember(group_id: str, role: str, text: str, *, user_id: str = "", now: float | None = None) -> None:
     """记录一轮群对话到内存。role 为 'user' 或 'assistant'。"""
     group = str(group_id or "").strip()
@@ -66,6 +130,7 @@ def remember(group_id: str, role: str, text: str, *, user_id: str = "", now: flo
     items.append((current, role, alias, content))
     _store[group] = items[-MAX_TURNS_PER_GROUP:]
     _store.move_to_end(group)
+    _mark_hydrated(group)
     while len(_store) > MAX_GROUPS:
         _store.popitem(last=False)
 
@@ -143,11 +208,14 @@ def scene_summary(group_id: str, *, now: float | None = None) -> dict[str, objec
 
 
 def clear(group_id: str | None = None) -> None:
-    """清空指定群或全部群的内存上下文。"""
+    """清空指定群或全部群的内存上下文与 hydrate 标记。"""
     if group_id is None:
         _store.clear()
+        _hydrated.clear()
         return
-    _store.pop(str(group_id).strip(), None)
+    group = str(group_id).strip()
+    _store.pop(group, None)
+    _hydrated.pop(group, None)
 
 
 def tracked_groups() -> int:

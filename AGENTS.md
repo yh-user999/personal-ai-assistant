@@ -21,6 +21,40 @@
 - `docs/OPS.md`：服务端、Windows 客户端和组件排障；其中部分旧路径需以本文件的“已核对运行事实”为准。
 - `spec://tasks.json`：当前任务队列；修改前必须先读，再就地编辑。
 
+### 2.1 当前请求链路与职责归属
+
+```text
+QQ/NapCat 事件
+  → AstrBot xy 插件：群白名单、真实 @/Reply/前缀、短时上下文、QQ 签名
+  → /api/chat：认证与 ChatContext
+  → routing：确定性快捷命令
+  → pipeline：群心流/关系/插话闸门、响应规划、检索、生成、审校
+  → ChatResponse：正文 + 有界 interaction 元数据
+  → QQ 插件发送回复
+```
+
+当前职责边界：
+
+- QQ 插件负责协议适配和第一道 fail-closed 门禁，不应继续承载完整的群聊人格判断。
+- `server/app/chat/pipeline.py` 是群聊行为编排入口，负责把心流、主动插话、检索、生成和审校串起来。
+- `server/app/chat/group_interjection.py` 负责非直达消息的确定性兴趣评分、冷却、小时上限和 reservation。
+- `server/app/chat/heartflow.py` 负责群级活跃度、能量和连续回复限制；`group_relationship.py` 负责抽象互动熟悉度；`group_context.py` 负责短期话题上下文。
+- `server/app/chat/followup.py` 与 QQ 插件的 `FollowupStore` 通过有限 `interaction` 字段协作，不保存原始消息或隐藏推理。
+- `server/app/chat/review.py` 是候选回复的最终审校出口；没有可靠来源的群外部事实必须降级。
+
+已知重复决策点：
+
+- QQ 插件先判定是否直达，服务端随后再次判定 `group_directed`/`social_action`；未来应收敛为“插件做结构化入口，服务端做统一群聊决策”。
+- `robot_state`、`heartflow`、`group_interjection` 都含活跃度/节奏信息；未来应由一个 GroupAgent 状态层统一读写。
+- 追问状态在 QQ 插件内存和服务端 `interaction` 元数据之间分工；后续应保留插件的低成本门禁，把业务判定逐步移到服务端。
+- 实际运行有两个必须同步的副本：Git 仓库 `/opt/personal-ai-assistant` 与 AstrBot 插件 `/opt/astrbot/data/plugins/astrbot_plugin_xy`。
+
+建议的无行为变化收敛顺序：
+
+1. 先把群聊决策输入统一成一个 `GroupDecision`，保留现有默认静默和白名单行为；
+2. 再把心流、关系、插话闸门合并到单一状态接口；
+3. 最后让插件只负责事件归一化和发送，服务端统一决定 `reply/wait/pass/interject`。
+
 ## 3. 已核对运行事实（2026-09-13）
 
 ### 服务器
@@ -126,6 +160,14 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：`7c934b1`；实际 FastAPI 仓库与 GitHub `origin/main` 已核对一致。
 - 运行状态：FastAPI 已重启；AstrBot 实际插件副本已同步并重启 `astrbot.service`。
 - 未完成：LLM 上游额度耗尽；群聊公共联网搜索未开放；`group_allowed_ids=*` 尚未应用；QQ 最终身份续话验收待额度恢复。
+
+### 2026-09-13 — 架构链路盘点
+
+- 代码/配置：核对 QQ/AstrBot/FastAPI 实际运行副本，梳理群聊门禁、服务端社交闸门、心流/关系状态、检索、生成和审校职责；记录重复决策点与后续收敛顺序。
+- 验证：仓库与实际 AstrBot 插件文件哈希已核对；FastAPI/AstrBot 运行状态已现场确认。
+- 提交：待提交。
+- 运行状态：不改变运行服务。
+- 未完成：尚未进行行为不变的模块重构。
 
 ### 2026-09-13 — AGENTS.md 初始化
 

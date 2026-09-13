@@ -79,7 +79,7 @@ def atomic_json(path: Path, data: dict) -> None:
 
 
 def load_json(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 

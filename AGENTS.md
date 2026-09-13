@@ -65,7 +65,7 @@ QQ/NapCat 登录
 ```
 
 - MaiBot 使用 host 网络连接 NapCat 本机正向 WebSocket；WebUI 仅绑定本机端口。
-- 当前 MaiBot adapter 保留从 AstrBot 配置迁移的群白名单，不开放全部群。
+- 当前 MaiBot adapter 已切为群聊空黑名单，所有群消息可进入 adapter；是否实际回复仍由 MaiBot 核心聊天策略决定。
 - `astrbot.service` 当前停止但未禁用；原 NapCat→AstrBot 反向 WebSocket 配置已备份，可按回滚步骤恢复。
 - MaiBot 已配置可用的 Gemini provider/model；容器内最小 API 请求已通过，但 QQ 链路连接成功和 API 可用仍不等于身份回答和上下文续话验收通过。
 
@@ -86,7 +86,7 @@ QQ/NapCat 登录
 - AstrBot 实际插件副本：`/opt/astrbot/data/plugins/astrbot_plugin_xy`。
 - AstrBot 配置：`/opt/astrbot/data/config/astrbot_plugin_xy_config.json`；该文件含敏感配置，禁止提交或在日志中打印原文。
 - 当前已核对的安全门禁：`assistant_mode=group`、`group_require_mention=true`、`group_followup_enabled=true`、续话窗口 90 秒、每次最多 1 条、主动插话关闭。
-- `group_allowed_ids` 当前是指定群白名单，不是 `*`；代码支持明确写 `*` 开放全部群，但实际配置变更必须单独审查并重载 AstrBot。
+- AstrBot 配置中的 `group_allowed_ids` 仍是指定群白名单；当前 QQ 由 MaiBot 接管，实际生效的群范围由 MaiBot NapCat adapter 的群聊空黑名单控制。
 - QQ 插件更新不能只更新 `/opt/personal-ai-assistant/qq/`：必须从仓库同步后，把已审查的插件文件同步到 AstrBot 实际副本，再重启/重载 `astrbot.service`。
 - 当前 QQ 已切换到 `/opt/maibot` 的 MaiBot 核心：NapCat 本机正向 WebSocket → MaiBot NapCat adapter；`astrbot.service` 停止但未禁用。
 - MaiBot WebUI 当前实际监听本机 8001；NapCat 正向 WebSocket 使用本机 3001；两者均未暴露公网。
@@ -109,8 +109,8 @@ QQ/NapCat 登录
 - 群聊当前仍默认要求 @、前缀、真实回复或有效续话窗口；并没有实现 MaiBot 式“接收所有群消息后再统一决定是否回复”的完整聊天流。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 原 AstrBot/FastAPI 链路曾出现上游 LLM HTTP 429（月度额度耗尽）；当前 MaiBot Gemini 最小请求已通过，但仍不把 QQ 手工验收提前视为通过。
-- 当前 Dynamic Spec 中仍有 QQ 身份/通用上下文续话复测，以及配置 `group_allowed_ids=*` 后验证其他群两个方向。
-- MaiBot 当前已连接 NapCat 并接管 QQ，Gemini provider 已可用；不得把适配器连接或 API 直测成功误认为身份回答和通用续话验收通过。
+- 当前 Dynamic Spec 中仍有 QQ 身份/通用上下文续话复测，以及其他群真实消息回复验收两个方向。
+- MaiBot 当前已连接 NapCat 并接管 QQ，Gemini provider 已可用，群聊空黑名单已加载；不得把适配器连接、群范围配置或 API 直测成功误认为身份回答、通用续话或其他群实际回复验收通过。
 
 ## 5. 安全与隐私硬规则
 
@@ -225,6 +225,14 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 
 - 代码/配置：新增无密钥配置脚本，将 MaiBot 群聊名单切换为空黑名单，同时保留私聊白名单和总过滤开关；新增脱敏 fixture 测试。
 - 验证：脚本测试 4 passed；ruff 通过；Python 语法检查通过；现网配置仍为群聊白名单，尚未写入运行时。
-- 提交：待提交。
-- 运行状态：不改变现网服务，MaiBot 继续使用现有群白名单。
-- 未完成：需发布后备份并应用运行时配置，再重载 MaiBot；其他群真实消息验收待完成。
+- 提交：`47f83e8`；已推送 GitHub，实际部署仓库已 fast-forward 同步。
+- 运行状态：已备份并应用 MaiBot 群聊空黑名单；重载后容器运行正常、WebUI 返回 200、NapCat adapter 重新连接；AstrBot 保持停止但未禁用。
+- 未完成：其他群真实消息回复验收待完成；QQ 身份回答与通用上下文续话仍待实际消息验收。
+
+### 2026-09-14 — MaiBot 全群接收配置应用
+
+- 代码/配置：从 GitHub 同步 `47f83e8`；备份 MaiBot adapter 运行时配置，将群聊名单切换为空黑名单，保持总过滤开关和私聊白名单不变。
+- 验证：运行时摘要为过滤开启、群模式 blacklist、群列表 0、私聊 whitelist；备份权限 600；MaiBot 容器稳定运行，WebUI HTTP 200，NapCat adapter 重新连接。
+- 提交：本次状态记录待提交；运行时配置仅保留在 `/opt/maibot`，不进入 Git。
+- 运行状态：MaiBot 已重载并继续接管 QQ；AstrBot 保持停止但未禁用；NapCat 正常。
+- 未完成：尚未收到其他群真实消息回复证据；QQ 身份回答与通用上下文续话仍待实际消息验收。

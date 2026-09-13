@@ -94,6 +94,21 @@ def test_group_identity_query_keeps_privacy_route():
     assert result is not None and result.reply == "这个我不透露。"
 
 
+def test_group_self_identity_query_has_deterministic_name_reply():
+    ctx = _identity_context("你是谁", is_owner=False, group_id="456")
+    result = asyncio.run(routing.dispatch(ctx, SimpleNamespace()))
+
+    assert result is not None
+    assert "小月" in result.reply
+    assert ctx.trace.route_name == "command:identity"
+
+
+def test_self_identity_query_variants_are_recognized():
+    for message in ("你叫什么名字", "你不知道自己叫什么吗", "你是不是 AI"):
+        assert routing.is_self_identity_query(message)
+    assert not routing.is_self_identity_query("管理员是谁")
+
+
 def test_admin_identity_query_is_detected_without_matching_identity_settings():
     assert routing.is_admin_identity_query("你的管理员是谁")
     assert routing.is_admin_identity_query("主人有几个")

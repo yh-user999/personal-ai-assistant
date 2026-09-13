@@ -32,6 +32,11 @@ _ADMIN_SELF_IDENTITY_QUERY = re.compile(
     rf"(?:我|本人|自己).*(?:是不是|是否|是).*(?:{_ADMIN_IDENTITY_TERM})|"
     rf"(?:{_ADMIN_IDENTITY_TERM}).*(?:是不是|是否|就是).*(?:我|本人|自己)"
 )
+_SELF_IDENTITY_QUERY = re.compile(
+    r"你是谁|你叫什么(?:名字)?|你的名字(?:是什么|叫什么)?|自己叫什么|"
+    r"还记得(?:自己)?叫什么|你是不是\s*(?:AI|人工智能|机器人)|你是什么模型|怎么称呼你",
+    re.IGNORECASE,
+)
 TZ = ZoneInfo("Asia/Shanghai")
 
 GUEST_BLOCKED_HANDLERS = frozenset(
@@ -537,6 +542,11 @@ def is_admin_self_identity_query(message: str) -> bool:
     return bool(_ADMIN_SELF_IDENTITY_QUERY.search((message or "").strip()))
 
 
+def is_self_identity_query(message: str) -> bool:
+    """识别询问小月自身身份/名字的问题，交给确定性口径回答。"""
+    return bool(_SELF_IDENTITY_QUERY.search((message or "").strip()))
+
+
 async def _admin_identity_privacy(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
     """身份问题走确定性口径，避免把管理员身份交给 LLM 自由发挥。
 
@@ -554,6 +564,11 @@ async def _identity(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | No
     privacy_response = await _admin_identity_privacy(ctx, runtime)
     if privacy_response is not None:
         return privacy_response
+    if is_self_identity_query(ctx.message):
+        return ChatResponse(
+            reply="我是小月。平时陪你聊天、回答问题，也能帮你一起理理思路。",
+            memories_used=0,
+        )
     if not ctx.is_owner:
         return None
     identity_guard = runtime.services.identity_guard
@@ -808,7 +823,9 @@ async def dispatch(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | Non
         if not ctx.is_owner and name in GUEST_BLOCKED_HANDLERS:
             # 身份问题不是身份设定/权限命令；允许它进入确定性保密口径，
             # 但不让访客进入真正的 identity_guard 修改流程。
-            if name != "identity" or not is_admin_identity_query(ctx.message):
+            if name != "identity" or not (
+                is_admin_identity_query(ctx.message) or is_self_identity_query(ctx.message)
+            ):
                 continue
         response = await handler(
             ctx.message,

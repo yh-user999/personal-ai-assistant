@@ -67,7 +67,7 @@ QQ/NapCat 登录
 - MaiBot 使用 host 网络连接 NapCat 本机正向 WebSocket；WebUI 仅绑定本机端口。
 - 当前 MaiBot adapter 保留从 AstrBot 配置迁移的群白名单，不开放全部群。
 - `astrbot.service` 当前停止但未禁用；原 NapCat→AstrBot 反向 WebSocket 配置已备份，可按回滚步骤恢复。
-- MaiBot 尚未完成可用 LLM 配置；QQ 链路连接成功不等于身份回答和上下文续话验收通过。
+- MaiBot 已配置可用的 Gemini provider/model；容器内最小 API 请求已通过，但 QQ 链路连接成功和 API 可用仍不等于身份回答和上下文续话验收通过。
 
 ## 3. 已核对运行事实（2026-09-13）
 
@@ -102,14 +102,15 @@ QQ/NapCat 登录
 - 服务端与 QQ 插件均有回归测试、lint 和脱敏检查。
 - MaiBot 核心已旁路部署到 `/opt/maibot`，仅本机 WebUI 可访问。
 - 当前 QQ 已由 MaiBot NapCat adapter 接管，AstrBot 保留为停止状态的回滚链路。
+- MaiBot WebUI 已保存 Gemini provider 与 `gemini-3.8-flash-high` 模型；容器内 `/v1/models` 与最小聊天请求均验证通过。
 
 ### 未完成/明确限制
 
 - 群聊当前仍默认要求 @、前缀、真实回复或有效续话窗口；并没有实现 MaiBot 式“接收所有群消息后再统一决定是否回复”的完整聊天流。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
-- 最近一次运行日志显示上游 LLM 返回 HTTP 429（月度额度耗尽）；在额度恢复或切换可用模型前，不要把 QQ 手工验收失败归因于续话代码。
-- 当前 Dynamic Spec 中仍有两个 blocked 方向：恢复 LLM 后复测身份/通用续话；配置 `group_allowed_ids=*` 后验证其他群。
-- MaiBot 当前已连接 NapCat 并接管 QQ，但尚未配置可用 LLM；不得把适配器连接成功误认为身份回答和通用续话验收通过。
+- 原 AstrBot/FastAPI 链路曾出现上游 LLM HTTP 429（月度额度耗尽）；当前 MaiBot Gemini 最小请求已通过，但仍不把 QQ 手工验收提前视为通过。
+- 当前 Dynamic Spec 中仍有 QQ 身份/通用上下文续话复测，以及配置 `group_allowed_ids=*` 后验证其他群两个方向。
+- MaiBot 当前已连接 NapCat 并接管 QQ，Gemini provider 已可用；不得把适配器连接或 API 直测成功误认为身份回答和通用续话验收通过。
 
 ## 5. 安全与隐私硬规则
 
@@ -211,3 +212,11 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：待提交。
 - 运行状态：不改变运行服务。
 - 未完成：无新增运行时改动。
+
+### 2026-09-13 — MaiBot Gemini provider 验证
+
+- 代码/配置：核对 WebUI 保存的 Gemini provider 与 `gemini-3.8-flash-high`；补齐 MaiBot 标准 Bearer 鉴权字段，未写入或提交任何密钥。
+- 验证：容器内模型列表 HTTP 200（17 个模型）；指定模型最小聊天请求 HTTP 200；MaiBot 重启后初始化完成、NapCat 适配器与元事件重新连接；WebUI HTTP 200。
+- 提交：未提交；运行时配置仅保留在 `/opt/maibot`，不进入 Git。
+- 运行状态：MaiBot 持续运行并接管 QQ；AstrBot 保持停止但未禁用；NapCat 正常。
+- 未完成：QQ 身份回答与通用上下文续话仍待实际消息验收；全部群开放未启用。

@@ -34,6 +34,27 @@
     "default": "",
     "restart_required": false
   },
+  "group_followup_enabled": {
+    "description": "群聊短时追问免 @",
+    "type": "bool",
+    "hint": "小月刚提出澄清问题后，同一用户可在短时间内直接补充答案；不跨用户、不跨群，默认开启。",
+    "default": true,
+    "restart_required": false
+  },
+  "group_followup_window_seconds": {
+    "description": "短时追问有效期（秒）",
+    "type": "float",
+    "hint": "默认 90 秒，范围 5~300；只对小月上一条澄清问题生效。",
+    "default": 90,
+    "restart_required": false
+  },
+  "group_followup_max_messages": {
+    "description": "每次追问最多接收消息数",
+    "type": "int",
+    "hint": "默认 1，避免普通群消息连续借用追问窗口。",
+    "default": 1,
+    "restart_required": false
+  },
   "group_interject_enabled": {
     "description": "启用群聊主动插话",
     "type": "bool",

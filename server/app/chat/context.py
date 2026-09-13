@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings as default_settings
 
@@ -53,6 +53,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     memories_used: int
+    # 仅供 QQ 入口处理短时追问，不包含用户标识、原始消息或隐藏推理。
+    interaction: dict[str, Any] = Field(default_factory=dict)
 
 
 def normalize_group_id(value: Any) -> str:

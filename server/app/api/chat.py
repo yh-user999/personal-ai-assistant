@@ -226,7 +226,11 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
                 elif kind == "done":
                     yield _sse_frame(
                         "done",
-                        {"reply": payload.reply or "", "memories_used": payload.memories_used},
+                        {
+                            "reply": payload.reply or "",
+                            "memories_used": payload.memories_used,
+                            "interaction": payload.interaction,
+                        },
                     )
                 elif kind == "error":
                     yield _sse_frame("error", {"message": "生成中断，请稍后重试"})

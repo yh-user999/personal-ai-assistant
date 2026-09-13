@@ -15,6 +15,7 @@ from openai import OpenAIError
 
 from app.chat import (
     attention_drift,
+    followup,
     group_interjection,
     heartflow,
     prompting,
@@ -960,4 +961,8 @@ async def _run_chat(
         )
 
         _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
-    return ChatResponse(reply=reply, memories_used=len(bundle.mems))
+    return ChatResponse(
+        reply=reply,
+        memories_used=len(bundle.mems),
+        interaction=followup.build_interaction_hint(ctx, plan, reply),
+    )

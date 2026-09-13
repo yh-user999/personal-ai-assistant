@@ -79,6 +79,99 @@ _IMAGE_PLACEHOLDER_RE = re.compile(
 )
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 _GROUP_REPLY_TIMES: dict[str, list[float]] = {}
+_FOLLOWUP_KINDS = frozenset({"book_title", "yes_no", "choice", "free_text"})
+_FOLLOWUP_COMMAND_RE = re.compile(r"^(?:/|记住|取消|删除|执行|重启|管理员|主人|密钥|token|密码)", re.IGNORECASE)
+_FOLLOWUP_YES_NO_RE = re.compile(r"^(?:好|行|可以|不|不是|是|嗯|不用|算了|查|继续|取消|对|不对)[。！!,.，\s]*$")
+
+
+class _PendingFollowup:
+    __slots__ = ("kind", "expires_at", "remaining")
+
+    def __init__(self, kind: str, expires_at: float, remaining: int):
+        self.kind = kind
+        self.expires_at = expires_at
+        self.remaining = remaining
+
+
+class FollowupStore:
+    """按群和发送者保存一次性短时追问状态，不落盘、不跨群。"""
+
+    def __init__(self, *, enabled: bool = True, window_seconds: float = 90.0, max_messages: int = 1):
+        self.enabled = bool(enabled)
+        try:
+            self.window_seconds = max(5.0, min(300.0, float(window_seconds)))
+        except (TypeError, ValueError):
+            self.window_seconds = 90.0
+        try:
+            self.max_messages = max(1, min(3, int(max_messages)))
+        except (TypeError, ValueError):
+            self.max_messages = 1
+        self._items: dict[tuple[str, str], _PendingFollowup] = {}
+
+    @staticmethod
+    def _key(group_id: object, sender: object) -> tuple[str, str]:
+        return str(group_id or "").strip(), str(sender or "").strip()
+
+    def clear(self, group_id: object, sender: object) -> None:
+        self._items.pop(self._key(group_id, sender), None)
+
+    def set_from_interaction(
+        self,
+        group_id: object,
+        sender: object,
+        interaction: object,
+        *,
+        now: float | None = None,
+    ) -> None:
+        key = self._key(group_id, sender)
+        self._items.pop(key, None)
+        if not self.enabled or not key[0] or not key[1] or not isinstance(interaction, dict):
+            return
+        payload = interaction.get("followup")
+        if not isinstance(payload, dict):
+            return
+        kind = str(payload.get("kind") or "").strip().casefold()
+        if kind not in _FOLLOWUP_KINDS:
+            return
+        try:
+            expires_in = max(5.0, min(self.window_seconds, float(payload.get("expires_in", self.window_seconds))))
+        except (TypeError, ValueError):
+            expires_in = self.window_seconds
+        try:
+            remaining = max(1, min(self.max_messages, int(payload.get("max_messages", self.max_messages))))
+        except (TypeError, ValueError):
+            remaining = self.max_messages
+        current = time.time() if now is None else float(now)
+        self._items[key] = _PendingFollowup(kind, current + expires_in, remaining)
+
+    @staticmethod
+    def _matches(kind: str, text: str) -> bool:
+        clean = str(text or "").strip()
+        if not clean or len(clean) > 160 or "@" in clean or _FOLLOWUP_COMMAND_RE.search(clean):
+            return False
+        if kind == "yes_no":
+            return bool(_FOLLOWUP_YES_NO_RE.fullmatch(clean))
+        if kind == "book_title":
+            return len(clean) <= 80 and not re.search(r"[？?]$|^(?:大家|有人|群里)", clean)
+        if kind == "choice":
+            return len(clean) <= 120
+        return len(clean) <= 160
+
+    def consume(self, group_id: object, sender: object, text: str, *, now: float | None = None) -> bool:
+        if not self.enabled:
+            return False
+        key = self._key(group_id, sender)
+        item = self._items.get(key)
+        if item is None:
+            return False
+        current = time.time() if now is None else float(now)
+        if item.expires_at <= current or not self._matches(item.kind, text):
+            self._items.pop(key, None)
+            return False
+        item.remaining -= 1
+        if item.remaining <= 0:
+            self._items.pop(key, None)
+        return True
 
 
 def normalize_assistant_mode(value: object) -> str:
@@ -464,6 +557,11 @@ class XiaoYuePlugin(Star):
             )
         except (TypeError, ValueError):
             self._vision_max_image_bytes = VISION_MAX_IMAGE_BYTES
+        self._followups = FollowupStore(
+            enabled=parse_bool(self.cfg.get("group_followup_enabled", True), default=True),
+            window_seconds=self.cfg.get("group_followup_window_seconds", 90),
+            max_messages=self.cfg.get("group_followup_max_messages", 1),
+        )
 
     def _selected_api_token(self, sender: str, group_id: str = "") -> tuple[str, bool]:
         """返回当前发送者应使用的 token 与主人标记；群聊始终走访客 token。"""
@@ -585,9 +683,15 @@ class XiaoYuePlugin(Star):
                 event.should_call_llm(True)
                 return
             group_directed = self._group_triggered(event)
+            if group_directed:
+                # 显式唤醒开始新一轮，不能让旧追问窗口影响后续消息。
+                self._followups.clear(group_scope, sender)
+            elif self._followups.consume(group_scope, sender, msg):
+                group_directed = True
+                logger.info("[xy] 群聊命中短时追问窗口 group=%s", group_scope)
             if not group_directed:
                 if not self._group_interject_enabled():
-                    logger.info("[xy] 群聊未唤醒（需@或前缀），忽略 group=%s", group_scope)
+                    logger.info("[xy] 群聊未唤醒（需@、前缀、回复或短时追问），忽略 group=%s", group_scope)
                     event.should_call_llm(True)
                     return
                 logger.info("[xy] 群聊未直达，交给主动插话评分 group=%s", group_scope)
@@ -640,6 +744,7 @@ class XiaoYuePlugin(Star):
             event.should_call_llm(True)
             return
 
+        interaction: dict = {}
         try:
             # v1.4：透传 sender QQ 号——小月按人隔离记忆；身份由签名头证明，
             # body.user_id 仅作服务端一致性校验。request_id 同时用于重试幂等。
@@ -658,12 +763,21 @@ class XiaoYuePlugin(Star):
                 headers=self._api_headers(sender, request_id, group_id=group_scope),
             )
             r.raise_for_status()
-            reply = r.json().get("reply", "") or ""
+            payload = r.json()
+            reply = payload.get("reply", "") or ""
+            interaction = payload.get("interaction", {}) or {}
         except Exception as e:
             logger.warning(f"[xy] 小月服务调用失败: {type(e).__name__}: {e}")
+            if group_scope:
+                self._followups.clear(group_scope, sender)
             reply = "😅 小月服务暂时不可达（服务器在重启？），稍后再试"
 
         reply = reply.strip()
+        if group_scope and group_directed:
+            if reply:
+                self._followups.set_from_interaction(group_scope, sender, interaction)
+            else:
+                self._followups.clear(group_scope, sender)
         if not reply:
             # 社交判断的 ignore 分支返回空 reply：禁止宿主兜底，但不发送空消息。
             event.should_call_llm(True)

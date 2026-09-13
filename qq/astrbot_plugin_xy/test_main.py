@@ -221,6 +221,7 @@ def _plugin(client=None, max_bytes=10 * 1024 * 1024):
     }
     plugin._vision_timeout_seconds = 90
     plugin._vision_max_image_bytes = max_bytes
+    plugin._followups = _MOD.FollowupStore()
     plugin._client = client or _PostClient()
     plugin._proxy_client = client or _PostClient()
     return plugin
@@ -271,6 +272,9 @@ def test_group_schema_uses_astrbot_supported_types():
     assert schema["group_max_replies_per_hour"]["type"] == "int"
     assert schema["group_interject_enabled"]["type"] == "bool"
     assert schema["group_interject_enabled"]["default"] is False
+    assert schema["group_followup_enabled"]["default"] is True
+    assert schema["group_followup_window_seconds"]["default"] == 90
+    assert schema["group_followup_max_messages"]["default"] == 1
     # 默认不设冷却：被 @ 就应回复，节流交给每小时上限兜底。
     assert schema["group_cooldown_seconds"]["default"] == 0
 
@@ -403,6 +407,95 @@ def test_reply_component_targeting_bot_is_treated_as_directed():
 def test_group_trigger_prefix_can_handle_plain_bot_name_followups():
     """没有结构化引用时，可用配置前缀唤醒纯文本追问。"""
     assert _MOD.group_triggered(_Event([], "小月 哪来的实验室？"), prefix="小月") is True
+
+
+def test_followup_store_accepts_same_user_book_title_once():
+    store = _MOD.FollowupStore(window_seconds=90, max_messages=1)
+    store.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title", "expires_in": 90}}, now=1000
+    )
+
+    assert store.consume("456", "789", "没钱修什么仙", now=1001) is True
+    assert store.consume("456", "789", "第二条补充", now=1002) is False
+
+
+def test_followup_store_is_scoped_and_expires():
+    store = _MOD.FollowupStore(window_seconds=90)
+    store.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title"}}, now=1000
+    )
+
+    assert store.consume("456", "000", "没钱修什么仙", now=1001) is False
+    assert store.consume("456", "789", "没钱修什么仙", now=1091) is False
+
+
+def test_followup_store_rejects_commands_and_clears_mismatch():
+    store = _MOD.FollowupStore(window_seconds=90)
+    store.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title"}}, now=1000
+    )
+
+    assert store.consume("456", "789", "记住：这本书", now=1001) is False
+    assert store.consume("456", "789", "没钱修什么仙", now=1002) is False
+
+
+def test_followup_store_can_be_disabled():
+    store = _MOD.FollowupStore(enabled=False)
+    store.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title"}}, now=1000
+    )
+
+    assert store.consume("456", "789", "没钱修什么仙", now=1001) is False
+
+
+def test_plugin_consumes_followup_and_marks_request_directed():
+    client = _PostClient(_PostResponse({"reply": "收到", "interaction": {}}))
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin._followups.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title"}}
+    )
+
+    event = _Event([], "没钱修什么仙", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(event))
+
+    assert event.sent
+    assert client.kwargs["json"]["group_directed"] is True
+
+
+def test_plugin_does_not_consume_followup_for_another_member():
+    client = _PostClient()
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    plugin._followups.set_from_interaction(
+        "456", "789", {"followup": {"kind": "book_title"}}, now=1000
+    )
+    event = _Event([], "没钱修什么仙", sender="000", group="456", self_id="999")
+
+    asyncio.run(plugin.on_message(event))
+
+    assert event.sent == []
+    assert client.kwargs is None
+
+
+def test_plugin_opens_and_consumes_followup_from_api_metadata():
+    At = sys.modules["astrbot.api.message_components"].At
+    client = _PostClient(
+        _PostResponse({
+            "reply": "哪本啊？把书名发我。",
+            "interaction": {"followup": {"kind": "book_title", "expires_in": 90}},
+        })
+    )
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    first = _Event([At("999")], "@小月 你觉得这本书怎么样？", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(first))
+
+    second = _Event([], "没钱修什么仙", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(second))
+
+    assert first.sent and second.sent
+    assert client.kwargs["json"]["group_directed"] is True
 
 
 def test_group_default_has_no_cooldown_so_mentions_always_get_answered():

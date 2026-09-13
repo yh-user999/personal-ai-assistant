@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "mode": "spawn",
+  "process_count": 4,
+  "attempts": 4,
+  "expected": {
+    "reservations": 1,
+    "commits": 1,
+    "pending_count": 0,
+    "hourly_count": 1,
+    "message_seq": 1
+  },
+  "safety": {
+    "llm_calls": 0,
+    "production_database": false,
+    "raw_message_storage": false
+  }
+}

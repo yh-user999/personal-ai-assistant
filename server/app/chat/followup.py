@@ -12,10 +12,17 @@ DEFAULT_EXPIRES_IN = 90
 DEFAULT_MAX_MESSAGES = 1
 
 _BOOK_TITLE_RE = re.compile(r"哪本|书名|作品名|小说名|叫什么书|哪部小说")
+_BOOK_CONTEXT_RE = re.compile(r"小说|书|作者|作品")
+_MATERIAL_REQUEST_RE = re.compile(
+    r"(?:发|贴|给|提供|附上).{0,12}(?:链接|简介|资料|书名|作者|作品)|"
+    r"(?:链接|简介|资料|书名|作者|作品).{0,12}(?:发|贴|给|提供)"
+)
 _YES_NO_RE = re.compile(r"要不要|是否|是不是|能不能|可以吗|行不行|好不好|吗[？?。！!\s]*$")
 _CHOICE_RE = re.compile(r"哪个|哪种|哪一个|选哪个|还是")
 _FREE_TEXT_RE = re.compile(r"告诉我|说说|怎么想|什么感觉|怎么看|聊聊")
-_QUESTION_RE = re.compile(r"[？?]|吗[。！!\s]*$|哪本|书名|要不要|哪个|怎么想")
+_QUESTION_RE = re.compile(
+    r"[？?]|吗[。！!\s]*$|哪本|书名|要不要|哪个|怎么想"
+)
 
 
 def _plan_value(plan: Any, name: str, default: Any = None) -> Any:
@@ -24,10 +31,15 @@ def _plan_value(plan: Any, name: str, default: Any = None) -> Any:
     return getattr(plan, name, default)
 
 
-def _kind_for_reply(reply: str) -> str:
+def _kind_for_reply(reply: str, original_message: str = "") -> str:
     text = str(reply or "").strip()
-    if _BOOK_TITLE_RE.search(text):
+    origin = str(original_message or "").strip()
+    if _BOOK_TITLE_RE.search(text) or (
+        _BOOK_CONTEXT_RE.search(origin) and _MATERIAL_REQUEST_RE.search(text)
+    ):
         return "book_title"
+    if _MATERIAL_REQUEST_RE.search(text):
+        return "free_text"
     if _YES_NO_RE.search(text):
         return "yes_no"
     if _CHOICE_RE.search(text):
@@ -42,10 +54,10 @@ def build_interaction_hint(ctx: Any, plan: Any, reply: str) -> dict[str, Any]:
     if not bool(getattr(ctx, "is_group", False)):
         return {}
     text = str(reply or "").strip()
-    if not text or not _QUESTION_RE.search(text):
+    if not text or not (_QUESTION_RE.search(text) or _MATERIAL_REQUEST_RE.search(text)):
         return {}
 
-    kind = _kind_for_reply(text)
+    kind = _kind_for_reply(text, getattr(ctx, "message", ""))
     if not kind:
         if bool(_plan_value(plan, "needs_clarification", False)):
             kind = "free_text"

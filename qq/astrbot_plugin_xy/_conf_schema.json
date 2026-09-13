@@ -37,7 +37,7 @@
   "group_followup_enabled": {
     "description": "群聊短时追问免 @",
     "type": "bool",
-    "hint": "小月刚提出澄清问题后，同一用户可在短时间内直接补充答案；不跨用户、不跨群，默认开启。",
+    "hint": "小月刚回复后，同一用户可在短时间内续接当前对话或补充答案；不跨用户、不跨群，默认开启。",
     "default": true,
     "restart_required": false
   },

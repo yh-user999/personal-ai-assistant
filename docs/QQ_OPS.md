@@ -64,7 +64,7 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 | `group_allowed_ids` | 允许响应的群号，逗号/空格/分号分隔；留空不响应任何群；明确填写 `*` 才开放全部群 |
 | `group_require_mention` | 是否要求 @机器人，默认 `true`；短时追问窗口不受普通消息误触发影响 |
 | `group_trigger_prefix` | 可选群聊触发前缀 |
-| `group_followup_enabled` | 小月刚提出澄清问题后，同一用户短时间内免 @ 补充答案，默认 `true` |
+| `group_followup_enabled` | 小月刚回复后，同一用户可在短时间内免 @ 续接当前对话或补充答案，默认 `true` |
 | `group_followup_window_seconds` | 追问窗口有效期，默认 90 秒 |
 | `group_followup_max_messages` | 每次追问窗口最多消费的补充消息数，默认 1 |
 | `group_cooldown_seconds` | 同群回复冷却秒数，默认 0；需要压制刷屏时再显式调整 |

@@ -431,6 +431,22 @@ def test_followup_store_accepts_same_user_book_title_once():
     assert store.consume("456", "789", "第二条补充", now=1002) is False
 
 
+def test_followup_store_accepts_contextual_continuation_once():
+    store = _MOD.FollowupStore(window_seconds=90, max_messages=1)
+    store.set_context("456", "789", now=1000)
+
+    assert store.consume("456", "789", "还记得我是谁吗", now=1001) is True
+    assert store.consume("456", "789", "还是一样", now=1002) is False
+
+
+def test_followup_store_rejects_unrelated_broadcast_context():
+    store = _MOD.FollowupStore(window_seconds=90)
+    store.set_context("456", "789", now=1000)
+
+    assert store.consume("456", "789", "大家吃什么？", now=1001) is False
+    assert store.consume("456", "789", "还记得我是谁吗", now=1002) is False
+
+
 def test_followup_store_is_scoped_and_expires():
     store = _MOD.FollowupStore(window_seconds=90)
     store.set_from_interaction(
@@ -488,6 +504,36 @@ def test_plugin_does_not_consume_followup_for_another_member():
 
     assert event.sent == []
     assert client.kwargs is None
+
+
+def test_plugin_opens_context_after_successful_direct_reply():
+    At = sys.modules["astrbot.api.message_components"].At
+    client = _PostClient(_PostResponse({"reply": "我是小月。", "interaction": {}}))
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    first = _Event([At("999")], "@小月 你是谁", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(first))
+
+    second = _Event([], "还记得我是谁吗", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(second))
+
+    assert first.sent and second.sent
+    assert client.kwargs["json"]["group_directed"] is True
+
+
+def test_plugin_does_not_open_context_after_service_error():
+    At = sys.modules["astrbot.api.message_components"].At
+    client = _PostClient(_PostResponse(error=RuntimeError("offline")))
+    plugin = _plugin(client)
+    plugin.cfg["assistant_mode"] = "group"
+    first = _Event([At("999")], "@小月 你是谁", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(first))
+
+    second = _Event([], "还记得我是谁吗", sender="789", group="456", self_id="999")
+    asyncio.run(plugin.on_message(second))
+
+    assert first.sent and second.sent == []
+    assert len(client.calls) == 1
 
 
 def test_plugin_opens_and_consumes_followup_from_api_metadata():

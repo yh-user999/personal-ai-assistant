@@ -79,9 +79,14 @@ _IMAGE_PLACEHOLDER_RE = re.compile(
 )
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 _GROUP_REPLY_TIMES: dict[str, list[float]] = {}
-_FOLLOWUP_KINDS = frozenset({"book_title", "yes_no", "choice", "free_text"})
+_FOLLOWUP_KINDS = frozenset({"book_title", "yes_no", "choice", "free_text", "context"})
 _FOLLOWUP_COMMAND_RE = re.compile(r"^(?:/|记住|取消|删除|执行|重启|管理员|主人|密钥|token|密码)", re.IGNORECASE)
 _FOLLOWUP_YES_NO_RE = re.compile(r"^(?:好|行|可以|不|不是|是|嗯|不用|算了|查|继续|取消|对|不对)[。！!,.，\s]*$")
+_FOLLOWUP_CONTEXT_RE = re.compile(
+    r"还记得|刚才|刚刚|你说的|然后|那|还是|这个|那个|它|我也|也是|有点|不太|"
+    r"怎么|为什么|能不能|可以吗|吗[？?。！!\s]*$|[？?]"
+)
+_FOLLOWUP_BROADCAST_RE = re.compile(r"^(?:大家|群里|各位|有人)")
 
 
 class _PendingFollowup:
@@ -114,6 +119,21 @@ class FollowupStore:
 
     def clear(self, group_id: object, sender: object) -> None:
         self._items.pop(self._key(group_id, sender), None)
+
+    def set_context(
+        self,
+        group_id: object,
+        sender: object,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """为成功的直达回复建立一次性上下文续话窗口。"""
+        key = self._key(group_id, sender)
+        self._items.pop(key, None)
+        if not self.enabled or not key[0] or not key[1]:
+            return
+        current = time.time() if now is None else float(now)
+        self._items[key] = _PendingFollowup("context", current + self.window_seconds, self.max_messages)
 
     def set_from_interaction(
         self,
@@ -153,6 +173,10 @@ class FollowupStore:
             return bool(_FOLLOWUP_YES_NO_RE.fullmatch(clean))
         if kind == "book_title":
             return len(clean) <= 80 and not re.search(r"[？?]$|^(?:大家|有人|群里)", clean)
+        if kind == "context":
+            if _FOLLOWUP_BROADCAST_RE.search(clean):
+                return False
+            return len(clean) <= 120 and bool(_FOLLOWUP_CONTEXT_RE.search(clean))
         if kind == "choice":
             return len(clean) <= 120
         return len(clean) <= 160
@@ -744,6 +768,7 @@ class XiaoYuePlugin(Star):
             return
 
         interaction: dict = {}
+        request_succeeded = False
         try:
             # v1.4：透传 sender QQ 号——小月按人隔离记忆；身份由签名头证明，
             # body.user_id 仅作服务端一致性校验。request_id 同时用于重试幂等。
@@ -765,6 +790,7 @@ class XiaoYuePlugin(Star):
             payload = r.json()
             reply = payload.get("reply", "") or ""
             interaction = payload.get("interaction", {}) or {}
+            request_succeeded = True
         except Exception as e:
             logger.warning(f"[xy] 小月服务调用失败: {type(e).__name__}: {e}")
             if group_scope:
@@ -773,10 +799,12 @@ class XiaoYuePlugin(Star):
 
         reply = reply.strip()
         if group_scope and group_directed:
-            if reply:
+            if not reply or not request_succeeded:
+                self._followups.clear(group_scope, sender)
+            elif isinstance(interaction, dict) and interaction.get("followup"):
                 self._followups.set_from_interaction(group_scope, sender, interaction)
             else:
-                self._followups.clear(group_scope, sender)
+                self._followups.set_context(group_scope, sender)
         if not reply:
             # 社交判断的 ignore 分支返回空 reply：禁止宿主兜底，但不发送空消息。
             event.should_call_llm(True)

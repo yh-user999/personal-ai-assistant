@@ -285,6 +285,9 @@ def test_group_configuration_parsing_is_fail_closed():
     assert _MOD.parse_bool("invalid", default=True) is True
     assert _MOD.parse_group_allowed_ids("456, 789; 101112") == frozenset({"456", "789", "101112"})
     assert _MOD.parse_group_allowed_ids(["456", "not-a-group", "789"]) == frozenset({"456", "789"})
+    assert _MOD.parse_group_allowed_ids("*") == frozenset({"*"})
+    assert _MOD.parse_group_allowed_ids("all") == frozenset({"*"})
+    assert _MOD.parse_group_allowed_ids("") == frozenset()
 
 
 def test_personal_mode_keeps_group_silent():
@@ -339,6 +342,15 @@ def test_group_mode_can_forward_non_directed_for_scoring():
     assert client.kwargs["json"]["group_id"] == "456"
     assert client.kwargs["json"]["group_directed"] is False
     assert _MOD._GROUP_REPLY_TIMES == {}
+
+
+def test_explicit_wildcard_allows_all_groups():
+    plugin = _plugin()
+    plugin.cfg["assistant_mode"] = "group"
+    plugin.cfg["group_allowed_ids"] = "*"
+
+    assert plugin._group_allowed("456") is True
+    assert plugin._group_allowed("789") is True
 
 
 def test_group_mode_requires_whitelist_and_mention():

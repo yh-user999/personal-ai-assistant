@@ -61,7 +61,7 @@ AstrBot 宿主（插件 astrbot_plugin_xy）
 | 项 | 说明 |
 |---|---|
 | `assistant_mode` | `personal`（默认，群聊静默）或 `group`（启用群聊入口） |
-| `group_allowed_ids` | 允许响应的群号，逗号/空格/分号分隔；留空不响应任何群 |
+| `group_allowed_ids` | 允许响应的群号，逗号/空格/分号分隔；留空不响应任何群；明确填写 `*` 才开放全部群 |
 | `group_require_mention` | 是否要求 @机器人，默认 `true`；短时追问窗口不受普通消息误触发影响 |
 | `group_trigger_prefix` | 可选群聊触发前缀 |
 | `group_followup_enabled` | 小月刚提出澄清问题后，同一用户短时间内免 @ 补充答案，默认 `true` |

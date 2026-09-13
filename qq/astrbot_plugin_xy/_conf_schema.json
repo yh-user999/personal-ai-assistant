@@ -9,7 +9,7 @@
   "group_allowed_ids": {
     "description": "群聊白名单",
     "type": "string",
-    "hint": "填写允许响应的 QQ 群号，多个用逗号分隔；留空时群聊全部关闭。",
+    "hint": "填写允许响应的 QQ 群号，多个用逗号分隔；留空时群聊全部关闭；明确填写 * 才开放全部群。",
     "default": "",
     "restart_required": false
   },

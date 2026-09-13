@@ -192,15 +192,15 @@ def parse_bool(value: object, default: bool = False) -> bool:
 
 
 def parse_group_allowed_ids(value: object) -> frozenset[str]:
-    """解析群白名单；只接受数字群号，空值表示不允许任何群。"""
+    """解析群白名单；空值拒绝全部，明确写 ``*`` 才允许全部群。"""
     if isinstance(value, (list, tuple, set, frozenset)):
         raw_values = value
     else:
         raw_values = re.split(r"[,;\s]+", str(value or ""))
-    return frozenset(
-        item for item in (str(raw).strip() for raw in raw_values)
-        if item and item.isdigit() and len(item) <= 32
-    )
+    items = {str(raw).strip() for raw in raw_values if str(raw).strip()}
+    if "*" in items or "all" in {item.casefold() for item in items}:
+        return frozenset({"*"})
+    return frozenset(item for item in items if item.isdigit() and len(item) <= 32)
 
 
 def _event_self_id(event: object) -> str:
@@ -593,9 +593,8 @@ class XiaoYuePlugin(Star):
         return normalize_assistant_mode(self.cfg.get("assistant_mode", "personal")) == "group"
 
     def _group_allowed(self, group_id: str) -> bool:
-        return str(group_id or "").strip() in parse_group_allowed_ids(
-            self.cfg.get("group_allowed_ids", "")
-        )
+        allowed = parse_group_allowed_ids(self.cfg.get("group_allowed_ids", ""))
+        return "*" in allowed or str(group_id or "").strip() in allowed
 
     def _group_requires_mention(self) -> bool:
         return parse_bool(self.cfg.get("group_require_mention", True), default=True)

@@ -220,3 +220,11 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：未提交；运行时配置仅保留在 `/opt/maibot`，不进入 Git。
 - 运行状态：MaiBot 持续运行并接管 QQ；AstrBot 保持停止但未禁用；NapCat 正常。
 - 未完成：QQ 身份回答与通用上下文续话仍待实际消息验收；全部群开放未启用。
+
+### 2026-09-14 — MaiBot 全群接收配置脚本
+
+- 代码/配置：新增无密钥配置脚本，将 MaiBot 群聊名单切换为空黑名单，同时保留私聊白名单和总过滤开关；新增脱敏 fixture 测试。
+- 验证：脚本测试 4 passed；ruff 通过；Python 语法检查通过；现网配置仍为群聊白名单，尚未写入运行时。
+- 提交：待提交。
+- 运行状态：不改变现网服务，MaiBot 继续使用现有群白名单。
+- 未完成：需发布后备份并应用运行时配置，再重载 MaiBot；其他群真实消息验收待完成。

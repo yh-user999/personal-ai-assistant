@@ -13,7 +13,17 @@ from typing import Any
 
 from openai import OpenAIError
 
-from app.chat import group_interjection, prompting, providers, response_plan, retrieval, routing, review
+from app.chat import (
+    attention_drift,
+    group_interjection,
+    heartflow,
+    prompting,
+    providers,
+    response_plan,
+    retrieval,
+    routing,
+    review,
+)
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
     OWNER_MAX_MSG_CHARS,
@@ -343,11 +353,13 @@ async def _reflect_group_reply(
     draft: str,
 ) -> str:
     """群聊轻量相关性审校：最多一次检查/纠偏，不写入个人审校记录。"""
+    grounding_required = review.group_requires_grounding(ctx, bundle)
     reasons = review.should_reflect_group(
         ctx,
         bundle,
         draft,
         max_reply_chars=getattr(runtime.settings, "group_reflection_max_chars", 900),
+        every_message=getattr(runtime.settings, "group_reflection_every_message", True),
     )
     if not reasons:
         ctx.trace.reflection = {
@@ -367,17 +379,22 @@ async def _reflect_group_reply(
         if not final:
             final = ""
 
+    # 群聊没有可靠来源时，外部事实问题不能把长篇候选稿原样放行；
+    # 先完成一次审校，再用确定性降级避免同一个模型重复编造。
+    if grounding_required:
+        final = review.group_grounding_fallback()
     changed = bool(final and final != draft)
-    status = "revised" if changed else checked.status
+    status = "grounding_fallback" if grounding_required else ("revised" if changed else checked.status)
     ctx.trace.reflection = {
         "scope": "group",
         "status": status,
         "triggers": reasons,
         "review_ms": review_ms,
         "revision_count": 1 if changed else 0,
+        "grounding_required": grounding_required,
         "quality": {
             key: round(float(checked.scores.get(key, 0.0)), 3)
-            for key in ("relevance", "context_fit", "safety", "tone")
+            for key in ("relevance", "context_fit", "grounding", "safety", "tone")
         },
         "issue_count": min(6, len(checked.reasons)),
     }
@@ -514,6 +531,7 @@ async def _run_chat(
     social_score = None
     social_gate = None
     social_reservation = None
+    heartflow_decision = None
     care_decision = None
     social_scene: dict[str, Any] = {}
     group_interjection.configure_from_settings(settings)
@@ -527,6 +545,12 @@ async def _run_chat(
         # planner 只读取当前群的有界内存上下文；绝不把私聊历史带进群判断。
         planner_history = group_context.recent_messages(ctx.group_id)
         social_scene = group_context.scene_summary(ctx.group_id)
+        heartflow.observe_message(
+            ctx.group_id,
+            directed=ctx.group_directed,
+            atmosphere=str(social_scene.get("atmosphere") or "casual"),
+        )
+        social_scene["heartflow"] = heartflow.snapshot(ctx.group_id)
         robot_service = getattr(services, "robot_state", None)
         robot_snapshot: dict[str, Any] = {}
         if robot_service:
@@ -589,6 +613,30 @@ async def _run_chat(
                 directed=False,
                 threshold=interject_config.threshold,
             )
+            if interject_config.enabled:
+                heartflow_decision = heartflow.decide(
+                    ctx.group_id,
+                    score=social_score.score,
+                    directed=False,
+                    config=heartflow.config_from_settings(
+                        settings, interject_enabled=interject_config.enabled
+                    ),
+                )
+                social_scene["heartflow_decision"] = heartflow_decision.as_dict()
+                if not heartflow_decision.allowed:
+                    social_score = group_interjection.SocialScore(
+                        score=social_score.score,
+                        eligible=False,
+                        action="ignore",
+                        factors={
+                            **social_score.factors,
+                            "heartflow_propensity": heartflow_decision.propensity,
+                        },
+                        penalties=social_score.penalties,
+                        reasons=tuple(
+                            list(social_score.reasons) + [heartflow_decision.reason]
+                        ),
+                    )
             social_gate, social_reservation = group_interjection.interject_gate.reserve(
                 ctx.group_id,
                 social_score,
@@ -611,10 +659,13 @@ async def _run_chat(
                     "care_allowed": bool(care_decision and care_decision.eligible),
                     "care_kind": str(getattr(care_decision, "kind", "") or ""),
                     "care_reason": str(getattr(care_decision, "reason", "") or ""),
+                    "heartflow": social_scene.get("heartflow", {}),
+                    "heartflow_decision": social_scene.get("heartflow_decision", {}),
                 }
                 with ctx.trace.stage("social_gate"):
                     group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
                     await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
+                heartflow.record_silence(ctx.group_id)
                 return ChatResponse(reply="", memories_used=0)
     else:
         planner_history = await asyncio.to_thread(
@@ -732,6 +783,17 @@ async def _run_chat(
     with ctx.trace.stage("retrieval"):
         preparation = retrieval.prepare_turn(ctx, runtime)
         bundle = await retrieval.retrieve(ctx, runtime, preparation)
+        if ctx.is_group:
+            drift_block = attention_drift.build_prompt_block(settings)
+            if drift_block:
+                bundle.robot_state = "\n".join(
+                    item for item in (bundle.robot_state, drift_block) if item
+                )
+            heartflow_note = heartflow.get_injection(ctx.group_id)
+            if heartflow_note:
+                bundle.robot_state = "\n".join(
+                    item for item in (bundle.robot_state, heartflow_note) if item
+                )
         ctx.trace.retrieval = dict(bundle.trace.get("retrieval") or {})
         ctx.trace.retrieval_trace = dict(bundle.trace)
     # assemble 的注入器均为纯查询（无任务调度），可安全移入工作线程
@@ -819,6 +881,10 @@ async def _run_chat(
     if ctx.is_group:
         from app.chat import group_context
 
+        heartflow.record_reply(
+            ctx.group_id,
+            action=str(plan.social_action or ("answer" if ctx.group_directed else "interject")),
+        )
         group_context.remember(ctx.group_id, "assistant", reply)
         with ctx.trace.stage("persistence.assistant"):
             await memory.write_message(
@@ -862,15 +928,18 @@ async def _run_chat(
                     )
                 except Exception as exc:  # noqa: BLE001
                     runtime.logger.debug("群聊关怀记账失败: %s", type(exc).__name__)
-        # 群成员画像提取放后台：它要调 LLM，不能拖慢群回复；
-        # 失败也只是少记一条，绝不影响本轮回复。
-        if getattr(settings, "group_profile_enabled", True):
+        # 群级表达/黑话学习放后台：不能拖慢群回复，也不写入个人画像。
+        if getattr(settings, "group_expression_learning_enabled", True):
             from app.services import group_profile_extract
 
             retrieval.track_background(
                 runtime,
                 group_profile_extract.maybe_extract(
-                    ctx.group_id, ctx.uid, msg, request_id=ctx.request_id
+                    ctx.group_id,
+                    ctx.uid,
+                    msg,
+                    request_id=ctx.request_id,
+                    write_profile=False,
                 ),
             )
     else:

@@ -97,6 +97,27 @@ def test_group_scene_summary_is_bounded_and_isolated():
     group_context.clear()
 
 
+def test_group_prompt_renders_heartflow_expression_rules():
+    ctx = _ctx("你又来了，哈哈")
+    ctx.trace.response_plan = {"social_action": "answer"}
+    bundle = SimpleNamespace(
+        injections="", profile="", facts="", lessons="", concerns="", jargon="",
+        style_examples="", behavior="", goals_text="", open_issues="",
+        knowledge_text="", intent_label="", slang="", mood="", mood_state="",
+        self_state="", older=[], history=[], extra_blocks=[],
+        robot_state=(
+            "【群聊自然表达】短暂联想后立刻回到当前问题。"
+            "不要凭空补充事实。"
+        ),
+    )
+    runtime = SimpleNamespace(settings=SimpleNamespace(values_enabled=False), logger=None)
+
+    text = prompting.build_system_prompt(ctx, runtime, bundle)
+
+    assert "群聊自然表达" in text
+    assert "不要凭空补充事实" in text
+
+
 def test_group_prompt_renders_social_action_boundaries():
     ctx = _ctx("你又来了，哈哈")
     ctx.trace.response_plan = {

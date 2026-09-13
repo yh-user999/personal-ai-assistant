@@ -59,6 +59,22 @@ def test_extracts_allowed_dimensions(db_env, monkeypatch):
 
 # ── 归属：按 QQ 号，而非按场景 ──────────────────────────────
 
+def test_group_mode_can_learn_expression_without_personal_profile(db_env, monkeypatch):
+    _fake_llm(monkeypatch, {
+        "updates": [{"dimension": "topics", "value": "关注航天", "confidence": 0.8}],
+        "patterns": [{
+            "kind": "jargon", "value": "彩蛋", "meaning": "隐藏功能", "confidence": 0.9,
+        }],
+    })
+    assert asyncio.run(
+        group_profile_extract.maybe_extract(
+            "fixture-group", "000001", "我平时会关注航天，也喜欢找彩蛋", write_profile=False
+        )
+    ) == 0
+    assert profile_service.get_profile_injection(user_id="000001") == ""
+    assert "彩蛋" in group_expression.get_injection("fixture-group", "这个彩蛋不错")
+
+
 def test_extracts_group_expression_patterns_without_cross_group_leak(db_env, monkeypatch):
     _fake_llm(monkeypatch, {
         "updates": [{"dimension": "topics", "value": "关注航天", "confidence": 0.8}],

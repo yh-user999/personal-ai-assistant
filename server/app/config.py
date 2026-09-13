@@ -113,6 +113,16 @@ class Settings(BaseSettings):
     group_social_interject_state_path: str = ""
     # 是否从既有群记忆恢复短期上下文/机器人摘要；不新增原始消息表。
     group_state_persistence_enabled: bool = True
+    # ── 群聊拟人心流（MaiBot 思路的独立重写，默认不增加自主发言）────
+    group_heartflow_enabled: bool = True
+    group_talk_frequency: float = 0.0
+    group_silence_seconds: float = 60.0
+    group_max_consecutive_replies: int = 2
+    group_drift_level: str = "subtle"       # subtle | active
+    group_anchor_policy: str = "strict"     # strict | balanced
+    group_reaction_style: str = "reserved"  # reserved | natural
+    # 群聊非寒暄消息是否统一经过候选回复审校；关闭只用于排障。
+    group_reflection_every_message: bool = True
     # 群聊事件驱动轻量关怀：只影响当前群回复，不做定时群发。
     group_care_enabled: bool = True
     group_care_cooldown_seconds: float = 21600.0
@@ -272,10 +282,10 @@ class Settings(BaseSettings):
     # 占 prompt；想重开需同时开采集器通道与这个开关。
     behavior_inject_enabled: bool = False
 
-    # 群聊是否提取对话偏好（称呼/话题/风格）写入画像。画像按 user_id（QQ 号）
-    # 归属并与私聊共用 profile 表——同一个人在哪说话都是他自己的画像。
-    # 涉及第三方个人数据，需要时可整体关闭。
-    group_profile_enabled: bool = True
+    # 群聊个人画像写入默认关闭；群聊只学习按群隔离的表达模式和黑话。
+    # 这是隐私边界，不把群成员资料带入私聊画像。
+    group_profile_enabled: bool = False
+    group_expression_learning_enabled: bool = True
 
     # ── 私人 MCP（默认关闭；独立 stdio 进程启动）────────────────
     # MCP Server 不随 FastAPI/uvicorn 启动，避免 stdout 与普通日志混用。

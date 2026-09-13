@@ -56,6 +56,27 @@ _SOCIAL_SCALAR_KEYS = frozenset({
     "cooldown_remaining", "hourly_count", "message_gap", "pending_count", "interject_enabled",
     "shadow_only", "care_allowed", "care_kind", "care_reason",
 })
+_HEARTFLOW_KEYS = frozenset({
+    "allowed", "propensity", "threshold", "reason", "action", "energy",
+    "message_count", "directed_count", "reply_count", "consecutive_replies", "last_action",
+})
+
+
+def _safe_heartflow(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    result: dict = {}
+    for key in _HEARTFLOW_KEYS:
+        if key not in value:
+            continue
+        raw = value[key]
+        if isinstance(raw, bool):
+            result[key] = raw
+        elif isinstance(raw, (int, float)):
+            result[key] = round(float(raw), 4) if key in {"propensity", "threshold", "energy"} else int(raw)
+        elif isinstance(raw, str):
+            result[key] = _safe_text(raw, 48)
+    return result
 
 
 def _safe_social_judgment(value: object) -> dict:
@@ -93,6 +114,9 @@ def _safe_social_judgment(value: object) -> dict:
     gate = value.get("gate")
     if isinstance(gate, dict):
         result["gate"] = _safe_social_judgment(gate)
+    for key in ("heartflow", "heartflow_decision"):
+        if key in value:
+            result[key] = _safe_heartflow(value[key])
     return result
 
 

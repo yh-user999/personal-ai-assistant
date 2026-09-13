@@ -141,7 +141,7 @@ async def vision_chat(
 
 @router.post("/chat/observe")
 async def observe_group_message(req: ChatRequest, request: Request) -> dict:
-    """只收录群消息：写入本群作用域并提取画像，不调用 LLM、不产生回复。
+    """只收录群消息：写入本群作用域并学习群级表达，不产生回复。
 
     用于"只收集不回复"的群：机器人在这些群完全沉默，但消息仍可长期检索。
     必须带 group_id——本端点不接受私聊，避免被用来绕过正常聊天链路
@@ -156,14 +156,18 @@ async def observe_group_message(req: ChatRequest, request: Request) -> dict:
     memory_id = await memory.write_message(
         "user", ctx.message, user_id=ctx.uid, group_id=ctx.group_id
     )
-    # 画像提取放后台：它要调 LLM，不能拖慢消息收录。
-    if getattr(settings, "group_profile_enabled", True):
+    # 群级表达学习放后台：它要调 LLM，不能拖慢消息收录，也不写个人画像。
+    if getattr(settings, "group_expression_learning_enabled", True):
         from app.services import group_profile_extract
 
         _bg_tasks.add(
             task := asyncio.create_task(
                 group_profile_extract.maybe_extract(
-                    ctx.group_id, ctx.uid, ctx.message, request_id=ctx.request_id
+                    ctx.group_id,
+                    ctx.uid,
+                    ctx.message,
+                    request_id=ctx.request_id,
+                    write_profile=False,
                 )
             )
         )

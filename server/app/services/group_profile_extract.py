@@ -42,8 +42,9 @@ async def maybe_extract(
     message: str,
     *,
     request_id: str | None = None,
+    write_profile: bool = True,
 ) -> int:
-    """按需提取并入库；返回写入条数。任何失败都只记日志。"""
+    """提取群级表达模式；个人画像写入仅为兼容调用方，默认入口应关闭。"""
     text = str(message or "").strip()
     if not (str(group_id or "").strip() and str(member_id or "").strip()):
         return 0
@@ -61,14 +62,15 @@ async def maybe_extract(
         return 0
 
     written = 0
-    for dimension, value, confidence in profile_service.parse_updates(payload):
-        try:
-            if profile_service.remember(member_id, dimension, value, confidence):
-                written += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("群画像入库失败: %s", exc)
+    if write_profile:
+        for dimension, value, confidence in profile_service.parse_updates(payload):
+            try:
+                if profile_service.remember(member_id, dimension, value, confidence):
+                    written += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("群画像入库失败: %s", exc)
 
-    # 表达模式/黑话按群隔离，失败不影响原有画像结果。
+    # 表达模式/黑话按群隔离，失败不影响个人画像开关。
     try:
         from app.services import group_expression
 

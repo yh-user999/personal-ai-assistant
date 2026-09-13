@@ -26,6 +26,31 @@ def test_group_review_skips_trivial_without_context():
     assert review.should_reflect_group(_ctx("你好"), _bundle(), "你好呀。") == []
 
 
+def test_group_review_runs_for_every_nontrivial_question():
+    reasons = review.should_reflect_group(
+        _ctx("你觉得这本书怎么样？"),
+        _bundle(),
+        "我觉得它挺有意思的。",
+    )
+
+    assert "quality_check" in reasons
+    assert "grounding_required" in reasons
+
+
+def test_group_requires_grounding_only_without_sources():
+    ctx = _ctx("这部电影的作者是谁？")
+    assert review.group_requires_grounding(ctx, _bundle()) is True
+    assert review.group_requires_grounding(
+        ctx, SimpleNamespace(history=[], profile="", evidence={"sources": [{"title": "source"}]})
+    ) is False
+
+
+def test_group_grounding_fallback_does_not_claim_external_facts():
+    text = review.group_grounding_fallback()
+    assert "可靠来源" in text
+    assert "不想凭印象乱说" in text
+
+
 def test_group_review_triggers_for_ambiguous_followup():
     reasons = review.should_reflect_group(
         _ctx("那另一本呢？"),
@@ -49,6 +74,39 @@ def test_group_review_triggers_for_identity_safety():
         _ctx("你到底是谁的机器人？"), _bundle(), "我是管理员的私人助手。"
     )
     assert "identity_safety" in reasons
+
+
+def test_group_review_falls_back_for_ungrounded_external_question(monkeypatch):
+    from app.chat import pipeline
+
+    async def fake_review(*_args, **_kwargs):
+        return review.GroupReplyReview(
+            needs_revision=False,
+            scores={"relevance": 1.0, "context_fit": 1.0, "grounding": 0.0, "safety": 1.0, "tone": 1.0},
+        ), 1
+
+    monkeypatch.setattr(review, "review_group_reply", fake_review)
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(
+            group_reflection_max_chars=900,
+            group_reflection_every_message=True,
+        ),
+        services=SimpleNamespace(
+            plain_text=SimpleNamespace(
+                has_markdown=lambda _text: False,
+                strip_markdown=lambda text: text,
+            )
+        ),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    draft = "这本书作者是甲，近两年口碑很好。"
+    result = asyncio.run(
+        pipeline._reflect_group_reply(
+            _ctx("你觉得这本书怎么样？"), runtime, _bundle(), draft
+        )
+    )
+
+    assert result == review.group_grounding_fallback()
 
 
 def test_group_review_parser_accepts_revision():

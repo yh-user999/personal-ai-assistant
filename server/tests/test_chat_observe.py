@@ -11,7 +11,7 @@ from app.models.database import connect, init_db, reset_connections
 def db_env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(settings, "api_token", "")
-    monkeypatch.setattr(settings, "group_profile_enabled", False)  # 隔离画像提取
+    monkeypatch.setattr(settings, "group_expression_learning_enabled", False)  # 隔离后台学习
     reset_connections()
     init_db()
 

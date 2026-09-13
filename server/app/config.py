@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     group_social_interject_cooldown_seconds: float = 90.0
     group_social_interject_hourly_limit: int = 6
     group_social_interject_min_gap_messages: int = 2
+    group_social_interject_reservation_seconds: float = 120.0
+    # 留空使用进程内闸门；填写 SQLite 路径后启用重启/多进程共享状态。
+    group_social_interject_state_path: str = ""
     # 开启主动插话后仍可先 shadow 观察，只有显式关闭才真正发言。
     group_social_interject_shadow_only: bool = True
 

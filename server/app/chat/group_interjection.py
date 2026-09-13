@@ -6,14 +6,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
+import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Protocol
+
+logger = logging.getLogger("assistant.chat.group_interjection")
 
 SOCIAL_ACTION = "interject"
 _IGNORE_ACTION = "ignore"
@@ -84,6 +88,7 @@ class InterjectionConfig:
     cooldown_seconds: float = 90.0
     hourly_limit: int = 6
     min_gap_messages: int = 2
+    reservation_seconds: float = 120.0
     max_groups: int = 256
 
     def normalized(self) -> "InterjectionConfig":
@@ -94,6 +99,7 @@ class InterjectionConfig:
             cooldown_seconds=max(0.0, float(self.cooldown_seconds)),
             hourly_limit=max(1, int(self.hourly_limit)),
             min_gap_messages=max(0, int(self.min_gap_messages)),
+            reservation_seconds=max(5.0, float(self.reservation_seconds)),
             max_groups=max(8, int(self.max_groups)),
         )
 
@@ -130,6 +136,7 @@ class GateDecision:
     cooldown_remaining: float = 0.0
     hourly_count: int = 0
     message_gap: int = 0
+    pending_count: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -139,7 +146,15 @@ class GateDecision:
             "cooldown_remaining": round(max(0.0, self.cooldown_remaining), 3),
             "hourly_count": max(0, int(self.hourly_count)),
             "message_gap": max(0, int(self.message_gap)),
+            "pending_count": max(0, int(self.pending_count)),
         }
+
+
+@dataclass
+class _ReservationState:
+    created_at: float
+    expires_at: float
+    message_seq: int
 
 
 @dataclass
@@ -148,7 +163,16 @@ class _GroupGateState:
     last_sent_at: float | None = None
     last_sent_seq: int | None = None
     sent_at: deque[float] = field(default_factory=deque)
+    reservations: dict[str, _ReservationState] = field(default_factory=dict)
     last_seen_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class GateReservation:
+    token: str
+    group_id: str
+    expires_at: float
+    decision: GateDecision
 
 
 class InterjectionStateStore(Protocol):
@@ -199,8 +223,21 @@ class SqliteInterjectionStore:
                 "CREATE TABLE IF NOT EXISTS group_interjection_state ("
                 "group_key TEXT PRIMARY KEY, message_seq INTEGER NOT NULL DEFAULT 0, "
                 "last_sent_at REAL, last_sent_seq INTEGER, sent_at TEXT NOT NULL DEFAULT '[]', "
-                "last_seen_at REAL NOT NULL DEFAULT 0)"
+                "reservations TEXT NOT NULL DEFAULT '{}', last_seen_at REAL NOT NULL DEFAULT 0)"
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(group_interjection_state)").fetchall()
+            }
+            if "reservations" not in columns:
+                try:
+                    conn.execute(
+                        "ALTER TABLE group_interjection_state "
+                        "ADD COLUMN reservations TEXT NOT NULL DEFAULT '{}'"
+                    )
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_group_interjection_seen "
                 "ON group_interjection_state(last_seen_at DESC)"
@@ -231,11 +268,33 @@ class SqliteInterjectionStore:
                     sent_at.append(number)
             except (TypeError, ValueError):
                 continue
+        try:
+            raw_reservations = json.loads(row["reservations"] or "{}")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            raw_reservations = {}
+        reservations: dict[str, _ReservationState] = {}
+        if isinstance(raw_reservations, dict):
+            for token, item in raw_reservations.items():
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    created_at = float(item["created_at"])
+                    expires_at = float(item["expires_at"])
+                    message_seq = int(item["message_seq"])
+                    if math.isfinite(created_at) and math.isfinite(expires_at):
+                        reservations[str(token)] = _ReservationState(
+                            created_at=created_at,
+                            expires_at=expires_at,
+                            message_seq=max(0, message_seq),
+                        )
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
         return _GroupGateState(
             message_seq=max(0, int(row["message_seq"] or 0)),
             last_sent_at=(float(row["last_sent_at"]) if row["last_sent_at"] is not None else None),
             last_sent_seq=(int(row["last_sent_seq"]) if row["last_sent_seq"] is not None else None),
             sent_at=sent_at,
+            reservations=reservations,
             last_seen_at=float(row["last_seen_at"] or current),
         )
 
@@ -244,14 +303,25 @@ class SqliteInterjectionStore:
         conn.execute("DELETE FROM group_interjection_state WHERE group_key=?", (group,))
         conn.execute(
             "INSERT INTO group_interjection_state "
-            "(group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(group_key, message_seq, last_sent_at, last_sent_seq, sent_at, reservations, last_seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 group,
                 max(0, int(state.message_seq)),
                 state.last_sent_at,
                 state.last_sent_seq,
                 json.dumps(list(state.sent_at), separators=(",", ":")),
+                json.dumps(
+                    {
+                        token: {
+                            "created_at": item.created_at,
+                            "expires_at": item.expires_at,
+                            "message_seq": item.message_seq,
+                        }
+                        for token, item in state.reservations.items()
+                    },
+                    separators=(",", ":"),
+                ),
                 state.last_seen_at,
             ),
         )
@@ -269,7 +339,7 @@ class SqliteInterjectionStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, reservations, last_seen_at "
                 "FROM group_interjection_state WHERE group_key=?",
                 (group,),
             ).fetchone()
@@ -277,6 +347,7 @@ class SqliteInterjectionStore:
             state.last_seen_at = current
             updater(state)
             GroupInterjectGate._prune_sent(state, current)
+            GroupInterjectGate._prune_reservations(state, current)
             self._write(conn, group, state)
             conn.execute(
                 "DELETE FROM group_interjection_state WHERE group_key NOT IN ("
@@ -298,12 +369,13 @@ class SqliteInterjectionStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                "SELECT message_seq, last_sent_at, last_sent_seq, sent_at, reservations, last_seen_at "
                 "FROM group_interjection_state WHERE group_key=?",
                 (group,),
             ).fetchone()
             state = self._from_row(row, current)
             GroupInterjectGate._prune_sent(state, current)
+            GroupInterjectGate._prune_reservations(state, current)
             return state
         finally:
             conn.close()
@@ -314,24 +386,26 @@ class SqliteInterjectionStore:
         try:
             if group_id:
                 rows = conn.execute(
-                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, reservations, last_seen_at "
                     "FROM group_interjection_state WHERE group_key=?",
                     (self._group(group_id),),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, last_seen_at "
+                    "SELECT group_key, message_seq, last_sent_at, last_sent_seq, sent_at, reservations, last_seen_at "
                     "FROM group_interjection_state"
                 ).fetchall()
             output: dict[str, Any] = {}
             for row in rows:
                 state = self._from_row(row, current)
                 GroupInterjectGate._prune_sent(state, current)
+                GroupInterjectGate._prune_reservations(state, current)
                 output[str(row["group_key"])] = {
                     "message_seq": state.message_seq,
                     "last_sent_at": state.last_sent_at,
                     "last_sent_seq": state.last_sent_seq,
                     "hourly_count": len(state.sent_at),
+                    "pending_count": len(state.reservations),
                 }
             return output
         finally:
@@ -340,11 +414,13 @@ class SqliteInterjectionStore:
     def diagnostics(self, *, now: float | None = None) -> dict[str, Any]:
         snapshot = self.snapshot(now=now)
         hourly_counts = [int(item["hourly_count"]) for item in snapshot.values()]
+        pending_counts = [int(item.get("pending_count", 0)) for item in snapshot.values()]
         message_sequences = [int(item["message_seq"]) for item in snapshot.values()]
         return {
             "tracked_groups": len(snapshot),
             "groups_with_sent": sum(1 for count in hourly_counts if count > 0),
             "hourly_sent_total": sum(hourly_counts),
+            "pending_total": sum(pending_counts),
             "max_message_seq": max(message_sequences, default=0),
         }
 
@@ -396,6 +472,15 @@ class GroupInterjectGate:
         while state.sent_at and current - state.sent_at[0] >= 3600:
             state.sent_at.popleft()
 
+    @staticmethod
+    def _prune_reservations(state: _GroupGateState, current: float) -> None:
+        expired = [
+            token for token, item in state.reservations.items()
+            if item.expires_at <= current
+        ]
+        for token in expired:
+            state.reservations.pop(token, None)
+
     def observe_message(self, group_id: str, *, now: float | None = None) -> int:
         current = _now(now)
         if self._store is not None:
@@ -409,6 +494,7 @@ class GroupInterjectGate:
             state = self._state(group_id, current)
             state.message_seq += 1
             self._prune_sent(state, current)
+            self._prune_reservations(state, current)
             return state.message_seq
 
     @staticmethod
@@ -419,7 +505,9 @@ class GroupInterjectGate:
         current: float,
     ) -> GateDecision:
         GroupInterjectGate._prune_sent(state, current)
+        GroupInterjectGate._prune_reservations(state, current)
         hourly_count = len(state.sent_at)
+        pending_count = len(state.reservations)
         message_gap = (
             state.message_seq - state.last_sent_seq - 1
             if state.last_sent_seq is not None
@@ -437,11 +525,13 @@ class GroupInterjectGate:
             reason, would_allow = "ineligible", False
         elif not score.would_interject or score.score < cfg.threshold:
             reason, would_allow = "score_below_threshold", False
+        elif pending_count > 0:
+            reason, would_allow = "reservation_pending", False
         elif cooldown_remaining > 0:
             reason, would_allow = "cooldown", False
         elif state.last_sent_seq is not None and message_gap < cfg.min_gap_messages:
             reason, would_allow = "message_gap", False
-        elif hourly_count >= cfg.hourly_limit:
+        elif hourly_count + pending_count >= cfg.hourly_limit:
             reason, would_allow = "hourly_limit", False
 
         allowed = bool(would_allow and not cfg.shadow_only)
@@ -454,6 +544,7 @@ class GroupInterjectGate:
             cooldown_remaining=cooldown_remaining,
             hourly_count=hourly_count,
             message_gap=message_gap,
+            pending_count=pending_count,
         )
 
     def check(
@@ -479,6 +570,99 @@ class GroupInterjectGate:
                 return GateDecision(False, False, "group_missing")
             return self._decide(state, score, cfg, current)
 
+    def reserve(
+        self,
+        group_id: str,
+        score: SocialScore,
+        *,
+        config: InterjectionConfig | None = None,
+        now: float | None = None,
+    ) -> tuple[GateDecision, GateReservation | None]:
+        """原子判断并预留一个主动插话名额。"""
+        cfg = (config or InterjectionConfig()).normalized()
+        current = _now(now)
+        outcome: dict[str, Any] = {}
+
+        def apply(state: _GroupGateState) -> None:
+            decision = self._decide(state, score, cfg, current)
+            outcome["decision"] = decision
+            if not decision.allowed:
+                return
+            token = uuid.uuid4().hex
+            expires_at = current + cfg.reservation_seconds
+            state.reservations[token] = _ReservationState(
+                created_at=current,
+                expires_at=expires_at,
+                message_seq=state.message_seq,
+            )
+            outcome["reservation"] = GateReservation(
+                token=token,
+                group_id=str(group_id or "").strip(),
+                expires_at=expires_at,
+                decision=decision,
+            )
+
+        try:
+            if self._store is not None:
+                self._store.update(group_id, apply, now=current)
+            else:
+                with self._lock:
+                    state = self._state(group_id, current)
+                    apply(state)
+        except ValueError:
+            return GateDecision(False, False, "group_missing"), None
+        return outcome.get("decision", GateDecision(False, False, "group_missing")), outcome.get("reservation")
+
+    def commit(self, reservation: GateReservation, *, now: float | None = None) -> bool:
+        """提交已成功发送的 reservation；过期或重复提交均返回 False。"""
+        current = _now(now)
+        result = {"committed": False}
+
+        def apply(state: _GroupGateState) -> None:
+            self._prune_sent(state, current)
+            self._prune_reservations(state, current)
+            item = state.reservations.pop(reservation.token, None)
+            if item is None or item.expires_at <= current:
+                return
+            state.last_sent_at = current
+            state.last_sent_seq = item.message_seq
+            state.sent_at.append(current)
+            result["committed"] = True
+
+        try:
+            if self._store is not None:
+                self._store.update(reservation.group_id, apply, now=current)
+            else:
+                with self._lock:
+                    state = self._states.get(str(reservation.group_id).strip())
+                    if state is not None:
+                        apply(state)
+        except ValueError:
+            return False
+        return bool(result["committed"])
+
+    def release(self, reservation: GateReservation, *, now: float | None = None) -> bool:
+        """释放未发送或失败的 reservation。"""
+        current = _now(now)
+        result = {"released": False}
+
+        def apply(state: _GroupGateState) -> None:
+            self._prune_reservations(state, current)
+            if state.reservations.pop(reservation.token, None) is not None:
+                result["released"] = True
+
+        try:
+            if self._store is not None:
+                self._store.update(reservation.group_id, apply, now=current)
+            else:
+                with self._lock:
+                    state = self._states.get(str(reservation.group_id).strip())
+                    if state is not None:
+                        apply(state)
+        except ValueError:
+            return False
+        return bool(result["released"])
+
     def record_sent(self, group_id: str, *, now: float | None = None) -> None:
         current = _now(now)
         if self._store is not None:
@@ -492,6 +676,7 @@ class GroupInterjectGate:
         with self._lock:
             state = self._state(group_id, current)
             self._prune_sent(state, current)
+            self._prune_reservations(state, current)
             state.last_sent_at = current
             state.last_sent_seq = state.message_seq
             state.sent_at.append(current)
@@ -518,11 +703,13 @@ class GroupInterjectGate:
                 if state is None:
                     continue
                 self._prune_sent(state, current)
+                self._prune_reservations(state, current)
                 output[key] = {
                     "message_seq": state.message_seq,
                     "last_sent_at": state.last_sent_at,
                     "last_sent_seq": state.last_sent_seq,
                     "hourly_count": len(state.sent_at),
+                    "pending_count": len(state.reservations),
                 }
             return output
 
@@ -532,11 +719,13 @@ class GroupInterjectGate:
             return self._store.diagnostics(now=now)
         snapshot = self.snapshot(now=now)
         hourly_counts = [int(item["hourly_count"]) for item in snapshot.values()]
+        pending_counts = [int(item.get("pending_count", 0)) for item in snapshot.values()]
         message_sequences = [int(item["message_seq"]) for item in snapshot.values()]
         return {
             "tracked_groups": len(snapshot),
             "groups_with_sent": sum(1 for count in hourly_counts if count > 0),
             "hourly_sent_total": sum(hourly_counts),
+            "pending_total": sum(pending_counts),
             "max_message_seq": max(message_sequences, default=0),
         }
 
@@ -579,6 +768,9 @@ def config_from_settings(settings: Any) -> InterjectionConfig:
             "cooldown_seconds": getattr(settings, "group_social_interject_cooldown_seconds", 90.0),
             "hourly_limit": getattr(settings, "group_social_interject_hourly_limit", 6),
             "min_gap_messages": getattr(settings, "group_social_interject_min_gap_messages", 2),
+            "reservation_seconds": getattr(
+                settings, "group_social_interject_reservation_seconds", 120.0
+            ),
         }
         return InterjectionConfig(**values).normalized()
     except (TypeError, ValueError):
@@ -600,13 +792,14 @@ def config_diagnostic(settings: Any) -> dict[str, Any]:
             warnings.append(f"{name}:invalid")
 
     numeric_fields = (
-        ("group_social_interject_threshold", 0.0, 1.0, float),
-        ("group_social_interject_cooldown_seconds", 0.0, None, float),
-        ("group_social_interject_hourly_limit", 1.0, None, int),
-        ("group_social_interject_min_gap_messages", 0.0, None, int),
+        ("group_social_interject_threshold", 0.0, 1.0, float, 0.72),
+        ("group_social_interject_cooldown_seconds", 0.0, None, float, 90.0),
+        ("group_social_interject_hourly_limit", 1.0, None, int, 6),
+        ("group_social_interject_min_gap_messages", 0.0, None, int, 2),
+        ("group_social_interject_reservation_seconds", 5.0, None, float, 120.0),
     )
-    for name, minimum, maximum, converter in numeric_fields:
-        raw = getattr(settings, name, None)
+    for name, minimum, maximum, converter, default in numeric_fields:
+        raw = getattr(settings, name, default)
         try:
             value = converter(raw)
             if isinstance(value, float) and not math.isfinite(value):
@@ -622,6 +815,9 @@ def config_diagnostic(settings: Any) -> dict[str, Any]:
         mode = "shadow" if config.shadow_only else "active"
     return {
         "schema_version": 1,
+        "state_path_configured": bool(
+            str(getattr(settings, "group_social_interject_state_path", "") or "").strip()
+        ),
         "mode": mode,
         "enabled": config.enabled,
         "shadow_only": config.shadow_only,
@@ -629,6 +825,7 @@ def config_diagnostic(settings: Any) -> dict[str, Any]:
         "cooldown_seconds": config.cooldown_seconds,
         "hourly_limit": config.hourly_limit,
         "min_gap_messages": config.min_gap_messages,
+        "reservation_seconds": config.reservation_seconds,
         "max_groups": config.max_groups,
         "valid": not warnings,
         "warnings": sorted(set(warnings)),
@@ -637,6 +834,7 @@ def config_diagnostic(settings: Any) -> dict[str, Any]:
 
 def diagnostic_snapshot(settings: Any) -> dict[str, Any]:
     """组合有效配置和聚合闸门状态，供 owner/internal 只读诊断。"""
+    configure_from_settings(settings)
     return {
         "schema_version": 1,
         "config": config_diagnostic(settings),
@@ -788,3 +986,21 @@ def score_group_interjection(
 
 
 interject_gate = GroupInterjectGate()
+_configured_state_path = ""
+
+
+def configure_from_settings(settings: Any) -> GroupInterjectGate:
+    """按配置选择进程内或 SQLite 闸门；相同路径不重复重建。"""
+    global interject_gate, _configured_state_path
+    path = str(getattr(settings, "group_social_interject_state_path", "") or "").strip()
+    if path == _configured_state_path:
+        return interject_gate
+    try:
+        store = SqliteInterjectionStore(path) if path else None
+        interject_gate = GroupInterjectGate(store=store)
+        _configured_state_path = path
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        logger.exception("主动插话持久化闸门初始化失败，回退进程内模式")
+        interject_gate = GroupInterjectGate()
+        _configured_state_path = path
+    return interject_gate

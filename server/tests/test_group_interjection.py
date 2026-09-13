@@ -15,6 +15,7 @@ from app.chat.group_interjection import (
     InterjectionConfig,
     SqliteInterjectionStore,
     config_diagnostic,
+    configure_from_settings,
     diagnostic_snapshot,
     score_group_interjection,
 )
@@ -168,6 +169,17 @@ def test_config_diagnostic_normalizes_values_without_exposing_raw_config():
     assert "1.5" not in json.dumps(diagnostic, ensure_ascii=False)
 
 
+def test_configurable_gate_path_uses_sqlite_store(tmp_path, monkeypatch):
+    path = tmp_path / "configured-gate.db"
+    monkeypatch.setattr(settings, "group_social_interject_state_path", str(path))
+    gate = configure_from_settings(settings)
+    gate.observe_message("fixture-group", now=0)
+    assert gate.snapshot("fixture-group", now=0)["fixture-group"]["message_seq"] == 1
+
+    monkeypatch.setattr(settings, "group_social_interject_state_path", "")
+    configure_from_settings(settings)
+
+
 def test_gate_diagnostic_is_aggregate_only():
     group_interjection_module.interject_gate.reset()
     group_interjection_module.interject_gate.observe_message("fixture-group", now=0)
@@ -232,6 +244,98 @@ def test_sqlite_store_atomic_message_sequence_across_instances(tmp_path):
     diagnostic = gates[1].diagnostics(now=20)
     assert diagnostic["tracked_groups"] == 1
     assert "fixture-group" not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_reservation_commit_and_release_are_single_use():
+    gate = GroupInterjectGate()
+    config = InterjectionConfig(
+        enabled=True,
+        shadow_only=False,
+        cooldown_seconds=0,
+        min_gap_messages=1,
+        hourly_limit=2,
+    )
+    score = _score()
+    gate.observe_message("fixture-group", now=0)
+    decision, reservation = gate.reserve("fixture-group", score, config=config, now=0)
+    assert decision.allowed is True
+    assert reservation is not None
+
+    pending, duplicate = gate.reserve("fixture-group", score, config=config, now=1)
+    assert pending.reason == "reservation_pending"
+    assert duplicate is None
+    assert gate.commit(reservation, now=2) is True
+    assert gate.commit(reservation, now=2) is False
+
+    gate.observe_message("fixture-group", now=3)
+    blocked = gate.check("fixture-group", score, config=config, now=3)
+    assert blocked.reason == "message_gap"
+
+    gate2 = GroupInterjectGate()
+    gate2.observe_message("release-group", now=0)
+    _, reservation2 = gate2.reserve("release-group", score, config=config, now=0)
+    assert reservation2 is not None
+    assert gate2.release(reservation2, now=1) is True
+    gate2.observe_message("release-group", now=2)
+    retry, retry_reservation = gate2.reserve("release-group", score, config=config, now=2)
+    assert retry.allowed is True
+    assert retry_reservation is not None
+    assert gate2.release(retry_reservation, now=2) is True
+
+
+def test_persistent_reservation_survives_gate_replacement(tmp_path):
+    path = tmp_path / "reservation.db"
+    config = InterjectionConfig(
+        enabled=True,
+        shadow_only=False,
+        cooldown_seconds=0,
+        min_gap_messages=0,
+        hourly_limit=2,
+    )
+    score = _score()
+    first = GroupInterjectGate(store=SqliteInterjectionStore(path))
+    first.observe_message("fixture-group", now=0)
+    decision, reservation = first.reserve("fixture-group", score, config=config, now=0)
+    assert decision.allowed is True
+    assert reservation is not None
+
+    restarted = GroupInterjectGate(store=SqliteInterjectionStore(path))
+    blocked, no_reservation = restarted.reserve("fixture-group", score, config=config, now=1)
+    assert blocked.reason == "reservation_pending"
+    assert no_reservation is None
+    assert restarted.release(reservation, now=1) is True
+
+    retry, retry_reservation = restarted.reserve("fixture-group", score, config=config, now=2)
+    assert retry.allowed is True
+    assert retry_reservation is not None
+    assert restarted.commit(retry_reservation, now=2) is True
+
+
+def test_sqlite_reserve_allows_only_one_concurrent_winner(tmp_path):
+    path = tmp_path / "reservation-race.db"
+    config = InterjectionConfig(
+        enabled=True,
+        shadow_only=False,
+        cooldown_seconds=0,
+        min_gap_messages=0,
+        hourly_limit=2,
+    )
+    score = _score()
+    stores = [SqliteInterjectionStore(path), SqliteInterjectionStore(path)]
+    gates = [GroupInterjectGate(store=store) for store in stores]
+    gates[0].observe_message("fixture-group", now=0)
+
+    def reserve(gate):
+        return gate.reserve("fixture-group", score, config=config, now=1)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, gates))
+
+    assert sum(1 for decision, reservation in results if decision.allowed and reservation) == 1
+    assert sum(1 for decision, reservation in results if decision.reason == "reservation_pending") == 1
+    for decision, reservation in results:
+        if reservation is not None:
+            assert gates[0].release(reservation, now=1) is True
 
 
 def test_robot_state_is_bounded_and_recovers():

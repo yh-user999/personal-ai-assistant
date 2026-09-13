@@ -513,8 +513,9 @@ async def _run_chat(
 
     social_score = None
     social_gate = None
-    social_interject_allowed = False
+    social_reservation = None
     social_scene: dict[str, Any] = {}
+    group_interjection.configure_from_settings(settings)
     interject_config = group_interjection.config_from_settings(settings)
     if ctx.is_group:
         from app.chat import group_context
@@ -562,7 +563,7 @@ async def _run_chat(
                 directed=False,
                 threshold=interject_config.threshold,
             )
-            social_gate = group_interjection.interject_gate.check(
+            social_gate, social_reservation = group_interjection.interject_gate.reserve(
                 ctx.group_id,
                 social_score,
                 config=interject_config,
@@ -586,7 +587,6 @@ async def _run_chat(
                     group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
                     await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
                 return ChatResponse(reply="", memories_used=0)
-            social_interject_allowed = True
     else:
         planner_history = await asyncio.to_thread(
             memory.get_recent_history,
@@ -750,6 +750,9 @@ async def _run_chat(
         else:
             reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
     if reply is None:
+        if social_reservation is not None:
+            group_interjection.interject_gate.release(social_reservation)
+            social_reservation = None
         ctx.trace.status = "failed"
         ctx.trace.error_code = "vision_failed" if ctx.image is not None else "llm_failed"
         if ctx.image is not None:
@@ -785,9 +788,14 @@ async def _run_chat(
             await memory.write_message(
                 "assistant", reply, user_id=ctx.uid, group_id=ctx.group_id
             )
-        if social_interject_allowed and reply.strip():
-            # 服务端生成并通过审校后才消耗主动插话配额；空回复不计数。
-            group_interjection.interject_gate.record_sent(ctx.group_id)
+        if social_reservation is not None:
+            if reply.strip():
+                # 只有生成并通过审校的非空回复才提交预留名额。
+                if not group_interjection.interject_gate.commit(social_reservation):
+                    runtime.logger.warning("主动插话 reservation 已过期或重复提交")
+            else:
+                group_interjection.interject_gate.release(social_reservation)
+            social_reservation = None
         robot_service = getattr(services, "robot_state", None)
         if robot_service:
             try:

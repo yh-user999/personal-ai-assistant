@@ -132,3 +132,26 @@ def test_group_prompt_renders_social_action_boundaries():
     assert "本轮群聊社交动作" in text
     assert "轻微吐槽当前话题或行为" in text
     assert "不得攻击外貌、疾病、家庭" in text
+
+
+def test_group_prompt_renders_one_line_care_followup_boundary():
+    ctx = _ctx("最近压力很大", directed=True)
+    ctx.trace.response_plan = {
+        "social_action": "answer",
+        "social_reasons": ["emotion_signal", "care_followup"],
+        "social_atmosphere": "emotional",
+        "social_topic_shift": False,
+    }
+    bundle = SimpleNamespace(
+        injections="", profile="", facts="", lessons="", concerns="", jargon="",
+        style_examples="", behavior="", goals_text="", open_issues="",
+        knowledge_text="", intent_label="", slang="", mood="", mood_state="",
+        self_state="", older=[], history=[], extra_blocks=[],
+    )
+    runtime = SimpleNamespace(settings=SimpleNamespace(values_enabled=False), logger=None)
+
+    text = prompting.build_system_prompt(ctx, runtime, bundle)
+
+    assert "只用一句自然" in text
+    assert "这是一次有限跟进" in text
+    assert "不要追问隐私" in text

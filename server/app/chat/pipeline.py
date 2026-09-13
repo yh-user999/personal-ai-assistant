@@ -514,6 +514,7 @@ async def _run_chat(
     social_score = None
     social_gate = None
     social_reservation = None
+    care_decision = None
     social_scene: dict[str, Any] = {}
     group_interjection.configure_from_settings(settings)
     interject_config = group_interjection.config_from_settings(settings)
@@ -558,6 +559,25 @@ async def _run_chat(
             except Exception as exc:  # noqa: BLE001
                 runtime.logger.debug("群关系更新失败: %s", type(exc).__name__)
 
+        care_service = getattr(services, "group_care", None)
+        if care_service:
+            try:
+                care_decision = await asyncio.to_thread(
+                    care_service.assess,
+                    ctx.group_id,
+                    ctx.uid,
+                    msg,
+                    relationship_snapshot,
+                    social_scene,
+                    enabled=getattr(settings, "group_care_enabled", True),
+                    cooldown_seconds=getattr(settings, "group_care_cooldown_seconds", 21600.0),
+                    daily_limit=getattr(settings, "group_care_daily_limit", 2),
+                    max_followups=getattr(settings, "group_care_max_followups", 1),
+                )
+                social_scene["care"] = care_decision.as_dict()
+            except Exception as exc:  # noqa: BLE001
+                runtime.logger.debug("群聊关怀判断失败: %s", type(exc).__name__)
+
         # 每条进入服务端的群消息推进序号；主动插话配额只在发送成功后记账。
         group_interjection.interject_gate.observe_message(ctx.group_id)
         if not ctx.group_directed:
@@ -588,6 +608,9 @@ async def _run_chat(
                     "atmosphere": str(social_scene.get("atmosphere") or "casual"),
                     "gate": social_gate.as_dict(),
                     "interject_enabled": interject_config.enabled,
+                    "care_allowed": bool(care_decision and care_decision.eligible),
+                    "care_kind": str(getattr(care_decision, "kind", "") or ""),
+                    "care_reason": str(getattr(care_decision, "reason", "") or ""),
                 }
                 with ctx.trace.stage("social_gate"):
                     group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
@@ -628,6 +651,10 @@ async def _run_chat(
         )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
+    if ctx.is_group and care_decision is not None and care_decision.eligible:
+        plan.social_reasons = list(dict.fromkeys(
+            list(plan.social_reasons) + list(care_decision.signals)
+        ))[:8]
     if social_score is not None:
         # 通过评分和闸门的非直达消息只能以 interject 进入生成链路，不能被 planner 改成普通回答。
         plan.social_action = "interject"
@@ -674,6 +701,9 @@ async def _run_chat(
             "hourly_count": plan.social_hourly_count,
             "message_gap": plan.social_message_gap,
             "interject_enabled": bool(getattr(settings, "group_social_interject_enabled", False)),
+            "care_allowed": bool(care_decision and care_decision.eligible),
+            "care_kind": str(getattr(care_decision, "kind", "") or ""),
+            "care_reason": str(getattr(care_decision, "reason", "") or ""),
         }
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
@@ -820,6 +850,18 @@ async def _run_chat(
                 )
             except Exception as exc:  # noqa: BLE001
                 runtime.logger.debug("群关系回复记录失败: %s", type(exc).__name__)
+        if care_decision is not None and care_decision.eligible and reply.strip():
+            care_service = getattr(services, "group_care", None)
+            if care_service:
+                try:
+                    await asyncio.to_thread(
+                        care_service.record_sent,
+                        ctx.group_id,
+                        ctx.uid,
+                        care_decision.kind or "initial",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    runtime.logger.debug("群聊关怀记账失败: %s", type(exc).__name__)
         # 群成员画像提取放后台：它要调 LLM，不能拖慢群回复；
         # 失败也只是少记一条，绝不影响本轮回复。
         if getattr(settings, "group_profile_enabled", True):

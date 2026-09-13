@@ -13,6 +13,7 @@ from app.config import settings
 from app.core import knowledge as knowledge_module
 from app.core import memory as memory_module
 from app.models.database import connect, init_db, reset_connections
+from app.services import group_care, group_relationship
 
 
 @pytest.fixture
@@ -346,6 +347,43 @@ def test_non_directed_group_interject_passes_gate_and_records_send(db_env, monke
     assert ctx.trace.social_judgment["action"] == "interject"
     assert ctx.trace.social_judgment["gate_allowed"] is True
     assert group_interjection.interject_gate.snapshot("social-test-group")["social-test-group"]["hourly_count"] == 1
+
+
+def test_directed_group_care_is_distinct_from_owner_initiative(db_env, monkeypatch):
+    """熟悉群友的情绪消息触发当前群一句关心，并记录群内跟进台账。"""
+    monkeypatch.setattr(settings, "semantic_planner_enabled", False)
+    monkeypatch.setattr(settings, "group_social_enabled", True)
+    monkeypatch.setattr(settings, "group_social_interject_enabled", False)
+    monkeypatch.setattr(settings, "group_care_enabled", True)
+    monkeypatch.setattr(settings, "group_reflection_enabled", False)
+    monkeypatch.setattr(settings, "group_profile_enabled", False)
+    group_care.clear()
+    for _ in range(4):
+        group_relationship.observe_message(
+            "care-group", "000001", "@小月 你好", directed=True
+        )
+
+    llm = _LLM(reply="先缓一缓，别把自己逼太紧。")
+    runtime = make_runtime(llm=llm)
+    runtime.services.group_relationship = group_relationship
+    runtime.services.group_care = group_care
+    ctx = make_ctx(
+        "最近压力好大，感觉很累",
+        uid="000001",
+        is_owner=False,
+        group_id="care-group",
+        group_directed=True,
+    )
+
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert resp.reply == "先缓一缓，别把自己逼太紧。"
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "轻量关怀约束" in system
+    assert "只用一句自然" in system
+    snapshot = group_care.get_snapshot("care-group", "000001")
+    assert snapshot["kind"] == "initial"
+    assert snapshot["followup_count"] == 0
 
 
 def test_generation_double_failure_not_persisted(db_env, monkeypatch):

@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     group_social_interject_state_path: str = ""
     # 是否从既有群记忆恢复短期上下文/机器人摘要；不新增原始消息表。
     group_state_persistence_enabled: bool = True
+    # 群聊事件驱动轻量关怀：只影响当前群回复，不做定时群发。
+    group_care_enabled: bool = True
+    group_care_cooldown_seconds: float = 21600.0
+    group_care_daily_limit: int = 2
+    group_care_max_followups: int = 1
     # 开启主动插话后仍可先 shadow 观察，只有显式关闭才真正发言。
     group_social_interject_shadow_only: bool = True
 

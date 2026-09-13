@@ -28,6 +28,7 @@ SERVICE_MODULES = (
     "fitness_training",
     "few_shot",
     "goals",
+    "group_care",
     "group_expression",
     "group_relationship",
     "growth",

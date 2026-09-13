@@ -900,15 +900,21 @@ def score_group_interjection(
         affinity = max(-1.0, min(1.0, float(relationship.get("affinity", 0.0))))
     except (AttributeError, TypeError, ValueError):
         familiarity, affinity = 0.0, 0.0
-    care_signal = bool(
-        _EMOTION_RE.search(text)
-        and not has_recent_bot
-        and familiarity >= 0.2
-        and affinity >= -0.15
-    )
+    care_state = scene.get("care")
+    if isinstance(care_state, dict) and "eligible" in care_state:
+        care_signal = bool(care_state.get("eligible"))
+        care_kind = str(care_state.get("kind") or "initial")
+    else:
+        care_signal = bool(
+            _EMOTION_RE.search(text)
+            and not has_recent_bot
+            and familiarity >= 0.2
+            and affinity >= -0.15
+        )
+        care_kind = "initial"
     if care_signal:
         social_signal = max(social_signal, 0.9)
-        reasons.append("care_signal")
+        reasons.append("care_followup" if care_kind == "followup" else "care_signal")
     conversation_gap = 0.15 if has_recent_bot else 0.85
     if not has_recent_bot:
         reasons.append("bot_gap")

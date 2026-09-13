@@ -699,6 +699,18 @@ CREATE TABLE IF NOT EXISTS group_expression_patterns (
 CREATE INDEX IF NOT EXISTS idx_group_expression_lookup
   ON group_expression_patterns(group_id, kind, confidence DESC, use_count DESC);
 
+-- ㉜ 群聊轻量关怀台账：只保存抽象信号和时间，不保存原始消息。
+CREATE TABLE IF NOT EXISTS group_care_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'initial',
+  sent_at TEXT NOT NULL,
+  followup_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_group_care_scope_time
+  ON group_care_events(group_id, user_id, sent_at DESC);
+
 CREATE TABLE IF NOT EXISTS index_corrections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target TEXT NOT NULL,

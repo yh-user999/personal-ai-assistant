@@ -54,7 +54,7 @@ _SOCIAL_SCALAR_KEYS = frozenset({
     "action", "confidence", "score", "eligible", "addressed", "atmosphere",
     "topic_shift", "gate_reason", "gate_allowed", "gate_would_allow",
     "cooldown_remaining", "hourly_count", "message_gap", "pending_count", "interject_enabled",
-    "shadow_only",
+    "shadow_only", "care_allowed", "care_kind", "care_reason",
 })
 
 

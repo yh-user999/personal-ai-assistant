@@ -4,7 +4,7 @@
 
 ## 1. 项目一句话
 
-这是一个“服务器大脑 + 可选 Windows 客户端 + QQ/AstrBot 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行；QQ 通过 NapCat + AstrBot 插件接入。
+这是一个“服务器大脑 + 可选 Windows 客户端 + QQ/MaiBot 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行；当前 QQ 由 NapCat + MaiBot 接入，AstrBot 保留为旧链路回滚方案。
 
 ## 2. 代码地图
 
@@ -55,6 +55,20 @@ QQ/NapCat 事件
 2. 再把心流、关系、插话闸门合并到单一状态接口；
 3. 最后让插件只负责事件归一化和发送，服务端统一决定 `reply/wait/pass/interject`。
 
+### 2.2 当前活动 QQ 链路（2026-09-13）
+
+```text
+QQ/NapCat 登录
+  → NapCat 本机正向 OneBot WebSocket
+  → MaiBot NapCat adapter
+  → MaiBot core
+```
+
+- MaiBot 使用 host 网络连接 NapCat 本机正向 WebSocket；WebUI 仅绑定本机端口。
+- 当前 MaiBot adapter 保留从 AstrBot 配置迁移的群白名单，不开放全部群。
+- `astrbot.service` 当前停止但未禁用；原 NapCat→AstrBot 反向 WebSocket 配置已备份，可按回滚步骤恢复。
+- MaiBot 尚未完成可用 LLM 配置；QQ 链路连接成功不等于身份回答和上下文续话验收通过。
+
 ## 3. 已核对运行事实（2026-09-13）
 
 ### 服务器
@@ -74,6 +88,8 @@ QQ/NapCat 事件
 - 当前已核对的安全门禁：`assistant_mode=group`、`group_require_mention=true`、`group_followup_enabled=true`、续话窗口 90 秒、每次最多 1 条、主动插话关闭。
 - `group_allowed_ids` 当前是指定群白名单，不是 `*`；代码支持明确写 `*` 开放全部群，但实际配置变更必须单独审查并重载 AstrBot。
 - QQ 插件更新不能只更新 `/opt/personal-ai-assistant/qq/`：必须从仓库同步后，把已审查的插件文件同步到 AstrBot 实际副本，再重启/重载 `astrbot.service`。
+- 当前 QQ 已切换到 `/opt/maibot` 的 MaiBot 核心：NapCat 本机正向 WebSocket → MaiBot NapCat adapter；`astrbot.service` 停止但未禁用。
+- MaiBot WebUI 当前实际监听本机 8001；NapCat 正向 WebSocket 使用本机 3001；两者均未暴露公网。
 
 ## 4. 当前功能边界
 
@@ -84,7 +100,8 @@ QQ/NapCat 事件
 - 群作用域不自动注入私聊画像；群级表达学习不应写入个人画像。
 - `group_allowed_ids=*` 的配置解析和安全回归测试已实现，但实际运行配置尚未改为 `*`。
 - 服务端与 QQ 插件均有回归测试、lint 和脱敏检查。
-- MaiBot 核心已旁路部署到 `/opt/maibot`，仅本机 WebUI 可访问，未接入现网 QQ。
+- MaiBot 核心已旁路部署到 `/opt/maibot`，仅本机 WebUI 可访问。
+- 当前 QQ 已由 MaiBot NapCat adapter 接管，AstrBot 保留为停止状态的回滚链路。
 
 ### 未完成/明确限制
 
@@ -92,7 +109,7 @@ QQ/NapCat 事件
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 最近一次运行日志显示上游 LLM 返回 HTTP 429（月度额度耗尽）；在额度恢复或切换可用模型前，不要把 QQ 手工验收失败归因于续话代码。
 - 当前 Dynamic Spec 中仍有两个 blocked 方向：恢复 LLM 后复测身份/通用续话；配置 `group_allowed_ids=*` 后验证其他群。
-- MaiBot 当前仅完成空核心旁路部署，尚未配置可用 LLM、连接 NapCat 或切换 QQ；不得把旁路 WebUI 启动误认为 QQ 已迁移完成。
+- MaiBot 当前已连接 NapCat 并接管 QQ，但尚未配置可用 LLM；不得把适配器连接成功误认为身份回答和通用续话验收通过。
 
 ## 5. 安全与隐私硬规则
 
@@ -162,6 +179,14 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：`7c934b1`；实际 FastAPI 仓库与 GitHub `origin/main` 已核对一致。
 - 运行状态：FastAPI 已重启；AstrBot 实际插件副本已同步并重启 `astrbot.service`。
 - 未完成：LLM 上游额度耗尽；群聊公共联网搜索未开放；`group_allowed_ids=*` 尚未应用；QQ 最终身份续话验收待额度恢复。
+
+### 2026-09-13 — MaiBot 接管现有 QQ 登录
+
+- 代码/配置：通过 GitHub 发布无密钥 QQ 切换脚本；备份 NapCat/AstrBot/MaiBot 配置，关闭 AstrBot 路由，启用 NapCat 本机正向 WebSocket，并让 MaiBot host 网络适配器接管当前 QQ。
+- 验证：MaiBot NapCat adapter 已连接；NapCat 正向 WebSocket 已监听；现有群白名单保留；MaiBot WebUI GET 返回 200；回滚备份存在；AstrBot 停止但未禁用。
+- 提交：切换脚本 `d0267b1`，BOM 兼容修复 `5f7973b`；本次运行记录待随文档提交。
+- 运行状态：QQ 当前由 MaiBot 处理，AstrBot 作为回滚链路停止。
+- 未完成：LLM 额度/可用模型仍阻塞 QQ 身份回答与通用续话验收；尚未开放全部群。
 
 ### 2026-09-13 — MaiBot 旁路核心部署
 

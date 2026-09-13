@@ -84,6 +84,7 @@ QQ/NapCat 事件
 - 群作用域不自动注入私聊画像；群级表达学习不应写入个人画像。
 - `group_allowed_ids=*` 的配置解析和安全回归测试已实现，但实际运行配置尚未改为 `*`。
 - 服务端与 QQ 插件均有回归测试、lint 和脱敏检查。
+- MaiBot 核心已旁路部署到 `/opt/maibot`，仅本机 WebUI 可访问，未接入现网 QQ。
 
 ### 未完成/明确限制
 
@@ -91,6 +92,7 @@ QQ/NapCat 事件
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 最近一次运行日志显示上游 LLM 返回 HTTP 429（月度额度耗尽）；在额度恢复或切换可用模型前，不要把 QQ 手工验收失败归因于续话代码。
 - 当前 Dynamic Spec 中仍有两个 blocked 方向：恢复 LLM 后复测身份/通用续话；配置 `group_allowed_ids=*` 后验证其他群。
+- MaiBot 当前仅完成空核心旁路部署，尚未配置可用 LLM、连接 NapCat 或切换 QQ；不得把旁路 WebUI 启动误认为 QQ 已迁移完成。
 
 ## 5. 安全与隐私硬规则
 
@@ -160,6 +162,14 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：`7c934b1`；实际 FastAPI 仓库与 GitHub `origin/main` 已核对一致。
 - 运行状态：FastAPI 已重启；AstrBot 实际插件副本已同步并重启 `astrbot.service`。
 - 未完成：LLM 上游额度耗尽；群聊公共联网搜索未开放；`group_allowed_ids=*` 尚未应用；QQ 最终身份续话验收待额度恢复。
+
+### 2026-09-13 — MaiBot 旁路核心部署
+
+- 代码/配置：新增无密钥 MaiBot 核心启动脚本；从 GitHub 同步到实际部署仓库，在 `/opt/maibot` 创建空 MaiBot 持久化目录并启动核心容器；未修改 AstrBot、NapCat 或现网 QQ 路由。
+- 验证：MaiBot WebUI GET 返回 200；容器持续运行、重启策略为 `unless-stopped`；AstrBot 为 active/running，NapCat 容器正常。
+- 提交：部署脚本 `665532d`；本次运行记录待随文档提交。
+- 运行状态：MaiBot 核心已运行，QQ 仍由 AstrBot 处理。
+- 未完成：MaiBot 尚未配置可用 LLM、连接 NapCat 或进行 QQ 验收；当前 LLM 配额阻塞仍保留。
 
 ### 2026-09-13 — 架构链路盘点
 

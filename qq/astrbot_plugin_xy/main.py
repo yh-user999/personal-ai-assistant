@@ -6,7 +6,7 @@
 
 路由规则（隐私优先）：
 - personal 模式：群聊一律静默且 stop_event；私聊按现有规则处理
-- group 模式：仅白名单群、明确 @/前缀且未触发按群限流时响应；群请求始终使用访客身份，
+- group 模式：仅白名单群、明确 @/回复机器人/前缀且未触发按群限流时响应；群请求始终使用访客身份，
   服务端不读写个人记忆、不联网、不持久化群消息
 - 私聊：任何 QQ 用户都能聊（v1.4 多人支持）——透传 sender QQ 号给
   小月服务 /api/chat，服务端按 QQ 号完全隔离记忆
@@ -123,6 +123,31 @@ def _event_self_id(event: object) -> str:
     return ""
 
 
+def _component_kinds(component: object) -> set[str]:
+    """提取 AstrBot 消息组件的类型名，兼容枚举、字符串和不同版本类名。"""
+    raw_kind = getattr(component, "type", None)
+    return {
+        str(getattr(raw_kind, "value", "") or "").casefold(),
+        str(getattr(raw_kind, "name", "") or "").casefold(),
+        str(raw_kind or "").rsplit(".", 1)[-1].casefold(),
+        type(component).__name__.casefold(),
+    }
+
+
+def _component_target_id(component: object) -> str:
+    """读取 At/Reply 组件里的目标或被引用消息发送者 ID。"""
+    for name in ("qq", "target", "user_id", "sender_id", "id"):
+        value = getattr(component, name, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    sender = getattr(component, "sender", None)
+    for name in ("user_id", "id", "qq"):
+        value = getattr(sender, name, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
 def group_triggered(
     event: object,
     *,
@@ -146,25 +171,12 @@ def group_triggered(
     if not self_id:
         return False
     for component in getattr(event, "get_messages", lambda: [])() or []:
-        # AstrBot 的 type 是枚举（str(...) 得到 "ComponentType.At"），不能直接比字面量：
-        # 早期实现按 == "at" 判断，导致真实 @ 永远匹配不上、群里被点名也不回。
-        # 这里同时接受枚举 value、枚举名和类名，取最后一段再比较。
-        raw_kind = getattr(component, "type", None)
-        candidates = {
-            str(getattr(raw_kind, "value", "") or "").casefold(),
-            str(getattr(raw_kind, "name", "") or "").casefold(),
-            str(raw_kind or "").rsplit(".", 1)[-1].casefold(),
-            type(component).__name__.casefold(),
-        }
-        if not candidates & {"at", "mention"}:
-            continue
-        target = ""
-        for name in ("qq", "target", "user_id", "id"):
-            value = getattr(component, name, None)
-            if value is not None and str(value).strip():
-                target = str(value).strip()
-                break
-        if target == self_id:
+        kinds = _component_kinds(component)
+        if kinds & {"at", "mention"} and _component_target_id(component) == self_id:
+            return True
+        # OneBot/AstrBot 的 Reply 组件会记录被引用消息的 sender_id/qq；
+        # 回复机器人上一条消息应视为明确追问，但引用其他群友不能唤醒小月。
+        if kinds & {"reply"} and _component_target_id(component) == self_id:
             return True
     return False
 

@@ -134,6 +134,35 @@ def test_group_prompt_renders_social_action_boundaries():
     assert "不得攻击外貌、疾病、家庭" in text
 
 
+def test_group_prompt_does_not_inject_private_profile_claims(monkeypatch):
+    from app.services import profile as profile_service
+
+    monkeypatch.setattr(
+        profile_service,
+        "get_profile_injection",
+        lambda **kwargs: "[project_info] 实验室",
+    )
+    ctx = _ctx("今天有点累", directed=True)
+    ctx.trace.response_plan = {
+        "social_action": "answer",
+        "social_reasons": [],
+        "social_atmosphere": "emotional",
+        "social_topic_shift": False,
+    }
+    bundle = SimpleNamespace(
+        injections="", profile="[project_info] 实验室", facts="", lessons="", concerns="", jargon="",
+        style_examples="", behavior="", goals_text="", open_issues="",
+        knowledge_text="", intent_label="", slang="", mood="", mood_state="",
+        self_state="", older=[], history=[], extra_blocks=[],
+    )
+    runtime = SimpleNamespace(settings=SimpleNamespace(values_enabled=False), logger=None)
+
+    text = prompting.build_system_prompt(ctx, runtime, bundle)
+
+    assert "实验室" not in text
+    assert "未在当前消息或本群上下文确认的个人背景" in text
+
+
 def test_group_prompt_renders_one_line_care_followup_boundary():
     ctx = _ctx("最近压力很大", directed=True)
     ctx.trace.response_plan = {

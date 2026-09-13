@@ -47,6 +47,7 @@ def _install_astrbot_stubs():
 
         At = "At"
         Plain = "Plain"
+        Reply = "Reply"
 
     class At:
         type = _ComponentType.At
@@ -54,6 +55,12 @@ def _install_astrbot_stubs():
         def __init__(self, qq):
             self.qq = qq
             self.name = None
+
+    class Reply:
+        type = _ComponentType.Reply
+
+        def __init__(self, sender_id):
+            self.sender_id = sender_id
 
     class File:
         pass
@@ -80,6 +87,7 @@ def _install_astrbot_stubs():
     components.Plain = Plain
     components.Image = Image
     components.At = At
+    components.Reply = Reply
     components.File = File
     star.Context = object
     star.Star = Star
@@ -378,6 +386,23 @@ def test_at_component_with_enum_type_is_recognized_as_mention():
     assert _MOD.group_triggered(_Event([At("123")])) is False
     # 没有 At 组件，不应唤醒
     assert _MOD.group_triggered(_Event([])) is False
+
+
+def test_reply_component_targeting_bot_is_treated_as_directed():
+    """引用小月上一条消息的追问应直达；引用其他群友仍不应唤醒。"""
+    Reply = sys.modules["astrbot.api.message_components"].Reply
+
+    class _ReplyEvent(_Event):
+        def __init__(self, sender_id):
+            super().__init__([Reply(sender_id)], "哪来的实验室？")
+
+    assert _MOD.group_triggered(_ReplyEvent("999")) is True
+    assert _MOD.group_triggered(_ReplyEvent("123")) is False
+
+
+def test_group_trigger_prefix_can_handle_plain_bot_name_followups():
+    """没有结构化引用时，可用配置前缀唤醒纯文本追问。"""
+    assert _MOD.group_triggered(_Event([], "小月 哪来的实验室？"), prefix="小月") is True
 
 
 def test_group_default_has_no_cooldown_so_mentions_always_get_answered():

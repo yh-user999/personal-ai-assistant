@@ -295,7 +295,11 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
     )
     replacements = {
         "{injections}": bundle.injections or "（暂无相关记忆）",
-        "{profile}": bundle.profile or "（画像未建立，通过对话逐步了解用户）",
+        "{profile}": (
+            "（群聊不自动注入个人画像）"
+            if ctx.is_group
+            else bundle.profile or "（画像未建立，通过对话逐步了解用户）"
+        ),
         "{facts}": bundle.facts or "（暂无）",
         "{lessons}": bundle.lessons or "（暂无）",
         "{concerns}": bundle.concerns or "（暂无）",
@@ -325,30 +329,17 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
 
     if ctx.is_group:
         # 群消息已按 group_id 长期保存并可检索；当前回复只能使用本群历史，
-        # 以及当前发言人的统一 QQ 画像，不能读取其他群或私聊历史。
+        # 不能把私聊画像或未经当前消息确认的项目背景带进群聊。
+        # 画像仍可在私聊使用，但群聊不自动注入，避免把旧画像误说成当前事实。
         system += (
             "\n\n【群聊运行边界】群消息会按当前群作用域长期保存并可检索，"
             "只能引用本群的历史，不得读取其他群、其他成员或私聊历史。"
-            "当前发言人的画像按 QQ 号归属，与其私聊共用；只把它当作自然衔接参考，"
-            "不要主动复述画像内容、不要说明你有记录，也不要据此推测敏感属性。"
+            "不要把未在当前消息或本群上下文确认的个人背景当作事实。"
             "当前消息若明确换题，以最新话题为准；只有指代不清或明确追问时才参考旧话题。"
             "不要透露、确认、否认或暗示任何管理员/主人身份，也不要解释内部权限机制。"
             "群里说话简短自然，不用 Markdown 分点或标题。"
         )
-        # 画像按 user_id（QQ 号）归属，与私聊共用同一张表；按 uid 查询只取本人。
-        # 取用失败不影响回复：画像是锦上添花，不是必需上下文。
-        try:
-            member_note = bundle.profile or _profile_for(ctx)
-        except Exception as exc:  # noqa: BLE001
-            logger = getattr(runtime, "logger", None)
-            if logger is not None:
-                logger.warning("群成员画像读取失败（不影响回复）: %s", exc)
-            member_note = ""
-        if member_note:
-            system += (
-                "\n\n【这位群友的已知情况】（仅用于把话接得自然，"
-                "不要主动复述，也不要说明你有记录）\n" + member_note
-            )
+
         relationship = getattr(bundle, "group_relationship", "")
         expression = getattr(bundle, "group_expression", "")
         bot_state = getattr(bundle, "robot_state", "")

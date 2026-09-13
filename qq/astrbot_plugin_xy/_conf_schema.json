@@ -30,7 +30,7 @@
   "group_trigger_prefix": {
     "description": "群聊触发前缀",
     "type": "string",
-    "hint": "可选；填写后以此前缀开头的群消息也可触发，例如“小月 ”。",
+    "hint": "可选；填写后以此前缀开头的群消息也可触发，例如“小月 ”。回复机器人上一条消息会自动触发，无需重复设置前缀。",
     "default": "",
     "restart_required": false
   },

@@ -19,7 +19,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.chat.group_interjection import (  # noqa: E402
+from app.group.interjection import (  # noqa: E402
     GroupInterjectGate,
     InterjectionConfig,
     SocialScore,

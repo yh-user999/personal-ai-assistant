@@ -26,7 +26,7 @@ from app.models.database import connect
 
 logger = logging.getLogger("assistant.chapter_analysis")
 from app.services import sepia
-from app.services.novel_writing import _build_authority
+from app.novel.writing import _build_authority
 
 TZ = ZoneInfo("Asia/Shanghai")
 

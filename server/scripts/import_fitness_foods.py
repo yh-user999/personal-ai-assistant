@@ -25,7 +25,7 @@ if str(SERVER) not in sys.path:
 
 from app.core.memory import owner_user_id  # noqa: E402
 from app.models.database import init_db  # noqa: E402
-from app.services import fitness_catalog, fitness_nutrition  # noqa: E402
+from app.fitness import catalog as fitness_catalog, nutrition as fitness_nutrition  # noqa: E402
 
 
 def _read_payload(path: Path, member: str | None = None) -> Any:

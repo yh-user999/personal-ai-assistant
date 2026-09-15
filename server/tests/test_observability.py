@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from app.chat import group_interjection
 from app.config import settings
+from app.group import interjection as group_interjection
 from app.models.database import connect, init_db, reset_connections
 from app.services import observability, request_trace
 

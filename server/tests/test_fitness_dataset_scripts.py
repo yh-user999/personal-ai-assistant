@@ -7,9 +7,9 @@ import sys
 import zipfile
 from pathlib import Path
 
+from app.fitness import nutrition as fitness_nutrition
 from scripts import download_fitness_datasets as downloader
 from scripts import import_fitness_foods
-from app.services import fitness_nutrition
 
 
 class _Response(io.BytesIO):

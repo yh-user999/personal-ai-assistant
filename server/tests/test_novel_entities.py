@@ -18,7 +18,7 @@ os.environ.setdefault("LLM_API_KEY", "sk-test")
 os.environ.setdefault("EMBEDDING_API_KEY", "sk-test")
 
 from app.models.database import connect
-from app.services import novel_entities as ne
+from app.novel import entities as ne
 
 BOOK = "测试小说"
 

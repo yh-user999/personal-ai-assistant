@@ -72,11 +72,11 @@ async def maybe_extract(
 
     # 表达模式/黑话按群隔离，失败不影响个人画像开关。
     try:
-        from app.services import group_expression
+        from app.group import expression
 
-        for pattern in group_expression.parse_patterns(payload):
+        for pattern in expression.parse_patterns(payload):
             try:
-                group_expression.save_pattern(group_id, **pattern)
+                expression.save_pattern(group_id, **pattern)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("群表达模式入库跳过: %s", type(exc).__name__)
     except Exception as exc:  # noqa: BLE001

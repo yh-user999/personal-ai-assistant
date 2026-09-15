@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.chat.social_replay import evaluate_social_replay, load_jsonl  # noqa: E402
-from app.chat.group_interjection import InterjectionConfig  # noqa: E402
+from benchmarks.social_replay import evaluate_social_replay, load_jsonl  # noqa: E402
+from app.group.interjection import InterjectionConfig  # noqa: E402
 
 DEFAULT_FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "group_social_baseline.jsonl"
 

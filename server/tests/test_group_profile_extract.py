@@ -5,7 +5,7 @@ import pytest
 
 from app.config import settings
 from app.models.database import connect, init_db, reset_connections
-from app.services import group_expression, group_profile_extract
+from app.group import expression as group_expression, profile as group_profile_extract
 from app.services import profile as profile_service
 
 

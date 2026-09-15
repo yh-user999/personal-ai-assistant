@@ -13,7 +13,7 @@ from app.models.database import init_db, reset_connections
 @pytest.fixture(autouse=True)
 def _clean_group_context():
     """群上下文是进程内存，必须逐测试清理，避免用例间互相污染。"""
-    from app.chat import group_context
+    from app.group import context as group_context
 
     group_context.clear()
     yield
@@ -268,7 +268,7 @@ def test_group_retrieve_returns_empty_personal_scope(db_env, monkeypatch):
         return [[0.0] * settings.embedding_dimension for _ in texts]
 
     monkeypatch.setattr(_embedding, "embed", fake_embed)
-    from app.chat import group_context
+    from app.group import context as group_context
 
     group_context.clear()
     import logging

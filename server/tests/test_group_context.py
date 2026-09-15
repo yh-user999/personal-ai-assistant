@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.chat import group_context
+from app.group import context as group_context
 from app.chat.context import ChatContext, ChatRequest
 from app.chat.retrieval import retrieve
 from app.config import settings

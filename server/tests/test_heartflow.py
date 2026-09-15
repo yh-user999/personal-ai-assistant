@@ -1,7 +1,7 @@
 """群聊心流状态与发言节奏测试。"""
 from __future__ import annotations
 
-from app.chat import heartflow
+from app.group import heartflow
 
 
 def setup_function():

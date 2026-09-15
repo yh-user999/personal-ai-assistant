@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_roles
 from app.core.memory import owner_user_id
-from app.services import fitness_catalog, fitness_coach, fitness_nutrition, fitness_training
+from app.fitness import catalog, coach, nutrition, training
 
 router = APIRouter()
 
@@ -142,14 +142,14 @@ def _plan_payload(req: PlanRequest) -> dict[str, Any]:
 @router.get("/fitness/profile")
 async def get_fitness_profile(request: Request) -> dict[str, Any]:
     uid = _uid(request)
-    return {"profile": await asyncio.to_thread(fitness_training.get_profile, uid)}
+    return {"profile": await asyncio.to_thread(training.get_profile, uid)}
 
 
 @router.put("/fitness/profile")
 async def put_fitness_profile(req: ProfileRequest, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        profile = await asyncio.to_thread(fitness_training.upsert_profile, uid, req.model_dump())
+        profile = await asyncio.to_thread(training.upsert_profile, uid, req.model_dump())
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
     return {"profile": profile}
@@ -158,7 +158,7 @@ async def put_fitness_profile(req: ProfileRequest, request: Request) -> dict[str
 @router.get("/fitness/summary")
 async def fitness_summary(request: Request, days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
     uid = _uid(request)
-    return await asyncio.to_thread(fitness_training.get_summary, uid, days=days)
+    return await asyncio.to_thread(training.get_summary, uid, days=days)
 
 
 @router.get("/fitness/exercises")
@@ -171,7 +171,7 @@ async def list_fitness_exercises(
 ) -> dict[str, Any]:
     _uid(request)
     exercises = await asyncio.to_thread(
-        fitness_catalog.list_exercises,
+        catalog.list_exercises,
         query=q,
         muscle=muscle,
         equipment=equipment,
@@ -183,7 +183,7 @@ async def list_fitness_exercises(
 @router.get("/fitness/exercises/{exercise_id}")
 async def get_fitness_exercise(exercise_id: int, request: Request) -> dict[str, Any]:
     _uid(request)
-    exercise = await asyncio.to_thread(fitness_catalog.get_exercise, exercise_id)
+    exercise = await asyncio.to_thread(catalog.get_exercise, exercise_id)
     if not exercise:
         raise HTTPException(status_code=404, detail="动作不存在")
     return exercise
@@ -196,18 +196,18 @@ async def import_fitness_catalog(req: ImportRequest, request: Request) -> dict[s
         raise HTTPException(status_code=422, detail="records 不能为空")
     try:
         result = await asyncio.to_thread(
-            fitness_catalog.import_exercises,
+            catalog.import_exercises,
             req.records,
             source=req.source,
             license_name=req.license_name,
             attribution=req.attribution,
         )
         audit = await asyncio.to_thread(
-            fitness_catalog.record_import,
+            catalog.record_import,
             uid,
             source=req.source,
             external_id=req.external_id,
-            content_hash=fitness_catalog.content_hash(req.records),
+            content_hash=catalog.content_hash(req.records),
             status="imported",
             imported_count=result["total"],
         )
@@ -223,7 +223,7 @@ async def preview_fitness_import(req: PreviewRequest, request: Request) -> dict[
         raise HTTPException(status_code=422, detail="records 不能为空")
     try:
         normalized = [
-            fitness_catalog.normalize_exercise_record(
+            catalog.normalize_exercise_record(
                 item,
                 source=req.source,
                 license_name=req.license_name,
@@ -236,7 +236,7 @@ async def preview_fitness_import(req: PreviewRequest, request: Request) -> dict[
     return {
         "source": req.source,
         "count": len(normalized),
-        "content_hash": fitness_catalog.content_hash(normalized),
+        "content_hash": catalog.content_hash(normalized),
         "preview": normalized[:10],
     }
 
@@ -251,7 +251,7 @@ async def list_fitness_foods(
 ) -> dict[str, Any]:
     _uid(request)
     results = await asyncio.to_thread(
-        fitness_nutrition.list_foods,
+        nutrition.list_foods,
         query=q,
         brand=brand,
         source=source,
@@ -263,7 +263,7 @@ async def list_fitness_foods(
 @router.get("/fitness/foods/{food_id}")
 async def get_fitness_food(food_id: int, request: Request) -> dict[str, Any]:
     _uid(request)
-    food = await asyncio.to_thread(fitness_nutrition.get_food, food_id)
+    food = await asyncio.to_thread(nutrition.get_food, food_id)
     if not food:
         raise HTTPException(status_code=404, detail="食品不存在")
     return food
@@ -276,7 +276,7 @@ async def import_fitness_foods(req: FoodImportRequest, request: Request) -> dict
         raise HTTPException(status_code=422, detail="records 不能为空")
     try:
         result = await asyncio.to_thread(
-            fitness_nutrition.import_foods,
+            nutrition.import_foods,
             req.records,
             source=req.source,
             license_name=req.license_name,
@@ -284,11 +284,11 @@ async def import_fitness_foods(req: FoodImportRequest, request: Request) -> dict
             skip_invalid=req.skip_invalid,
         )
         audit = await asyncio.to_thread(
-            fitness_catalog.record_import,
+            catalog.record_import,
             uid,
             source=req.source,
             external_id=None,
-            content_hash=fitness_catalog.content_hash(req.records),
+            content_hash=catalog.content_hash(req.records),
             status="imported",
             imported_count=result["imported"],
         )
@@ -302,7 +302,7 @@ async def create_fitness_nutrition_log(req: NutritionLogRequest, request: Reques
     uid = _uid(request)
     try:
         result = await asyncio.to_thread(
-            fitness_nutrition.log_food,
+            nutrition.log_food,
             uid,
             req.food_id,
             **req.model_dump(exclude={"food_id"}, exclude_none=True),
@@ -320,7 +320,7 @@ async def list_fitness_nutrition_logs(
 ) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        results = await asyncio.to_thread(fitness_nutrition.list_food_logs, uid, date=date, limit=limit)
+        results = await asyncio.to_thread(nutrition.list_food_logs, uid, date=date, limit=limit)
     except ValueError as exc:
         _raise_domain(exc)
     return {"date": date, "results": results}
@@ -333,7 +333,7 @@ async def fitness_nutrition_summary(
 ) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await asyncio.to_thread(fitness_nutrition.nutrition_summary, uid, date=date)
+        return await asyncio.to_thread(nutrition.nutrition_summary, uid, date=date)
     except ValueError as exc:
         _raise_domain(exc)
 
@@ -342,7 +342,7 @@ async def fitness_nutrition_summary(
 async def delete_fitness_nutrition_log(log_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        await asyncio.to_thread(fitness_nutrition.delete_food_log, uid, log_id)
+        await asyncio.to_thread(nutrition.delete_food_log, uid, log_id)
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
     return {"deleted": True, "id": log_id}
@@ -356,7 +356,7 @@ async def list_fitness_plans(
 ) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        plans = await asyncio.to_thread(fitness_training.list_plans, uid, status=status, limit=limit)
+        plans = await asyncio.to_thread(training.list_plans, uid, status=status, limit=limit)
     except ValueError as exc:
         _raise_domain(exc)
     return {"results": plans}
@@ -365,7 +365,7 @@ async def list_fitness_plans(
 @router.get("/fitness/plans/{plan_id}")
 async def get_fitness_plan(plan_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
-    plan = await asyncio.to_thread(fitness_training.get_plan, uid, plan_id)
+    plan = await asyncio.to_thread(training.get_plan, uid, plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
     return plan
@@ -375,7 +375,7 @@ async def get_fitness_plan(plan_id: int, request: Request) -> dict[str, Any]:
 async def generate_fitness_plan(req: GeneratePlanRequest, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await fitness_coach.generate_plan_draft(
+        return await coach.generate_plan_draft(
             uid,
             req.model_dump(),
             request_id=getattr(request.state, "request_id", None),
@@ -388,7 +388,7 @@ async def generate_fitness_plan(req: GeneratePlanRequest, request: Request) -> d
 async def create_fitness_plan(req: PlanRequest, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        plan = await asyncio.to_thread(fitness_training.create_plan, uid, _plan_payload(req))
+        plan = await asyncio.to_thread(training.create_plan, uid, _plan_payload(req))
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
     return plan
@@ -398,7 +398,7 @@ async def create_fitness_plan(req: PlanRequest, request: Request) -> dict[str, A
 async def activate_fitness_plan(plan_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await asyncio.to_thread(fitness_training.activate_plan, uid, plan_id)
+        return await asyncio.to_thread(training.activate_plan, uid, plan_id)
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
 
@@ -407,7 +407,7 @@ async def activate_fitness_plan(plan_id: int, request: Request) -> dict[str, Any
 async def archive_fitness_plan(plan_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await asyncio.to_thread(fitness_training.archive_plan, uid, plan_id)
+        return await asyncio.to_thread(training.archive_plan, uid, plan_id)
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
 
@@ -415,14 +415,14 @@ async def archive_fitness_plan(plan_id: int, request: Request) -> dict[str, Any]
 @router.get("/fitness/active-plan")
 async def active_fitness_plan(request: Request) -> dict[str, Any]:
     uid = _uid(request)
-    return {"plan": await asyncio.to_thread(fitness_training.get_active_plan, uid)}
+    return {"plan": await asyncio.to_thread(training.get_active_plan, uid)}
 
 
 @router.post("/fitness/sessions")
 async def start_fitness_session(req: SessionRequest, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await asyncio.to_thread(fitness_training.start_session, uid, **req.model_dump(exclude_none=True))
+        return await asyncio.to_thread(training.start_session, uid, **req.model_dump(exclude_none=True))
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
 
@@ -435,7 +435,7 @@ async def list_fitness_sessions(
 ) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        sessions = await asyncio.to_thread(fitness_training.list_sessions, uid, status=status, limit=limit)
+        sessions = await asyncio.to_thread(training.list_sessions, uid, status=status, limit=limit)
     except ValueError as exc:
         _raise_domain(exc)
     return {"results": sessions}
@@ -444,7 +444,7 @@ async def list_fitness_sessions(
 @router.get("/fitness/sessions/{session_id}")
 async def get_fitness_session(session_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
-    session = await asyncio.to_thread(fitness_training.get_session, uid, session_id)
+    session = await asyncio.to_thread(training.get_session, uid, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="训练会话不存在")
     return session
@@ -455,7 +455,7 @@ async def log_fitness_set(session_id: int, req: SetRequest, request: Request) ->
     uid = _uid(request)
     try:
         return await asyncio.to_thread(
-            fitness_training.log_set,
+            training.log_set,
             uid,
             session_id,
             req.exercise_id,
@@ -469,7 +469,7 @@ async def log_fitness_set(session_id: int, req: SetRequest, request: Request) ->
 async def complete_fitness_session(session_id: int, request: Request) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        return await asyncio.to_thread(fitness_training.complete_session, uid, session_id)
+        return await asyncio.to_thread(training.complete_session, uid, session_id)
     except (KeyError, ValueError) as exc:
         _raise_domain(exc)
 
@@ -479,7 +479,7 @@ async def record_fitness_measurement(req: MeasurementRequest, request: Request) 
     uid = _uid(request)
     try:
         return await asyncio.to_thread(
-            fitness_training.record_measurement,
+            training.record_measurement,
             uid,
             **req.model_dump(exclude_none=True),
         )
@@ -495,7 +495,7 @@ async def list_fitness_measurements(
 ) -> dict[str, Any]:
     uid = _uid(request)
     try:
-        results = await asyncio.to_thread(fitness_training.list_measurements, uid, kind=kind, limit=limit)
+        results = await asyncio.to_thread(training.list_measurements, uid, kind=kind, limit=limit)
     except ValueError as exc:
         _raise_domain(exc)
     return {"results": results}

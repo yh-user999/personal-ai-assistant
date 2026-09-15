@@ -22,7 +22,7 @@ if str(SERVER) not in sys.path:
 
 from app.core.memory import owner_user_id  # noqa: E402
 from app.models.database import init_db  # noqa: E402
-from app.services import fitness_catalog  # noqa: E402
+from app.fitness import catalog as fitness_catalog  # noqa: E402
 
 
 def main() -> int:

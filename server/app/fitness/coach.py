@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.core import llm
-from app.services import fitness_catalog, fitness_training
+from app.fitness import catalog, training as fitness_training
 
 _MISSING = object()
 
@@ -41,14 +41,14 @@ def _float(value: Any, *, name: str, minimum: float, maximum: float, default: fl
 
 
 def _candidate_exercises(request: Mapping[str, Any]) -> list[dict[str, Any]]:
-    fitness_catalog.ensure_builtin_exercises()
+    catalog.ensure_builtin_exercises()
     equipment = request.get("equipment", [])
     if isinstance(equipment, str):
         equipment = [item.strip() for item in equipment.replace("，", ",").split(",") if item.strip()]
     if not isinstance(equipment, Sequence) or isinstance(equipment, (bytes, bytearray, str)):
         equipment = []
     equipment_terms = [str(item).strip().casefold() for item in list(equipment)[:16] if str(item).strip()]
-    all_items = fitness_catalog.list_exercises(limit=100)
+    all_items = catalog.list_exercises(limit=100)
     if not equipment_terms:
         return all_items[:60]
     filtered = [

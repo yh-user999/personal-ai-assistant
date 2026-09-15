@@ -1,7 +1,7 @@
 """Sepia 小说生成/审校规则与表层预检测试。"""
 import json
 
-from app.services import chapter_analysis as ca
+from app.novel import chapter_analysis as ca
 from app.services import sepia
 
 

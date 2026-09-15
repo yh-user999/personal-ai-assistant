@@ -74,7 +74,7 @@ def test_auto_extract_confidence_split(db_env, monkeypatch):
     conn.close()
 
     monkeypatch.setattr(
-        "app.services.novel_entities.extract_entities",
+        "app.novel.entities.extract_entities",
         _fake_extract({
             "book": "小说-寂静杀戮", "kind": "炼神",
             "names": [
@@ -106,7 +106,7 @@ def test_auto_extract_budget_gate_skips(db_env, monkeypatch):
         called["n"] += 1
         return {"book": book, "kind": kind, "names": [], "group_name": "", "group_size": 0}
 
-    monkeypatch.setattr("app.services.novel_entities.extract_entities", fake)
+    monkeypatch.setattr("app.novel.entities.extract_entities", fake)
     # 先占位（模拟同词当天已抽过）→ 任务应被幂等闸拦截
     assert index_healer._reserve_extract_slot("炼神") is True
     result = asyncio.run(index_healer.auto_extract_task(["炼神"], "小说-寂静杀戮"))
@@ -177,7 +177,7 @@ def test_apply_correction_not_triggered_by_normal_chat(db_env):
 # ── detect_kinds 动态扩展 ──────────────────────────────────
 
 def test_detect_kinds_includes_dynamic_and_db_kinds(db_env):
-    from app.services.novel_entities import detect_kinds
+    from app.novel.entities import detect_kinds
 
     knowledge_domain.register_class("炼神", domain="novel", source_query="测试")
     conn = connect()

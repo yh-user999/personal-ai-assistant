@@ -100,10 +100,10 @@ async def auto_extract_task(
     if not _reserve_extract_slot(kind_word):
         return {"kind": kind_word, "skipped": "budget_or_duplicate"}
 
-    from app.services import novel_entities
+    from app.novel import entities
 
     try:
-        extractor = novel_entities.extract_entities
+        extractor = entities.extract_entities
         try:
             parameters = inspect.signature(extractor).parameters
         except (TypeError, ValueError):
@@ -135,7 +135,7 @@ async def auto_extract_task(
             candidate_add(book, kind_word, name, item.get("first_chunk"))
 
     if confirmed:
-        novel_entities.confirm_extracted(
+        entities.confirm_extracted(
             {
                 "book": book,
                 "kind": kind_word,
@@ -187,7 +187,7 @@ def candidate_confirm(name: str) -> int:
     注意分段取连：upsert_entity 内部会复用并关闭线程缓存连接，
     若外层还握着同一连接继续用会 ProgrammingError（实测踩过）。
     """
-    from app.services.novel_entities import upsert_entity
+    from app.novel.entities import upsert_entity
 
     conn = connect()
     try:

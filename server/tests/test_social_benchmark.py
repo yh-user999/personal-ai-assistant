@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.chat.social_replay import load_jsonl
 from benchmarks.eval_interjection_process import evaluate_process_contention
 from benchmarks.eval_social_interjection import DEFAULT_FIXTURE, evaluate_fixture
+from benchmarks.social_replay import load_jsonl
 
 PROCESS_BASELINE = Path(__file__).resolve().parent / "fixtures" / "group_interjection_process_baseline.json"
 

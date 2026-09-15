@@ -7,10 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.chat import group_interjection as group_interjection_module
 from app.chat import prompting, retrieval
 from app.chat.context import ChatContext, ChatRequest
-from app.chat.group_interjection import (
+from app.group import expression as group_expression, relationship as group_relationship
+from app.group import interjection as group_interjection_module
+from app.group.interjection import (
     GroupInterjectGate,
     InterjectionConfig,
     SqliteInterjectionStore,
@@ -19,10 +20,10 @@ from app.chat.group_interjection import (
     diagnostic_snapshot,
     score_group_interjection,
 )
-from app.chat.social_replay import ReplayEvent, evaluate_social_replay
+from benchmarks.social_replay import ReplayEvent, evaluate_social_replay
 from app.config import settings
 from app.models.database import init_db, reset_connections
-from app.services import group_expression, group_relationship, robot_state
+from app.services import robot_state
 
 
 @pytest.fixture

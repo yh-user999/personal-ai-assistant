@@ -1,7 +1,7 @@
 """群聊注意力漂移和自然表达配置测试。"""
 from types import SimpleNamespace
 
-from app.chat import attention_drift
+from app.group import attention as attention_drift
 
 
 def _settings(**values):

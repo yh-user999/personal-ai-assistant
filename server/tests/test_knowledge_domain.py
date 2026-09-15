@@ -42,7 +42,7 @@ def _seed_fact(subject: str, predicate: str, obj: str) -> None:
 
 
 def _seed_entity(book: str, name: str, kind: str) -> None:
-    from app.services.novel_entities import upsert_entity
+    from app.novel.entities import upsert_entity
 
     upsert_entity(book, name, kind)
 

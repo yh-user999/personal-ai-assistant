@@ -516,7 +516,7 @@ class LegacyNovelRepository:
         return NovelProject(project_id or "default", "默认小说", "default")
 
     def get_chapter(self, chapter_no: str, project_id: str | None = None) -> Chapter | None:
-        from app.services import chapter_analysis
+        from app.novel import chapter_analysis
         note = chapter_analysis.get_chapter_note(chapter_no)
         if not note:
             return None

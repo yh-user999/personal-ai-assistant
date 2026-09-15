@@ -101,7 +101,7 @@ def test_keyword_search_is_scoped(db_env):
 
 def test_group_history_is_retrievable_after_context_expires(db_env):
     """本次改造的目标：内存上下文失效后，仍能从库里检索到本群历史。"""
-    from app.chat import group_context
+    from app.group import context as group_context
 
     asyncio.run(memory_module.write_message(
         "user", "上周我们聊过量子计算的前景", user_id=GUEST, group_id=GROUP

@@ -17,7 +17,7 @@ async def run_one_job(*, repository: SQLiteNovelRepository | None = None, genera
         return None
     try:
         if generator is None:
-            from app.services.novel_writing import continue_story
+            from app.novel.writing import continue_story
             generator = continue_story
         from app.services.llm_usage import logical_request_id
 

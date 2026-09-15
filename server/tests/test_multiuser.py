@@ -253,12 +253,12 @@ def test_user_domain_logs_reports_and_claims_are_isolated(db):
     """工作日志、提醒、情绪、教训以及日报/周报均不跨主体读取或领取。"""
     from datetime import datetime, timedelta, timezone
 
+    from app.fitness import service as fitness
     from app.models.database import connect
+    from app.novel import writing as novel_writing
     from app.services import (
-        fitness,
         initiative,
         mood,
-        novel_writing,
         reminders,
         self_reflect,
         worklog,

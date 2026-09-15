@@ -308,9 +308,9 @@ def _known_index_anchors(ctx: ChatContext) -> set[str]:
     if not ctx.is_owner:
         return set()
     try:
-        from app.services import novel_lexicon
+        from app.novel import lexicon
 
-        return novel_lexicon.known_index_anchors()
+        return lexicon.known_index_anchors()
     except (ImportError, AttributeError, KeyError, TypeError, ValueError) as exc:
         # 词表不可用时仍允许历史中的显式术语安全降级。
         logger.debug("小说锚点词表不可用: %s", exc)
@@ -447,7 +447,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     if ctx.is_group:
         # 群模式：检索限定在本群作用域内（group_id），既能查历史又不会碰到
         # 私聊记忆或别的群；不注入个人画像以外的私人数据、不联网、不做调查。
-        from app.chat import group_context
+        from app.group import context as group_context
 
         group_mems: list[dict[str, Any]] = []
         try:

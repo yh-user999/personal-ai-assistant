@@ -179,7 +179,7 @@ async def continue_story(
 
     authority, _ = _build_authority(novel_facts, facts_text)
     # 二期：前情提要（章节存档非空才出现）——写第 N 段时知道前面各章写了什么
-    from app.services import chapter_analysis
+    from app.novel import chapter_analysis
 
     continuity = chapter_analysis.build_continuity_block()
 

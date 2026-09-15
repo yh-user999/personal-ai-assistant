@@ -1,7 +1,7 @@
 """食品营养目录、营养计算和用户饮食记录测试。"""
 import pytest
 
-from app.services import fitness_nutrition
+from app.fitness import nutrition as fitness_nutrition
 
 
 def usda_oats():

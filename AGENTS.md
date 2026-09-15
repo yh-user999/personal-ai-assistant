@@ -9,16 +9,20 @@
 ## 2. 代码地图
 
 - `server/`：FastAPI 服务端、SQLite、聊天流水线、LLM/Embedding、记忆、知识库、提醒、小说工作台。
-- `server/app/chat/`：聊天上下文、响应规划、检索、提示词、审校、群聊心流和续话。
-- `server/app/chat/pipeline.py`：一轮聊天的主编排入口。
+- `server/app/chat/`：聊天上下文、响应规划、检索、提示词、审校和零 LLM 快捷命令路由。
+- `server/app/chat/pipeline.py`：一轮聊天的编排骨架（私聊全链路 + 群聊分派）。
 - `server/app/chat/retrieval.py`：记忆/知识库/群作用域检索和实时检索分流。
 - `server/app/chat/prompting.py`：系统提示词与作用域边界；身份锚点是“小月”。
 - `server/app/chat/response_plan.py`：响应模式、工具/联网规划和权限校验。
 - `server/app/chat/followup.py`：服务端生成有限的群聊续话元数据。
-- `server/app/chat/heartflow.py`、`attention_drift.py`：群聊拟人节奏和注意力表达规则。
+- `server/app/fitness/`：健身领域包（事实记录、动作目录、训练计划、营养、教练、`api.py`）。
+- `server/app/group/`：群聊领域包（`context`/`heartflow`/`interjection`/`attention`/`care`/`expression`/`profile`/`relationship`，`turn.py` 承载群聊轮次编排）；可达性见 `server/app/group/README.md`。
+- `server/app/novel/`：小说领域包（实体、词典、写作、章节分析、生成、审阅和 `api.py`）。
+- `server/benchmarks/`：离线评分/回放基准工具（如 `social_replay.py` 群聊社交回放）。
 - `docs/QQ_MENTION_REFERENCE.md`：历史 @ 判定语义摘录（fail-closed 判据、组件字段兼容坑、限流取舍），QQ 接入重构时的参考。
 - `docs/QQ_OPS.md`：QQ/NapCat 运维与安全边界；其中 AstrBot 相关章节已失效，需以本文件的“已核对运行事实”为准。
 - `docs/OPS.md`：服务端、Windows 客户端和组件排障；其中部分旧路径需以本文件的“已核对运行事实”为准。
+- `docs/模块开发指南.md`：目录归属、四件套契约（service/api/建表迁移/聊天触发词/测试）与新增模块注册流程；新增领域模块前先读。
 - `spec://tasks.json`：当前任务队列；修改前必须先读，再就地编辑。
 
 ### 2.1 当前请求链路
@@ -30,9 +34,9 @@ QQ/NapCat 登录（保留）
 
 服务端聊天流水线本身完好，但 QQ 入口已断开：
 
-- `server/app/chat/pipeline.py` 是群聊行为编排入口，负责把心流、主动插话、检索、生成和审校串起来。
-- `server/app/chat/group_interjection.py` 负责非直达消息的确定性兴趣评分、冷却、小时上限和 reservation。
-- `server/app/chat/heartflow.py` 负责群级活跃度、能量和连续回复限制；`group_relationship.py` 负责抽象互动熟悉度；`group_context.py` 负责短期话题上下文。
+- `server/app/chat/pipeline.py` 是聊天编排骨架；群聊行为编排拆在 `server/app/group/turn.py`，把心流、主动插话、检索、生成和审校串起来。
+- `server/app/group/interjection.py` 负责非直达消息的确定性兴趣评分、冷却、小时上限和 reservation。
+- `server/app/group/heartflow.py` 负责群级活跃度、能量和连续回复限制；`relationship.py` 负责抽象互动熟悉度；`context.py` 负责短期话题上下文。
 - `server/app/chat/followup.py` 生成有限的 `interaction` 元数据，原先由 QQ 插件的 `FollowupStore` 消费；当前没有消费者。
 - `server/app/chat/review.py` 是候选回复的最终审校出口；没有可靠来源的群外部事实必须降级。
 
@@ -74,6 +78,7 @@ QQ/NapCat 登录（保留）
 - 群作用域不自动注入私聊画像；群级表达学习不应写入个人画像。
 - 服务端与历史 QQ 插件源码均有回归测试、lint 和脱敏检查。
 - MaiBot 与 AstrBot 两套第三方机器人链路已彻底清理，QQ 登录态保留在 NapCat。
+- 代码结构重组完成：健身/群聊/小说各自成领域包（`app/fitness`、`app/group`、`app/novel`），`app/chat/pipeline.py` 只留编排骨架，群聊轮次编排在 `app/group/turn.py`；新增模块流程见 `docs/模块开发指南.md`。
 
 ### 未完成/明确限制
 

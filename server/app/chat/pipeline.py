@@ -9,15 +9,11 @@ import asyncio
 import inspect
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from openai import OpenAIError
 
 from app.chat import (
-    attention_drift,
     followup,
-    group_interjection,
-    heartflow,
     prompting,
     providers,
     response_plan,
@@ -33,6 +29,7 @@ from app.chat.context import (
     ChatRuntime,
     guest_rate_limited,
 )
+from app.group import turn as group_turn
 
 
 def _novel_model(runtime: ChatRuntime) -> str | None:
@@ -444,6 +441,123 @@ def _maybe_capture_chapter(
     )
 
 
+async def _track_unresolved(ctx: ChatContext, runtime: ChatRuntime) -> None:
+    """未解决项检测：仅私聊更新个人未解决清单，群聊保持作用域隔离。"""
+    if ctx.is_group:
+        return
+    services = runtime.services
+    msg = ctx.message
+    if services.unresolved.detect_resolved(msg):
+        await asyncio.to_thread(services.unresolved.resolve_latest, user_id=ctx.uid)
+    elif services.unresolved.detect_unresolved(msg):
+        await asyncio.to_thread(services.unresolved.add_issue, msg, user_id=ctx.uid)
+
+
+async def _persist_user_message(ctx: ChatContext, runtime: ChatRuntime) -> None:
+    """用户消息落库：群聊写入群作用域，私聊保留图片占位与向量缓存逻辑。"""
+    memory = runtime.memory
+    services = runtime.services
+    msg = ctx.message
+    if ctx.is_group:
+        # 群消息落库到本群作用域（group_id 非空），可长期检索；同时留一份
+        # 进程内存上下文，用于接住"那你说说"这类紧邻追问而不必查库。
+        from app.group import context as group_context
+
+        group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
+        with ctx.trace.stage("persistence.user"):
+            await memory.write_message(
+                "user",
+                msg,
+                user_id=ctx.uid,
+                group_id=ctx.group_id,
+                precomputed_vec=memory.take_query_vec(services.sanitize.sanitize(msg)),
+            )
+        return
+    memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
+    with ctx.trace.stage("persistence.user"):
+        await memory.write_message(
+            "user",
+            memory_text,
+            user_id=ctx.uid,
+            precomputed_vec=(
+                None
+                if ctx.image is not None
+                else memory.take_query_vec(services.sanitize.sanitize(msg))
+            ),
+        )
+
+
+async def _finalize_private_turn(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    bundle: retrieval.RetrievalBundle,
+    reply: str,
+    assembly: prompting.PromptAssembly,
+) -> None:
+    """私聊收尾：回复落库、记忆强化、术语留存、事实抽取与章节捕获。"""
+    memory = runtime.memory
+    services = runtime.services
+    msg = ctx.message
+    with ctx.trace.stage("persistence.assistant"):
+        await memory.write_message("assistant", reply, user_id=ctx.uid)
+    if bundle.mems:
+        await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
+    if bundle.definition_term:
+        await asyncio.to_thread(
+            services.jargon.save_term, bundle.definition_term, reply, user_id=ctx.uid
+        )
+
+    retrieval.track_background(
+        runtime,
+        services.fact_extract.maybe_extract_facts(
+            msg, user_id=ctx.uid, request_id=ctx.request_id
+        ),
+    )
+
+    _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
+
+
+async def _apply_reply_reflection(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    bundle: retrieval.RetrievalBundle,
+    reply: str,
+    *,
+    buffered_investigation: bool,
+    group_reflection_enabled: bool,
+) -> str:
+    """候选回复审校分流：群聊轻量审校，私聊结构化审校或调查安全兜底。"""
+    settings = runtime.settings
+    if ctx.is_group and group_reflection_enabled:
+        with ctx.trace.stage("group_reflection"):
+            return await _reflect_group_reply(ctx, runtime, bundle, reply)
+    if not ctx.is_group and settings.reflection_enabled:
+        with ctx.trace.stage("reflection"):
+            return await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
+    if not ctx.is_group and buffered_investigation:
+        # 明确关闭审校也不能把失败的调查宣称为完整核验。
+        ctx.trace.reflection = {"status": "skipped", "triggers": ["review_disabled"]}
+        if bundle.evidence.get("status") != "complete":
+            return review.investigation_safety_fallback(bundle) or reply
+    return reply
+
+
+def _generation_failure_reply(ctx: ChatContext, generation_failed: bool) -> ChatResponse:
+    """生成失败的可见回复：标记 Trace，再按图片/长文/普通失败区分话术。"""
+    ctx.trace.status = "failed"
+    ctx.trace.error_code = "vision_failed" if ctx.image is not None else "llm_failed"
+    if ctx.image is not None:
+        return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
+    return ChatResponse(
+        reply=(
+            "抱歉，长文生成连续两次失败（可能是服务商超时），等两分钟再说「继续」？"
+            if generation_failed
+            else "抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？"
+        ),
+        memories_used=0,
+    )
+
+
 async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
     """执行一轮普通聊天，并在所有返回路径统一落一条 Trace。"""
     try:
@@ -529,145 +643,16 @@ async def _run_chat(
     if routed is not None:
         return routed
 
-    social_score = None
-    social_gate = None
-    social_reservation = None
-    heartflow_decision = None
-    care_decision = None
-    social_scene: dict[str, Any] = {}
-    group_interjection.configure_from_settings(settings)
-    interject_config = group_interjection.config_from_settings(settings)
+    group_state: group_turn.GroupTurnState | None = None
+    interject_config = group_turn.prepare_interject_config(settings)
     if ctx.is_group:
-        from app.chat import group_context
-
-        # 重启后只从既有群记忆恢复有限上下文；不新增原始消息存储。
-        if getattr(settings, "group_state_persistence_enabled", True):
-            await asyncio.to_thread(group_context.hydrate, ctx.group_id)
-        # planner 只读取当前群的有界内存上下文；绝不把私聊历史带进群判断。
-        planner_history = group_context.recent_messages(ctx.group_id)
-        social_scene = group_context.scene_summary(ctx.group_id)
-        heartflow.observe_message(
-            ctx.group_id,
-            directed=ctx.group_directed,
-            atmosphere=str(social_scene.get("atmosphere") or "casual"),
+        group_state, early = await group_turn.prepare_group_scene(
+            ctx, runtime, interject_config
         )
-        social_scene["heartflow"] = heartflow.snapshot(ctx.group_id)
-        robot_service = getattr(services, "robot_state", None)
-        robot_snapshot: dict[str, Any] = {}
-        if robot_service:
-            try:
-                hydrate = getattr(robot_service, "hydrate", None)
-                if callable(hydrate) and getattr(settings, "group_state_persistence_enabled", True):
-                    await asyncio.to_thread(hydrate, ctx.group_id)
-                robot_service.observe_group_message(
-                    ctx.group_id,
-                    atmosphere=str(social_scene.get("atmosphere") or "casual"),
-                )
-                robot_snapshot = robot_service.snapshot(ctx.group_id)
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.debug("机器人群状态更新失败: %s", type(exc).__name__)
-        relationship_service = getattr(services, "group_relationship", None)
-        relationship_snapshot: dict[str, Any] = {}
-        if relationship_service:
-            try:
-                await asyncio.to_thread(
-                    relationship_service.observe_message,
-                    ctx.group_id,
-                    ctx.uid,
-                    msg,
-                    directed=ctx.group_directed,
-                )
-                relationship_snapshot = await asyncio.to_thread(
-                    relationship_service.get_snapshot, ctx.group_id, ctx.uid
-                )
-                social_scene["relationship"] = relationship_snapshot
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.debug("群关系更新失败: %s", type(exc).__name__)
-
-        care_service = getattr(services, "group_care", None)
-        if care_service:
-            try:
-                care_decision = await asyncio.to_thread(
-                    care_service.assess,
-                    ctx.group_id,
-                    ctx.uid,
-                    msg,
-                    relationship_snapshot,
-                    social_scene,
-                    enabled=getattr(settings, "group_care_enabled", True),
-                    cooldown_seconds=getattr(settings, "group_care_cooldown_seconds", 21600.0),
-                    daily_limit=getattr(settings, "group_care_daily_limit", 2),
-                    max_followups=getattr(settings, "group_care_max_followups", 1),
-                )
-                social_scene["care"] = care_decision.as_dict()
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.debug("群聊关怀判断失败: %s", type(exc).__name__)
-
-        # 每条进入服务端的群消息推进序号；主动插话配额只在发送成功后记账。
-        group_interjection.interject_gate.observe_message(ctx.group_id)
-        if not ctx.group_directed:
-            social_score = group_interjection.score_group_interjection(
-                msg,
-                planner_history,
-                social_scene,
-                robot_snapshot,
-                directed=False,
-                threshold=interject_config.threshold,
-            )
-            if interject_config.enabled:
-                heartflow_decision = heartflow.decide(
-                    ctx.group_id,
-                    score=social_score.score,
-                    directed=False,
-                    config=heartflow.config_from_settings(
-                        settings, interject_enabled=interject_config.enabled
-                    ),
-                )
-                social_scene["heartflow_decision"] = heartflow_decision.as_dict()
-                if not heartflow_decision.allowed:
-                    social_score = group_interjection.SocialScore(
-                        score=social_score.score,
-                        eligible=False,
-                        action="ignore",
-                        factors={
-                            **social_score.factors,
-                            "heartflow_propensity": heartflow_decision.propensity,
-                        },
-                        penalties=social_score.penalties,
-                        reasons=tuple(
-                            list(social_score.reasons) + [heartflow_decision.reason]
-                        ),
-                    )
-            social_gate, social_reservation = group_interjection.interject_gate.reserve(
-                ctx.group_id,
-                social_score,
-                config=interject_config,
-            )
-            if not social_gate.allowed:
-                # 评分、shadow、冷却和预算拒绝都在主 LLM 前短路；只保留群作用域事件。
-                ctx.trace.route_name = (
-                    "group:social_shadow"
-                    if social_gate.reason == "shadow_only"
-                    else "group:social_ignore"
-                )
-                ctx.trace.social_judgment = {
-                    **social_score.as_dict(),
-                    "action": "interject" if social_gate.would_allow else "ignore",
-                    "addressed": False,
-                    "atmosphere": str(social_scene.get("atmosphere") or "casual"),
-                    "gate": social_gate.as_dict(),
-                    "interject_enabled": interject_config.enabled,
-                    "care_allowed": bool(care_decision and care_decision.eligible),
-                    "care_kind": str(getattr(care_decision, "kind", "") or ""),
-                    "care_reason": str(getattr(care_decision, "reason", "") or ""),
-                    "heartflow": social_scene.get("heartflow", {}),
-                    "heartflow_decision": social_scene.get("heartflow_decision", {}),
-                }
-                with ctx.trace.stage("social_gate"):
-                    group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
-                    await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
-                heartflow.record_silence(ctx.group_id)
-                return ChatResponse(reply="", memories_used=0)
+        if early is not None:
+            return early
+        planner_history = group_state.planner_history
+        social_scene = group_state.scene
     else:
         planner_history = await asyncio.to_thread(
             memory.get_recent_history,
@@ -703,26 +688,8 @@ async def _run_chat(
         )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
-    if ctx.is_group and care_decision is not None and care_decision.eligible:
-        plan.social_reasons = list(dict.fromkeys(
-            list(plan.social_reasons) + list(care_decision.signals)
-        ))[:8]
-    if social_score is not None:
-        # 通过评分和闸门的非直达消息只能以 interject 进入生成链路，不能被 planner 改成普通回答。
-        plan.social_action = "interject"
-        plan.social_confidence = social_score.score
-        plan.social_reasons = list(social_score.reasons)
-        plan.social_addressed = False
-        plan.social_atmosphere = str(social_scene.get("atmosphere") or "casual")[:32]
-        plan.social_score = social_score.score
-        plan.social_factors = dict(social_score.factors)
-        plan.social_penalties = dict(social_score.penalties)
-        plan.social_gate_reason = social_gate.reason if social_gate else ""
-        plan.social_gate_allowed = bool(social_gate and social_gate.allowed)
-        plan.social_gate_would_allow = bool(social_gate and social_gate.would_allow)
-        plan.social_cooldown_remaining = social_gate.cooldown_remaining if social_gate else 0.0
-        plan.social_hourly_count = social_gate.hourly_count if social_gate else 0
-        plan.social_message_gap = social_gate.message_gap if social_gate else 0
+    if group_state is not None:
+        group_turn.apply_group_plan_fields(plan, group_state)
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
         plan.fact_result = providers.current_datetime(msg)
     # 提示词与检索只读「生效计划」；planner 的判断另存 planned_* 供观察。
@@ -736,27 +703,7 @@ async def _run_chat(
         "fact_result": plan.fact_result,
     }
     if ctx.is_group and plan.social_action:
-        ctx.trace.social_judgment = {
-            "action": plan.social_action,
-            "confidence": plan.social_confidence,
-            "reasons": plan.social_reasons,
-            "addressed": plan.social_addressed,
-            "atmosphere": plan.social_atmosphere,
-            "topic_shift": plan.social_topic_shift,
-            "score": plan.social_score,
-            "factors": plan.social_factors,
-            "penalties": plan.social_penalties,
-            "gate_reason": plan.social_gate_reason,
-            "gate_allowed": plan.social_gate_allowed,
-            "gate_would_allow": plan.social_gate_would_allow,
-            "cooldown_remaining": plan.social_cooldown_remaining,
-            "hourly_count": plan.social_hourly_count,
-            "message_gap": plan.social_message_gap,
-            "interject_enabled": bool(getattr(settings, "group_social_interject_enabled", False)),
-            "care_allowed": bool(care_decision and care_decision.eligible),
-            "care_kind": str(getattr(care_decision, "kind", "") or ""),
-            "care_reason": str(getattr(care_decision, "reason", "") or ""),
-        }
+        group_turn.record_group_social_trace(ctx, plan, group_state, runtime)
 
     # 黑话二期：链接+短句语境推断，仅主人，后台失败静默。
     if ctx.is_owner and settings.healer_enabled:
@@ -773,11 +720,7 @@ async def _run_chat(
                 ),
             )
 
-    if not ctx.is_group:
-        if services.unresolved.detect_resolved(msg):
-            await asyncio.to_thread(services.unresolved.resolve_latest, user_id=ctx.uid)
-        elif services.unresolved.detect_unresolved(msg):
-            await asyncio.to_thread(services.unresolved.add_issue, msg, user_id=ctx.uid)
+    await _track_unresolved(ctx, runtime)
 
     # prepare_turn 保持在事件循环：它内部会调度后台任务（事实桥接），
     # 工作线程里没有可用的 loop；其 DB 开销仅一条小 SELECT + 罕见写入。
@@ -785,16 +728,7 @@ async def _run_chat(
         preparation = retrieval.prepare_turn(ctx, runtime)
         bundle = await retrieval.retrieve(ctx, runtime, preparation)
         if ctx.is_group:
-            drift_block = attention_drift.build_prompt_block(settings)
-            if drift_block:
-                bundle.robot_state = "\n".join(
-                    item for item in (bundle.robot_state, drift_block) if item
-                )
-            heartflow_note = heartflow.get_injection(ctx.group_id)
-            if heartflow_note:
-                bundle.robot_state = "\n".join(
-                    item for item in (bundle.robot_state, heartflow_note) if item
-                )
+            group_turn.apply_group_prompt_injections(ctx, runtime, bundle)
         ctx.trace.retrieval = dict(bundle.trace.get("retrieval") or {})
         ctx.trace.retrieval_trace = dict(bundle.trace)
     # assemble 的注入器均为纯查询（无任务调度），可安全移入工作线程
@@ -807,33 +741,7 @@ async def _run_chat(
             "system_total": len(assembly.system),
         }
 
-    if ctx.is_group:
-        # 群消息落库到本群作用域（group_id 非空），可长期检索；同时留一份
-        # 进程内存上下文，用于接住"那你说说"这类紧邻追问而不必查库。
-        from app.chat import group_context
-
-        group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
-        with ctx.trace.stage("persistence.user"):
-            await memory.write_message(
-                "user",
-                msg,
-                user_id=ctx.uid,
-                group_id=ctx.group_id,
-                precomputed_vec=memory.take_query_vec(services.sanitize.sanitize(msg)),
-            )
-    else:
-        memory_text = f"{msg}\n[图片]" if ctx.image is not None else msg
-        with ctx.trace.stage("persistence.user"):
-            await memory.write_message(
-                "user",
-                memory_text,
-                user_id=ctx.uid,
-                precomputed_vec=(
-                    None
-                    if ctx.image is not None
-                    else memory.take_query_vec(services.sanitize.sanitize(msg))
-                ),
-            )
+    await _persist_user_message(ctx, runtime)
 
     # 事件判断与群聊轻量审校都必须审完再展示，不能先流出候选回复后再试图撤回。
     buffered_investigation = bool(ctx.trace.response_plan.get("investigation_status"))
@@ -849,118 +757,25 @@ async def _run_chat(
         else:
             reply, generation_failed = await _stream_llm_with_fallback(ctx, runtime, assembly, on_delta)
     if reply is None:
-        if social_reservation is not None:
-            group_interjection.interject_gate.release(social_reservation)
-            social_reservation = None
-        ctx.trace.status = "failed"
-        ctx.trace.error_code = "vision_failed" if ctx.image is not None else "llm_failed"
-        if ctx.image is not None:
-            return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
-        return ChatResponse(
-            reply=(
-                "抱歉，长文生成连续两次失败（可能是服务商超时），等两分钟再说「继续」？"
-                if generation_failed
-                else "抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？"
-            ),
-            memories_used=0,
-        )
+        if group_state is not None:
+            group_turn.release_group_reservation(group_state)
+        return _generation_failure_reply(ctx, generation_failed)
 
-    if ctx.is_group and group_reflection_enabled:
-        with ctx.trace.stage("group_reflection"):
-            reply = await _reflect_group_reply(ctx, runtime, bundle, reply)
-    elif not ctx.is_group and settings.reflection_enabled:
-        with ctx.trace.stage("reflection"):
-            reply = await _reflect_and_finalize_reply(ctx, runtime, bundle, reply)
-    elif not ctx.is_group and buffered_investigation:
-        # 明确关闭审校也不能把失败的调查宣称为完整核验。
-        ctx.trace.reflection = {"status": "skipped", "triggers": ["review_disabled"]}
-        if bundle.evidence.get("status") != "complete":
-            reply = review.investigation_safety_fallback(bundle) or reply
+    reply = await _apply_reply_reflection(
+        ctx,
+        runtime,
+        bundle,
+        reply,
+        buffered_investigation=buffered_investigation,
+        group_reflection_enabled=group_reflection_enabled,
+    )
     if on_delta is not None and buffered_reply:
         await on_delta(reply)
 
     if ctx.is_group:
-        from app.chat import group_context
-
-        heartflow.record_reply(
-            ctx.group_id,
-            action=str(plan.social_action or ("answer" if ctx.group_directed else "interject")),
-        )
-        group_context.remember(ctx.group_id, "assistant", reply)
-        with ctx.trace.stage("persistence.assistant"):
-            await memory.write_message(
-                "assistant", reply, user_id=ctx.uid, group_id=ctx.group_id
-            )
-        if social_reservation is not None:
-            if reply.strip():
-                # 只有生成并通过审校的非空回复才提交预留名额。
-                if not group_interjection.interject_gate.commit(social_reservation):
-                    runtime.logger.warning("主动插话 reservation 已过期或重复提交")
-            else:
-                group_interjection.interject_gate.release(social_reservation)
-            social_reservation = None
-        robot_service = getattr(services, "robot_state", None)
-        if robot_service:
-            try:
-                robot_service.record_group_reply(ctx.group_id)
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.debug("机器人群状态记录失败: %s", type(exc).__name__)
-        relationship_service = getattr(services, "group_relationship", None)
-        if relationship_service:
-            try:
-                await asyncio.to_thread(
-                    relationship_service.record_reply,
-                    ctx.group_id,
-                    ctx.uid,
-                    action=plan.social_action or "answer",
-                    success=bool(reply.strip()),
-                )
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.debug("群关系回复记录失败: %s", type(exc).__name__)
-        if care_decision is not None and care_decision.eligible and reply.strip():
-            care_service = getattr(services, "group_care", None)
-            if care_service:
-                try:
-                    await asyncio.to_thread(
-                        care_service.record_sent,
-                        ctx.group_id,
-                        ctx.uid,
-                        care_decision.kind or "initial",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    runtime.logger.debug("群聊关怀记账失败: %s", type(exc).__name__)
-        # 群级表达/黑话学习放后台：不能拖慢群回复，也不写入个人画像。
-        if getattr(settings, "group_expression_learning_enabled", True):
-            from app.services import group_profile_extract
-
-            retrieval.track_background(
-                runtime,
-                group_profile_extract.maybe_extract(
-                    ctx.group_id,
-                    ctx.uid,
-                    msg,
-                    request_id=ctx.request_id,
-                    write_profile=False,
-                ),
-            )
+        await group_turn.finalize_group_turn(ctx, runtime, plan, reply, group_state)
     else:
-        with ctx.trace.stage("persistence.assistant"):
-            await memory.write_message("assistant", reply, user_id=ctx.uid)
-        if bundle.mems:
-            await asyncio.to_thread(memory.bump_importance, [item["id"] for item in bundle.mems])
-        if bundle.definition_term:
-            await asyncio.to_thread(
-                services.jargon.save_term, bundle.definition_term, reply, user_id=ctx.uid
-            )
-
-        retrieval.track_background(
-            runtime,
-            services.fact_extract.maybe_extract_facts(
-                msg, user_id=ctx.uid, request_id=ctx.request_id
-            ),
-        )
-
-        _maybe_capture_chapter(assembly, reply, runtime, ctx.uid, ctx.request_id)
+        await _finalize_private_turn(ctx, runtime, bundle, reply, assembly)
     return ChatResponse(
         reply=reply,
         memories_used=len(bundle.mems),

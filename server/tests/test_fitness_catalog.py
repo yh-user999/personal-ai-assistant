@@ -1,5 +1,5 @@
 """结构化动作目录测试。"""
-from app.services import fitness_catalog
+from app.fitness import catalog as fitness_catalog
 
 
 def test_normalize_free_exercise_db_shape():

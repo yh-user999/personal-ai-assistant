@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.chat.group_interjection import (
+from app.group.interjection import (
     GroupInterjectGate,
     InterjectionConfig,
     score_group_interjection,

@@ -39,9 +39,9 @@ def known_anchors(ctx: McpContext) -> set[str]:
     if not (ctx.is_owner or ctx.role.casefold() == "internal"):
         return set()
     try:
-        from app.services import novel_lexicon
+        from app.novel import lexicon
 
-        return novel_lexicon.known_index_anchors()
+        return lexicon.known_index_anchors()
     except (ImportError, AttributeError, TypeError, ValueError):
         # 词表故障不影响正常原文查询，退化为无锚点检索。
         return set()

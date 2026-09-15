@@ -1,11 +1,11 @@
 """健身 MCP 工具权限、确认和审计测试。"""
 import pytest
 
+from app.fitness import nutrition as fitness_nutrition
 from app.mcp.context import McpContext
 from app.mcp.permissions import McpPermissionError
 from app.mcp.tools import fitness as fitness_tools
 from app.models.database import connect
-from app.services import fitness_nutrition
 
 
 def owner_ctx() -> McpContext:

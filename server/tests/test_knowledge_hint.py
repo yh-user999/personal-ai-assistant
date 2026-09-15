@@ -31,7 +31,7 @@ def _seed_novel(term: str, n: int, doc: str = "小说-测试") -> None:
     登记实体是必须的——_terms 只认实体表里的专名（中文没有分词器，
     按字数硬切会产出「左志诚这段不」这类搜不到东西的片段）。
     """
-    from app.services.novel_entities import upsert_entity
+    from app.novel.entities import upsert_entity
 
     conn = connect()
     for i in range(n):

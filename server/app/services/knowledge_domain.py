@@ -26,8 +26,8 @@ import logging
 import re
 
 from app.models.database import connect
-from app.services import novel_lexicon
-from app.services.novel_lexicon import (  # noqa: F401  兼容旧调用方/测试的再导出
+from app.novel import lexicon
+from app.novel.lexicon import (  # noqa: F401  兼容旧调用方/测试的再导出
     invalidate_dynamic_cache,
     novel_class_words,
     novel_names,
@@ -39,7 +39,7 @@ from app.services.novel_lexicon import (  # noqa: F401  兼容旧调用方/测�
 _novel_names = novel_names
 _novel_class_words = novel_class_words
 _novel_person_names = novel_person_names
-_dynamic_novel_classes = novel_lexicon.dynamic_novel_classes
+_dynamic_novel_classes = lexicon.dynamic_novel_classes
 
 logger = logging.getLogger("assistant.kdomain")
 

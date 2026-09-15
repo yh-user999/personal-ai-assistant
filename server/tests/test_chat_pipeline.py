@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.chat import group_interjection
+from app.group import interjection as group_interjection
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
 import app.chat.pipeline as pipeline_module
@@ -13,12 +13,12 @@ from app.config import settings
 from app.core import knowledge as knowledge_module
 from app.core import memory as memory_module
 from app.models.database import connect, init_db, reset_connections
-from app.services import group_care, group_relationship
+from app.group import care as group_care, relationship as group_relationship
 
 
 @pytest.fixture
 def db_env(tmp_path, monkeypatch):
-    from app.chat import group_context
+    from app.group import context as group_context
 
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "t.db"))
     monkeypatch.setattr(settings, "api_token", "")
@@ -482,7 +482,7 @@ def test_group_chat_persists_into_group_scope_and_skips_personal_hooks(db_env, m
         conn.close()
 
     # 本轮问答同时留在进程内存，供同群紧邻追问使用。
-    from app.chat import group_context
+    from app.group import context as group_context
 
     context = group_context.recent_messages("456")
     assert [item["role"] for item in context] == ["user", "assistant"]

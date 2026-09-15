@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DB_PATH", "./data/assistant.db")
 
+from app.fitness import service as fitness  # noqa: E402
 from app.models.database import init_db  # noqa: E402
-from app.services import fitness  # noqa: E402
 from app.services.fact_extract import upsert_facts  # noqa: E402
 
 

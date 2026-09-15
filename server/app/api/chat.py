@@ -158,7 +158,7 @@ async def observe_group_message(req: ChatRequest, request: Request) -> dict:
     )
     # 群级表达学习放后台：它要调 LLM，不能拖慢消息收录，也不写个人画像。
     if getattr(settings, "group_expression_learning_enabled", True):
-        from app.services import group_profile_extract
+        from app.group import profile as group_profile_extract
 
         _bg_tasks.add(
             task := asyncio.create_task(

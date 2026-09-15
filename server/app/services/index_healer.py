@@ -197,12 +197,12 @@ async def synthesize(
 
 def _already_covered_words() -> frozenset[str]:
     """静态词表已覆盖的词（实体索引/书名）——这些词有专门路径，自愈不抢活。"""
-    from app.services import novel_lexicon
+    from app.novel import lexicon
 
-    words = set(novel_lexicon.ENTITY_KINDS.keys())
-    for group in novel_lexicon.ENTITY_KINDS.values():
+    words = set(lexicon.ENTITY_KINDS.keys())
+    for group in lexicon.ENTITY_KINDS.values():
         words.update(w for w in group if len(w) >= 2)
-    for book in novel_lexicon.novel_names():
+    for book in lexicon.novel_names():
         words.add(book.replace("小说-", "").replace("小说－", ""))
     return frozenset(words)
 

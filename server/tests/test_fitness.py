@@ -7,8 +7,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings
+from app.fitness import service as fitness
 from app.models.database import connect, init_db
-from app.services import fitness
 
 
 @pytest.fixture

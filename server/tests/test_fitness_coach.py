@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.services import fitness_catalog, fitness_coach
+from app.fitness import catalog as fitness_catalog, coach as fitness_coach, training as fitness_training
 
 
 @pytest.mark.asyncio
@@ -38,9 +38,8 @@ async def test_generate_plan_returns_validated_draft_without_persisting(db, monk
             ensure_ascii=False,
         )
 
-    from app.services import fitness_coach as coach
-    monkeypatch.setattr(coach.llm, "chat", fake_chat)
-    result = await coach.generate_plan_draft(
+    monkeypatch.setattr(fitness_coach.llm, "chat", fake_chat)
+    result = await fitness_coach.generate_plan_draft(
         "owner",
         {"goal": "减脂保肌", "sessions_per_week": 3, "session_minutes": 45},
         request_id="fitness-test",
@@ -49,7 +48,6 @@ async def test_generate_plan_returns_validated_draft_without_persisting(db, monk
     assert result["draft"]["days"][0]["exercises"][0]["exercise_id"] == exercise["id"]
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
 
-    from app.services import fitness_training
     assert fitness_training.list_plans("owner") == []
 
 

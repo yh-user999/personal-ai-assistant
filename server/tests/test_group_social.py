@@ -2,8 +2,9 @@
 import json
 from types import SimpleNamespace
 
-from app.chat import group_context, prompting, response_plan
+from app.chat import prompting, response_plan
 from app.chat.context import ChatContext, ChatRequest
+from app.group import context as group_context
 
 
 def _ctx(message="你好", *, directed=True):

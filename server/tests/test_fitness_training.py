@@ -1,7 +1,7 @@
 """结构化训练计划、会话和统计测试。"""
 import pytest
 
-from app.services import fitness_catalog, fitness_training
+from app.fitness import catalog as fitness_catalog, training as fitness_training
 
 
 def _exercise(name: str) -> dict:

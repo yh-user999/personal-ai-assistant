@@ -43,7 +43,7 @@ async def test_search_novel_entities_applies_filters(db, monkeypatch):
         captured.update(query=query, entity_kind=entity_kind, book=book, limit=limit)
         return [{"name": "夜海", "kind": "命丛", "book": "小说-测试", "verified": 1}]
 
-    monkeypatch.setattr(knowledge_tools.novel_entities, "search_entities", fake_search)
+    monkeypatch.setattr(knowledge_tools.entities, "search_entities", fake_search)
     result = await knowledge_tools.search_novel_entities(
         "夜", entity_kind="命丛", book="小说-测试", limit=999, ctx=owner_ctx()
     )

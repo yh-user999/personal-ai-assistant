@@ -37,13 +37,13 @@ from openai import OpenAIError
 
 from app.models.database import connect
 from app.common.timeutil import utc_iso as _now
-from app.services.novel_lexicon import dynamic_novel_classes
+from app.novel.lexicon import dynamic_novel_classes
 
 logger = logging.getLogger("assistant.novel_entities")
 
-# 类名触发词表单一来源在 services/novel_lexicon.py；此处再导出兼容
-# index_healer 与既有测试的 `novel_entities.ENTITY_KINDS` 引用路径。
-from app.services.novel_lexicon import ENTITY_KINDS  # noqa: E402
+# 类名触发词表单一来源在 app/novel/lexicon.py；此处再导出兼容
+# index_healer 与既有测试的 `entities.ENTITY_KINDS` 引用路径。
+from app.novel.lexicon import ENTITY_KINDS  # noqa: E402
 
 # ── 命名句模式：只有这些块需要交给 LLM 读 ────────────────────
 # 中文小说的命名句有稳定特征。用它把 308 块缩到几十块——其余 250 多块

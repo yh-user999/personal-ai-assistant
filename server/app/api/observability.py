@@ -7,9 +7,9 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.auth import require_roles
-from app.chat import group_interjection
 from app.config import settings
 from app.core.memory import owner_user_id
+from app.group import interjection as group_interjection
 from app.services import observability
 
 router = APIRouter()

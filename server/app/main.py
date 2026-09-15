@@ -21,9 +21,7 @@ from app.api import (
     documents,
     events,
     executor,
-    fitness,
     knowledge,
-    novel,
     observability,
     reminders,
     reports,
@@ -33,7 +31,9 @@ from app.auth import authenticate_token, verify_qq_identity
 from app.config import settings
 from app.core import llm
 from app.core.scheduler import SchedulerManager
+from app.fitness import api as fitness
 from app.models.database import init_db
+from app.novel import api as novel
 
 # 统一日志：INFO 级别，含时间/级别/模块
 logging.basicConfig(

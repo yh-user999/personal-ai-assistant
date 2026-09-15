@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.services import group_care
+from app.group import care as group_care
 from app.models.database import connect, init_db, reset_connections
 
 

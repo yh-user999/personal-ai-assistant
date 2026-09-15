@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings
 from app.models.database import connect, init_db
-from app.services import novel_writing
+from app.novel import writing as novel_writing
 
 TZ = ZoneInfo("Asia/Shanghai")
 

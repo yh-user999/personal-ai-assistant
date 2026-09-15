@@ -208,9 +208,12 @@ personal-ai-assistant/
 │   ├── app/api/            # HTTP API
 │   ├── app/chat/           # 聊天上下文、路由、检索和生成编排
 │   ├── app/core/           # LLM、Embedding、记忆、知识库和调度基础设施
+│   ├── app/fitness/        # 健身领域：事实记录、动作目录、训练计划、营养和教练
+│   ├── app/group/          # 群聊领域：上下文、心流、插话、关怀和关系
 │   ├── app/novel/          # 小说项目、章节、生成任务和工作流
-│   ├── app/services/       # 记忆、反思、提醒、文档、小说等业务服务
+│   ├── app/services/       # 跨领域通用服务（对话、提醒、文档等）
 │   ├── app/web/static/     # 聊天页和小说工作台前端
+│   ├── benchmarks/         # 群聊社交等离线评分/回放基准工具
 │   └── tests/              # 服务端隔离测试
 ├── collector/              # Windows 行为采集器和远程执行器客户端
 ├── desktop/                # Windows PySide6 桌面机器人
@@ -218,6 +221,7 @@ personal-ai-assistant/
 ├── common/                 # 跨端共享的脱敏、文件操作和启动器逻辑
 ├── scripts/                # 部署、开机自启、打包和导入脚本
 ├── docs/                   # 部署、运维、QQ、API 和设计文档
+│                          # （模块开发指南.md：目录归属、四件套契约与注册流程）
 ├── .env.example            # 脱敏配置模板
 ├── Makefile                # 常用开发命令
 └── pyproject.toml          # ruff 和 pytest 的仓库级配置

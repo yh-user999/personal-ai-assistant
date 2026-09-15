@@ -132,7 +132,7 @@ def test_real_reply_from_production():
 def test_entity_injection_no_longer_uses_bullets(db):
     """注入内容自己不该用 `- ` 开头——它在示范 LLM 该怎么写。"""
     from app.models.database import connect
-    from app.services import novel_entities as ne
+    from app.novel import entities as ne
 
     conn = connect()
     conn.execute(

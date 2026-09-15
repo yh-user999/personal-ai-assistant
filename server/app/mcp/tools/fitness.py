@@ -5,7 +5,7 @@ from typing import Any
 
 from mcp.server.mcpserver.context import Context
 
-from app.services import fitness_catalog, fitness_nutrition, fitness_training
+from app.fitness import catalog, nutrition, training
 
 from ..audit import audited_tool
 from ..permissions import require_confirmed_action, require_read
@@ -20,7 +20,7 @@ async def get_fitness_summary(
 ) -> dict[str, Any]:
     identity = require_read(ctx)
     days = max(1, min(int(days), 365))
-    return cap_payload(await _to_thread(fitness_training.get_summary, identity.uid, days=days))
+    return cap_payload(await _to_thread(training.get_summary, identity.uid, days=days))
 
 
 @audited_tool
@@ -37,7 +37,7 @@ async def search_fitness_exercises(
     equipment = text(equipment or "", "equipment", max_chars=80) if equipment else ""
     limit = bounded_limit(limit, name="limit", default=20, maximum=50)
     rows = await _to_thread(
-        fitness_catalog.list_exercises,
+        catalog.list_exercises,
         query=query,
         muscle=muscle,
         equipment=equipment,
@@ -60,7 +60,7 @@ async def search_fitness_foods(
     source = text(source or "", "source", max_chars=80) if source else ""
     limit = bounded_limit(limit, name="limit", default=20, maximum=50)
     rows = await _to_thread(
-        fitness_nutrition.list_foods,
+        nutrition.list_foods,
         query=query,
         brand=brand,
         source=source,
@@ -76,7 +76,7 @@ async def get_fitness_nutrition_summary(
 ) -> dict[str, Any]:
     identity = require_read(ctx)
     date = text(date, "date", max_chars=10) if date else None
-    result = await _to_thread(fitness_nutrition.nutrition_summary, identity.uid, date=date)
+    result = await _to_thread(nutrition.nutrition_summary, identity.uid, date=date)
     return cap_payload(result)
 
 
@@ -94,7 +94,7 @@ async def record_fitness_food(
 ) -> dict[str, Any]:
     identity = require_confirmed_action(ctx, confirmed=confirmed)
     result = await _to_thread(
-        fitness_nutrition.log_food,
+        nutrition.log_food,
         identity.uid,
         food_id,
         grams=grams,
@@ -110,7 +110,7 @@ async def record_fitness_food(
 @audited_tool
 async def get_active_fitness_plan(ctx: Context | None = None) -> dict[str, Any]:
     identity = require_read(ctx)
-    return cap_payload({"plan": await _to_thread(fitness_training.get_active_plan, identity.uid)})
+    return cap_payload({"plan": await _to_thread(training.get_active_plan, identity.uid)})
 
 
 @audited_tool
@@ -121,7 +121,7 @@ async def list_fitness_sessions(
 ) -> dict[str, Any]:
     identity = require_read(ctx)
     limit = bounded_limit(limit, name="limit", default=20, maximum=50)
-    rows = await _to_thread(fitness_training.list_sessions, identity.uid, status=status, limit=limit)
+    rows = await _to_thread(training.list_sessions, identity.uid, status=status, limit=limit)
     return cap_payload({"status": status, "limit": limit, "results": rows})
 
 
@@ -137,7 +137,7 @@ async def record_fitness_measurement(
 ) -> dict[str, Any]:
     identity = require_confirmed_action(ctx, confirmed=confirmed)
     result = await _to_thread(
-        fitness_training.record_measurement,
+        training.record_measurement,
         identity.uid,
         kind=text(kind, "kind", max_chars=40),
         value=value,
@@ -160,7 +160,7 @@ async def start_fitness_session(
 ) -> dict[str, Any]:
     identity = require_confirmed_action(ctx, confirmed=confirmed)
     result = await _to_thread(
-        fitness_training.start_session,
+        training.start_session,
         identity.uid,
         plan_id=plan_id,
         plan_day_id=plan_day_id,
@@ -189,7 +189,7 @@ async def log_fitness_set(
 ) -> dict[str, Any]:
     identity = require_confirmed_action(ctx, confirmed=confirmed)
     result = await _to_thread(
-        fitness_training.log_set,
+        training.log_set,
         identity.uid,
         session_id,
         exercise_id,
@@ -213,7 +213,7 @@ async def complete_fitness_session(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     identity = require_confirmed_action(ctx, confirmed=confirmed)
-    result = await _to_thread(fitness_training.complete_session, identity.uid, session_id)
+    result = await _to_thread(training.complete_session, identity.uid, session_id)
     return cap_payload({"completed": True, "session": result})
 
 

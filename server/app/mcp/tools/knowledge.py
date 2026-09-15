@@ -7,7 +7,8 @@ from mcp.server.mcpserver.context import Context
 
 from app.chat.retrieval import build_search_query
 from app.core import knowledge, memory
-from app.services import knowledge_domain, novel_entities
+from app.novel import entities
+from app.services import knowledge_domain
 
 from ..audit import audited_tool
 from ..permissions import require_read
@@ -66,7 +67,7 @@ async def search_novel_entities(
     n = bounded_count(limit, "limit", default=50, maximum=50)
     kind = (entity_kind or "").strip()[:40]
     book_name = (book or "").strip()[:160]
-    rows = novel_entities.search_entities(term, entity_kind=kind or None, book=book_name or None, limit=n)
+    rows = entities.search_entities(term, entity_kind=kind or None, book=book_name or None, limit=n)
     return cap_payload({
         "query": term,
         "entity_kind": kind or None,

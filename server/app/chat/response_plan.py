@@ -699,7 +699,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
     group_scene: dict[str, Any] = {}
     if is_group:
         try:
-            from app.chat import group_context
+            from app.group import context as group_context
 
             group_scene = group_context.scene_summary(getattr(ctx, "group_id", ""))
         except (AttributeError, RuntimeError, TypeError, ValueError):

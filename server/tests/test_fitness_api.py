@@ -76,8 +76,8 @@ def test_fitness_generate_is_draft_only(tmp_path, monkeypatch):
     async def fake_generate(*args, **kwargs):
         return {"draft": {"name": "草案", "days": []}, "candidate_count": 8}
 
-    from app.api import fitness as fitness_api
-    monkeypatch.setattr(fitness_api.fitness_coach, "generate_plan_draft", fake_generate)
+    from app.fitness import api as fitness_api
+    monkeypatch.setattr(fitness_api.coach, "generate_plan_draft", fake_generate)
     with TestClient(app) as client:
         response = client.post("/api/fitness/plans/generate", json={"goal": "增肌"})
         assert response.status_code == 200

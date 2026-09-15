@@ -57,6 +57,7 @@ QQ/NapCat 登录（保留）
 - 本次核对的实际部署仓库：`/opt/personal-ai-assistant`。
 - FastAPI 实际运行目录：`/opt/personal-ai-assistant/server`，端口 8000；当前由 systemd 单元 `personal-assistant.service` 管理（`User=paa`、`EnvironmentFile` 提供 `PORT=8000`、enabled 开机自启），手工 `setsid nohup` 方式已停用。
 - 服务日志：`journalctl -u personal-assistant`（旧 `/tmp/assistant.log` 已停止写入）；检查优先使用 `/api/health` 和 `/api/ready`。
+- 部署仓库同步：`paa` 直接对 `/opt/personal-ai-assistant` 执行 `git pull --ff-only`（SSH 凭据在该仓库 `.ssh/`，权限 600、直连 GitHub、不进入 Git）；命令见第 6 节。
 - 最近已部署功能提交：`7c934b1`（群聊通用上下文续话）。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
 
 ### QQ / NapCat（与服务器同机，2026-09-15 核对）
@@ -132,6 +133,13 @@ journalctl -u personal-assistant -n 50 --no-pager
 ```bash
 docker ps -a --format '{{.Names}}|{{.Status}}'
 docker inspect napcat --format 'status={{.State.Status}} restart={{.HostConfig.RestartPolicy.Name}}'
+```
+
+同步部署仓库到最新提交（以 `paa` 直连拉取；仅当更新包含 `server/` 代码时才重启服务）：
+
+```bash
+sudo -u paa -H git -C /opt/personal-ai-assistant pull --ff-only origin main
+systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ```
 
 ## 7. 实时记录协议
@@ -259,6 +267,14 @@ docker inspect napcat --format 'status={{.State.Status}} restart={{.HostConfig.R
 
 - 代码/配置：终止 26 个自 2026-08-26 起挂死的部署/更新进程（`git fetch`/`git pull` 卡死链，个别脚本的后续命令含会误杀服务进程的 `pkill`）；清理 root crontab 中 4 条指向已删脚本与 `/opt/astrbot` 的失效任务（保留 `jd-shield`、`jd-qqwatch`、`jd-backup`）；改造 `/usr/local/bin/jd-backup.sh`（去掉已删路径引用，备份前缀改为 `napcat-` 并纳入 7 份轮换）；将 AstrBot 保活报告等敏感残留与 `/opt/astrbot`、`/opt/health-dash`、`/opt/astrbot_plugin_meme_manager`、`/opt/meme.tar.gz` 转存 `0700` 备份后清除；服务端从手工进程切换为 systemd 单元 `personal-assistant.service`（`User=paa`、`EnvironmentFile` 固定端口 8000、enabled）；同步修正本文件与 `docs/OPS.md`、`docs/DEPLOYMENT.md`、`docs/QQ_OPS.md`、`pyproject.toml` 中的失效注释。
 - 验证：服务端 1672 passed、`ruff` 全通过；crontab 差异恰为 4 行删除；`jd-backup.sh` 语法检查与实跑通过（新备份 3.7K）；systemd 启动与 restart 后 `/api/health`、`/api/ready` 全绿，进程以 `paa` 运行、journal 无错误；staged 脱敏扫描 0 命中。
-- 提交：待本轮提交（提交后补记 hash）。
+- 提交：`a38db20`；已推送 GitHub `origin/main`，部署仓库已 fast-forward 同步。
 - 运行状态：FastAPI 由 systemd 托管于 8000；NapCat 与 searxng 未受影响；手工 `setsid nohup` 启动方式停用，`/tmp/assistant.log` 停止写入。
+- 未完成：QQ 入口仍无下游消费者；新接入架构待决策；`/var/backups/` 中 6 份含已删 AstrBot 数据的旧备份（约 1.2G）是否清理待用户决定。
+
+### 2026-09-15 — 部署仓库同步通道与清理收尾
+
+- 代码/配置：为部署用户 `paa` 配置仅限本机的 GitHub SSH 通道（`/opt/personal-ai-assistant/.ssh/`：SSH 私钥、known_hosts、直连配置，600/700；不使用 ProxyCommand——`sudo -u paa -H` 下 `SHELL=/usr/sbin/nologin` 会让代理命令无法执行）；`.gitignore` 新增 `.ssh/` 防护；修正部署仓库 `.git` 内 1089 个历史 root 属主对象为 `paa`；部署仓库残留（已删 `qq/` 空壳、4 份 `.env.bak-*`）转存 `/opt/cleanup-backup-20260915T090059Z/paa-env-baks/`（0700），不进入 Git。
+- 验证：`paa` 执行 `git ls-remote` 与 `git pull --ff-only` 成功（`36c2c50`→`a38db20`，fast-forward，5 文件）；部署仓库 HEAD 与 `origin/main` 一致、拉取文件属主为 `paa`、`git status` 干净且 `.ssh/` 被忽略；`/api/health` 返回 ok；staged 脱敏扫描 0 命中。
+- 提交：`a38db20`（主改动）；本收尾改动待本次脱敏扫描后提交。
+- 运行状态：systemd 服务保持运行，本轮无业务代码变更、无需重载。
 - 未完成：QQ 入口仍无下游消费者；新接入架构待决策；`/var/backups/` 中 6 份含已删 AstrBot 数据的旧备份（约 1.2G）是否清理待用户决定。

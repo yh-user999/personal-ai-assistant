@@ -16,6 +16,10 @@ env/
 .env.*
 !.env.example
 
+# SSH 凭据（部署密钥、known_hosts 等，绝不入库；
+# 部署仓库 /opt/personal-ai-assistant/.ssh/ 依赖此条）
+.ssh/
+
 # 数据文件（数据库/向量索引/日志）
 # 注意 -shm/-wal：WAL 模式下的边文件不匹配 *.db，漏掉它们会把
 # 几十 MB 的共享内存/预写日志推进仓库

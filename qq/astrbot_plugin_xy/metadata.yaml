@@ -1,9 +1,0 @@
-name: astrbot_plugin_xy
-display_name: 小月接入
-desc: 小月 QQ 接入：私聊按角色分流鉴权；可切换为白名单群聊机器人，群作用域使用访客身份并隔离个人数据。
-version: v1.4.3
-author: xy
-repo: https://github.com/yh-user999/personal-ai-assistant
-astrbot_version: ">=4.14.0"
-support_platforms:
-  - aiocqhttp

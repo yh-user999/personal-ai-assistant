@@ -4,7 +4,7 @@
 
 ## 1. 项目一句话
 
-这是一个“服务器大脑 + 可选 Windows 客户端 + QQ/MaiBot 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行；当前 QQ 由 NapCat + MaiBot 接入，AstrBot 保留为旧链路回滚方案。
+这是一个“服务器大脑 + 可选 Windows 客户端 + QQ 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行。QQ 侧当前只保留 NapCat 登录与 OneBot 能力，MaiBot 与 AstrBot 两套第三方机器人链路已于 2026-09-15 彻底删除，新的 QQ 接入方案尚未确定。
 
 ## 2. 代码地图
 
@@ -16,58 +16,35 @@
 - `server/app/chat/response_plan.py`：响应模式、工具/联网规划和权限校验。
 - `server/app/chat/followup.py`：服务端生成有限的群聊续话元数据。
 - `server/app/chat/heartflow.py`、`attention_drift.py`：群聊拟人节奏和注意力表达规则。
-- `qq/astrbot_plugin_xy/`：AstrBot QQ 插件；负责 QQ 事件门禁、群白名单、@/Reply/前缀、短时上下文窗口、HTTP 调用和发送回复。
-- `docs/QQ_OPS.md`：QQ/NapCat/AstrBot 运维与安全边界。
+- `qq/astrbot_plugin_xy/`：历史 AstrBot QQ 插件源码；**当前无对应运行环境**（AstrBot 已删除），保留作为群门禁/续话窗口的参考实现。
+- `deploy/maibot/`：历史 MaiBot 部署与配置脚本；**当前无对应运行环境**（MaiBot 已删除）。
+- `docs/QQ_OPS.md`：QQ/NapCat 运维与安全边界；其中 AstrBot 相关章节已失效，需以本文件的“已核对运行事实”为准。
 - `docs/OPS.md`：服务端、Windows 客户端和组件排障；其中部分旧路径需以本文件的“已核对运行事实”为准。
 - `spec://tasks.json`：当前任务队列；修改前必须先读，再就地编辑。
 
-### 2.1 当前请求链路与职责归属
+### 2.1 当前请求链路
 
 ```text
-QQ/NapCat 事件
-  → AstrBot xy 插件：群白名单、真实 @/Reply/前缀、短时上下文、QQ 签名
-  → /api/chat：认证与 ChatContext
-  → routing：确定性快捷命令
-  → pipeline：群心流/关系/插话闸门、响应规划、检索、生成、审校
-  → ChatResponse：正文 + 有界 interaction 元数据
-  → QQ 插件发送回复
+QQ/NapCat 登录（保留）
+  → OneBot 事件（当前无下游消费者）
 ```
 
-当前职责边界：
+服务端聊天流水线本身完好，但 QQ 入口已断开：
 
-- QQ 插件负责协议适配和第一道 fail-closed 门禁，不应继续承载完整的群聊人格判断。
 - `server/app/chat/pipeline.py` 是群聊行为编排入口，负责把心流、主动插话、检索、生成和审校串起来。
 - `server/app/chat/group_interjection.py` 负责非直达消息的确定性兴趣评分、冷却、小时上限和 reservation。
 - `server/app/chat/heartflow.py` 负责群级活跃度、能量和连续回复限制；`group_relationship.py` 负责抽象互动熟悉度；`group_context.py` 负责短期话题上下文。
-- `server/app/chat/followup.py` 与 QQ 插件的 `FollowupStore` 通过有限 `interaction` 字段协作，不保存原始消息或隐藏推理。
+- `server/app/chat/followup.py` 生成有限的 `interaction` 元数据，原先由 QQ 插件的 `FollowupStore` 消费；当前没有消费者。
 - `server/app/chat/review.py` 是候选回复的最终审校出口；没有可靠来源的群外部事实必须降级。
 
-已知重复决策点：
+### 2.2 新架构待决问题（2026-09-15）
 
-- QQ 插件先判定是否直达，服务端随后再次判定 `group_directed`/`social_action`；未来应收敛为“插件做结构化入口，服务端做统一群聊决策”。
-- `robot_state`、`heartflow`、`group_interjection` 都含活跃度/节奏信息；未来应由一个 GroupAgent 状态层统一读写。
-- 追问状态在 QQ 插件内存和服务端 `interaction` 元数据之间分工；后续应保留插件的低成本门禁，把业务判定逐步移到服务端。
-- 实际运行有两个必须同步的副本：Git 仓库 `/opt/personal-ai-assistant` 与 AstrBot 插件 `/opt/astrbot/data/plugins/astrbot_plugin_xy`。
+清理后需要重新决定的点，尚未有结论：
 
-建议的无行为变化收敛顺序：
-
-1. 先把群聊决策输入统一成一个 `GroupDecision`，保留现有默认静默和白名单行为；
-2. 再把心流、关系、插话闸门合并到单一状态接口；
-3. 最后让插件只负责事件归一化和发送，服务端统一决定 `reply/wait/pass/interject`。
-
-### 2.2 当前活动 QQ 链路（2026-09-13）
-
-```text
-QQ/NapCat 登录
-  → NapCat 本机正向 OneBot WebSocket
-  → MaiBot NapCat adapter
-  → MaiBot core
-```
-
-- MaiBot 使用 host 网络连接 NapCat 本机正向 WebSocket；WebUI 仅绑定本机端口。
-- 当前 MaiBot adapter 已切为群聊空黑名单，所有群消息可进入 adapter；是否实际回复仍由 MaiBot 核心聊天策略决定。
-- `astrbot.service` 当前停止但未禁用；原 NapCat→AstrBot 反向 WebSocket 配置已备份，可按回滚步骤恢复。
-- MaiBot 已配置可用的 Gemini provider/model；容器内最小 API 请求已通过，但 QQ 链路连接成功和 API 可用仍不等于身份回答和上下文续话验收通过。
+1. QQ 接入由自建轻量 OneBot 网关承担，还是重新引入第三方框架。
+2. 群聊“是否发言”的决策放在网关还是服务端，避免再次出现两层重复判定。
+3. “仅真实 @ 回复”作为确定性门禁的落点，以及 @ 后是否强制发送。
+4. `qq/astrbot_plugin_xy/` 与 `deploy/maibot/` 是保留为参考、改造复用，还是删除。
 
 ## 3. 已核对运行事实（2026-09-13）
 
@@ -79,17 +56,15 @@ QQ/NapCat 登录
 - 服务日志：`/tmp/assistant.log`；检查优先使用 `/api/health` 和 `/api/ready`。
 - 最近已部署功能提交：`7c934b1`（群聊通用上下文续话）。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
 
-### QQ / AstrBot（与服务器同机）
+### QQ / NapCat（与服务器同机，2026-09-15 核对）
 
-- AstrBot 工作目录：`/opt/astrbot`。
-- systemd 服务：`astrbot.service`，工作目录 `/opt/astrbot`，用 `systemctl restart astrbot` 重载。
-- AstrBot 实际插件副本：`/opt/astrbot/data/plugins/astrbot_plugin_xy`。
-- AstrBot 配置：`/opt/astrbot/data/config/astrbot_plugin_xy_config.json`；该文件含敏感配置，禁止提交或在日志中打印原文。
-- 当前已核对的安全门禁：`assistant_mode=group`、`group_require_mention=true`、`group_followup_enabled=true`、续话窗口 90 秒、每次最多 1 条、主动插话关闭。
-- AstrBot 配置中的 `group_allowed_ids` 仍是指定群白名单；当前 QQ 由 MaiBot 接管，实际生效的群范围由 MaiBot NapCat adapter 的群聊空黑名单控制。
-- QQ 插件更新不能只更新 `/opt/personal-ai-assistant/qq/`：必须从仓库同步后，把已审查的插件文件同步到 AstrBot 实际副本，再重启/重载 `astrbot.service`。
-- 当前 QQ 已切换到 `/opt/maibot` 的 MaiBot 核心：NapCat 本机正向 WebSocket → MaiBot NapCat adapter；`astrbot.service` 停止但未禁用。
-- MaiBot WebUI 当前实际监听本机 8001；NapCat 正向 WebSocket 使用本机 3001；两者均未暴露公网。
+- NapCat 容器：`napcat`，`network=host`，`restart=always`；持久化目录 `/opt/napcat/{qq_config,cache,config,qq-login}`。
+- QQ 登录态保留在 `/opt/napcat/qq_config`，清理过程中未重新扫码。
+- NapCat OneBot 配置中当前只保留 `httpServers[xy-push]`；原 `websocketServers[maibot]` 与 `wsReverse/websocketClients[astrbot]` 条目已删除。
+- 本机端口现状：`6099`（NapCat WebUI）开放；`3001`（原 MaiBot 正向 WebSocket）已随配置删除而关闭。
+- MaiBot 与 AstrBot 已彻底删除：容器 `maim-bot-core`、镜像 `sengokucola/maibot:latest`、目录 `/opt/maibot`、`astrbot.service` 单元与 `/opt/astrbot` 均不存在。
+- 清理前的配置类文件已转存到服务器本地 `0700` 备份目录 `/opt/cleanup-backup-<UTC 时间戳>/`，仅保留在服务器，不进入 Git。
+- 当前运行中的容器只有 `napcat` 与 `searxng`。
 
 ## 4. 当前功能边界
 
@@ -98,20 +73,18 @@ QQ/NapCat 登录
 - 身份问题走确定性口径：群聊问“你是谁/你叫什么”等应直接回答“我是小月”。
 - 群聊短时上下文续话：同一群、同一用户在小月成功直达回复后的短窗口内，可免 @ 续接一次；服务端显式澄清提示支持书名、链接、简介等补充请求。
 - 群作用域不自动注入私聊画像；群级表达学习不应写入个人画像。
-- `group_allowed_ids=*` 的配置解析和安全回归测试已实现，但实际运行配置尚未改为 `*`。
-- 服务端与 QQ 插件均有回归测试、lint 和脱敏检查。
-- MaiBot 核心已旁路部署到 `/opt/maibot`，仅本机 WebUI 可访问。
-- 当前 QQ 已由 MaiBot NapCat adapter 接管，AstrBot 保留为停止状态的回滚链路。
-- MaiBot WebUI 已保存 Gemini provider 与 `gemini-3.8-flash-high` 模型；容器内 `/v1/models` 与最小聊天请求均验证通过。
+- 服务端与历史 QQ 插件源码均有回归测试、lint 和脱敏检查。
+- MaiBot 与 AstrBot 两套第三方机器人链路已彻底清理，QQ 登录态保留在 NapCat。
 
 ### 未完成/明确限制
 
-- MaiBot adapter 已可接收非黑名单群消息，但核心回复策略仍可能因频率门、Focus/wait 状态、空闲退避或模型选择 wait/no_action 而不发言；当前没有“每条消息必回”保证。
-- “非 @ 不插话”尚未应用：当前实现中把 `talk_value` 设为 0 会先进入静默消费分支，并连带跳过 @ 强制触发，不能直接作为“只有 @ 才回”的配置。
+- QQ 入口当前断开：NapCat 仍在线，但没有任何下游消费 OneBot 事件，群聊不会有任何回复。
+- 新 QQ 接入架构尚未确定；“仅真实 @ 回复”的确定性门禁、以及决策放在网关还是服务端，都还没有结论。
+- FastAPI 当前未运行（`/api/health` 无响应），需要时按第 6 节手工启动。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
-- 原 AstrBot/FastAPI 链路曾出现上游 LLM HTTP 429（月度额度耗尽）；当前 MaiBot Gemini 最小请求已通过，但仍不把 QQ 手工验收提前视为通过。
-- 当前 Dynamic Spec 中仍有 QQ 身份/通用上下文续话复测，以及其他群真实消息回复验收两个方向。
-- MaiBot 当前已连接 NapCat 并接管 QQ，Gemini provider 已可用，群聊空黑名单已加载；不得把适配器连接、群范围配置或 API 直测成功误认为身份回答、通用续话或其他群实际回复验收通过。
+- 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
+- 群聊真实消息回复、身份回答与通用续话验收全部未通过，且在新 QQ 接入方案落地前没有运行环境可验收。
+- `qq/astrbot_plugin_xy/` 与 `deploy/maibot/` 仍在仓库中，但已无对应运行环境，不要按其中的部署路径操作。
 
 ## 5. 安全与隐私硬规则
 
@@ -119,7 +92,7 @@ QQ/NapCat 登录
 - 群聊请求始终使用 QQ 访客身份；不得把群消息当成主人身份，不得读取或注入私聊画像、主人事实或其他群数据。
 - 修改服务器代码、配置、部署脚本或相关文档后：先做 staged 脱敏扫描，再提交并推送 GitHub；向用户报告提交号、远程同步状态和 Windows/部署端可执行的 GitHub 拉取命令。
 - Windows 端更新来源统一为 GitHub：`git pull --ff-only origin main`；不要从服务器工作区直接复制到 Windows。
-- 不要把实际配置文件复制进仓库；配置只在部署目录或 AstrBot 控制台维护。
+- 不要把实际配置文件复制进仓库；配置只在部署目录或对应组件控制台维护。清理备份目录 `/opt/cleanup-backup-*` 同样禁止进入 Git。
 - 不要使用破坏性 Git 操作，不要未经用户明确要求强推或修改历史。
 
 ## 6. 常用验证命令
@@ -141,7 +114,7 @@ curl -s http://localhost:8000/api/health
 curl -s http://localhost:8000/api/ready
 ```
 
-QQ 插件：
+历史 QQ 插件源码（仓库内仍可跑测试，但无运行环境）：
 
 ```bash
 cd qq
@@ -149,12 +122,11 @@ cd qq
 ../server/.venv/bin/ruff check astrbot_plugin_xy
 ```
 
-检查 AstrBot 实际副本是否和仓库一致时，只比较哈希/文件内容摘要，不打印配置原文：
+检查 QQ 侧运行状态（当前只剩 NapCat）：
 
 ```bash
-sha256sum /opt/personal-ai-assistant/qq/astrbot_plugin_xy/main.py \
-  /opt/astrbot/data/plugins/astrbot_plugin_xy/main.py
-systemctl show astrbot -p ActiveState -p SubState -p MainPID
+docker ps -a --format '{{.Names}}|{{.Status}}'
+docker inspect napcat --format 'status={{.State.Status}} restart={{.HostConfig.RestartPolicy.Name}}'
 ```
 
 ## 7. 实时记录协议
@@ -245,3 +217,11 @@ systemctl show astrbot -p ActiveState -p SubState -p MainPID
 - 提交：`6bb6490`；已完成 staged 脱敏扫描、推送 GitHub，并同步部署仓库。
 - 运行状态：未重载，未改变服务。
 - 未完成：尚未应用“仅 @ 回复”方案；真实 QQ 回复、身份回答和通用续话验收仍按用户暂缓保持 blocked。
+
+### 2026-09-15 — 清理 MaiBot 与 AstrBot 机器人链路
+
+- 代码/配置：先把 AstrBot/MaiBot/NapCat 配置类文件转存到服务器本地 `0700` 备份目录（34 个文件，不进入 Git）；删除 NapCat 中 `websocketServers[maibot]`、`wsReverse/websocketClients[astrbot]` 条目，保留 `httpServers[xy-push]`；更新本文件的链路、运行事实、功能边界与验证命令。
+- 验证：NapCat 重启后 `running=true`、登录态目录完整、未出现二维码或掉线；本机 `6099` 开放、`3001` 已关闭；容器仅剩 `napcat` 与 `searxng`；`astrbot*` systemd 单元数为 0；`/opt/maibot` 与 `/opt/astrbot` 均已不存在；根分区占用由 32G 降至 28G。
+- 提交：文档改动待本次脱敏扫描后提交。
+- 运行状态：删除容器 `maim-bot-core`、镜像 `sengokucola/maibot:latest`、目录 `/opt/maibot`；`systemctl disable --now astrbot` 并删除单元与 `/opt/astrbot`；删除从未启动的空容器 `naughty_gould`；NapCat 与 searxng 保持运行；FastAPI 本轮未启动。
+- 未完成：QQ 入口当前无下游消费者，群聊不会回复；新 QQ 接入架构、“仅真实 @ 回复”门禁落点，以及 `qq/astrbot_plugin_xy/`、`deploy/maibot/` 的去留均待决策。

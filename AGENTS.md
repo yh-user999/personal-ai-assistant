@@ -244,3 +244,11 @@ docker inspect napcat --format 'status={{.State.Status}} restart={{.HostConfig.R
 - 提交：本次文档改动待脱敏扫描后提交。
 - 运行状态：FastAPI 已在 8000 端口运行；NapCat 与 searxng 保持运行；未新增任何 QQ 侧组件。
 - 未完成：QQ 入口仍无下游消费者；新架构三项待决问题未定，群聊真实消息验收继续 blocked。
+
+### 2026-09-15 — 服务端代码结构重组（领域包 + pipeline 瘦身）
+
+- 代码/配置：新建 `server/app/fitness/`（7 个文件）与 `server/app/group/`（含 `turn.py`、`README.md`）领域包，迁入原 `app/api`、`app/services`、`app/chat` 中健身/群聊/小说专属模块并修正全部 import 与 monkeypatch 目标；`social_replay.py` 等基准工具移入 `server/benchmarks/`；`server/app/chat/pipeline.py` 从 1115 行降到 783 行，群聊轮次编排（前置场景、计划字段、提示注入、收尾记账）落到 `server/app/group/turn.py`；新增 `docs/模块开发指南.md`（目录归属、四件套契约、注册流程、待建模块清单）；README 目录结构与本文件代码地图同步。
+- 验证：服务端 1672 passed（与基线一致）、`ruff check app tests` 全通过；工作区数据库基线未变（`knowledge_chunks`=3617、`memories`=955、`novel_projects`=7、`novel_entities`=160、`fitness_facts`=21、`reminders`=7、schema=17、integrity=ok）；staged 脱敏扫描 0 命中。部署库 `/opt/personal-ai-assistant/server/data/assistant.db` 是长期独立演进的历史数据集（与工作区副本计数不同属既有事实），本轮未改动两者内容。
+- 提交：`d71cc0f`；已推送 GitHub `origin/main`，部署仓库 `/opt/personal-ai-assistant` 已 fast-forward 同步。
+- 运行状态：FastAPI 已按显式端口方式从部署目录重启于 8000；`/api/health` 200，`/api/ready` 就绪（database schema 17、integrity ok，scheduler/llm/vector 全 ok，无 failures/degraded）。
+- 未完成：QQ 入口仍无下游消费者；新接入架构三项待决问题未定，群聊真实消息验收继续 blocked。

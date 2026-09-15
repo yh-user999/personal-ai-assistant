@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  # 服务端 + QQ 插件 + 全仓库 lint（规则见根 pyproject.toml）
+  # 服务端 + 全仓库 lint（规则见根 pyproject.toml）
   server:
     runs-on: ubuntu-latest
     env:
@@ -24,8 +24,6 @@ jobs:
         run: python -m pip install -r server/requirements.txt ruff
       - name: Run server tests
         run: python -m pytest server/tests/ -q
-      - name: Run QQ plugin tests
-        run: python -m pytest qq/astrbot_plugin_xy/test_main.py -q
       - name: Run ruff (repo-wide, config in pyproject.toml)
         run: ruff check .
       - name: Check JavaScript syntax

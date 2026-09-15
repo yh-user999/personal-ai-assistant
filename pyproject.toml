@@ -3,7 +3,6 @@
 # pytest 仅配置通用行为；各端测试用显式路径运行：
 #   python -m pytest server/tests/ -q
 #   python -m pytest desktop/tests/ -q（需 PySide6）
-#   python -m pytest qq/astrbot_plugin_xy/test_main.py -q
 
 [tool.ruff]
 # 目标范围：全部 Python 代码（server/collector/desktop/common/qq/scripts）。

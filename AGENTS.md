@@ -273,8 +273,8 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 
 ### 2026-09-15 — 部署仓库同步通道与清理收尾
 
-- 代码/配置：为部署用户 `paa` 配置仅限本机的 GitHub SSH 通道（`/opt/personal-ai-assistant/.ssh/`：SSH 私钥、known_hosts、直连配置，600/700；不使用 ProxyCommand——`sudo -u paa -H` 下 `SHELL=/usr/sbin/nologin` 会让代理命令无法执行）；`.gitignore` 新增 `.ssh/` 防护；修正部署仓库 `.git` 内 1089 个历史 root 属主对象为 `paa`；部署仓库残留（已删 `qq/` 空壳、4 份 `.env.bak-*`）转存 `/opt/cleanup-backup-20260915T090059Z/paa-env-baks/`（0700），不进入 Git。
-- 验证：`paa` 执行 `git ls-remote` 与 `git pull --ff-only` 成功（`36c2c50`→`a38db20`，fast-forward，5 文件）；部署仓库 HEAD 与 `origin/main` 一致、拉取文件属主为 `paa`、`git status` 干净且 `.ssh/` 被忽略；`/api/health` 返回 ok；staged 脱敏扫描 0 命中。
-- 提交：`a38db20`（主改动）；本收尾改动待本次脱敏扫描后提交。
+- 代码/配置：为部署用户 `paa` 配置仅限本机的 GitHub SSH 通道（`/opt/personal-ai-assistant/.ssh/`：SSH 私钥、known_hosts、直连配置，600/700；不使用 ProxyCommand——`sudo -u paa -H` 下 `SHELL=/usr/sbin/nologin` 会让代理命令无法执行）；`.gitignore` 新增 `.ssh/` 防护；修正部署仓库 `.git` 内 1089 个历史 root 属主对象为 `paa`；部署仓库残留（已删 `qq/` 空壳、4 份 `.env.bak-*`）转存 `/opt/cleanup-backup-20260915T090059Z/paa-env-baks/`（0700），不进入 Git；处置 `/var/backups` 中 6 份 AstrBot 旧备份（用户确认保留最新 9/15 快照 202M，清理 9/10–9/14 五份约 1G；删除前留存清单，全部加固 600）。
+- 验证：`paa` 执行 `git ls-remote` 与 `git pull --ff-only` 成功（`36c2c50`→`a38db20`，fast-forward，5 文件）；部署仓库 HEAD 与 `origin/main` 一致、拉取文件属主为 `paa`、`git status` 干净且 `.ssh/` 被忽略；保留份备份 gzip 完整性校验通过；`/api/health` 返回 ok；staged 脱敏扫描 0 命中。
+- 提交：`a38db20`（主改动）、`c7d6162`（同步通道与收尾记录）；备份处置随本次补充提交。
 - 运行状态：systemd 服务保持运行，本轮无业务代码变更、无需重载。
-- 未完成：QQ 入口仍无下游消费者；新接入架构待决策；`/var/backups/` 中 6 份含已删 AstrBot 数据的旧备份（约 1.2G）是否清理待用户决定。
+- 未完成：QQ 入口仍无下游消费者；新接入架构待决策。

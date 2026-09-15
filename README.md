@@ -19,7 +19,7 @@
 1. 只想在浏览器聊天：只部署 `server/`。
 2. 想在 Windows 桌面上使用悬浮机器人：再部署 `desktop/`。
 3. 想让助手了解 Windows 上的窗口、浏览器或 Git 活动：再启用 `collector/`；这些采集开关默认关闭。
-4. 想用手机 QQ：再配置 NapCat、AstrBot 和 `qq/astrbot_plugin_xy/` 插件。
+4. 想用手机 QQ：目前只保留 NapCat 登录，接入链路待重构（见第十节）。
 5. 想写小说：打开服务器提供的 `/novel/` 小说工作台，不需要 Windows 电脑一直开着。服务器在线时，项目、章节、生成任务和进度都保存在服务器上。
 
 电脑关机时，服务器上的聊天、知识库、提醒、小说数据和已提交的小说生成任务仍然可以运行；依赖 Windows 的本地文件操作、桌面快捷启动和行为采集会暂时不可用，等待 Windows 客户端恢复连接。
@@ -214,7 +214,7 @@ personal-ai-assistant/
 │   └── tests/              # 服务端隔离测试
 ├── collector/              # Windows 行为采集器和远程执行器客户端
 ├── desktop/                # Windows PySide6 桌面机器人
-├── qq/astrbot_plugin_xy/  # AstrBot QQ 插件
+│                          # （QQ 插件目录已于 2026-09-15 删除，接入待重构）
 ├── common/                 # 跨端共享的脱敏、文件操作和启动器逻辑
 ├── scripts/                # 部署、开机自启、打包和导入脚本
 ├── docs/                   # 部署、运维、QQ、API 和设计文档
@@ -551,38 +551,33 @@ cd <project-root>\desktop
 
 如果你只是单人本地使用，可以先配置 `API_TOKEN`；如果要把 QQ、采集器和执行器分开，建议为不同角色配置不同 token。
 
-## 十、QQ 接入（可选）
+## 十、QQ 接入（待重构）
 
-QQ 接入链路如下：
+> **当前状态（2026-09-15）**：原 AstrBot 插件与 MaiBot 链路已彻底删除，本节描述的接入方式**已不可用**。
+> 服务器上只保留 NapCat 的 QQ 登录与 OneBot 能力，当前没有任何组件消费群消息，QQ 侧不会有回复。
+> 新接入方案尚未确定，待决问题见 `AGENTS.md`；历史 @ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`。
+
+原链路（仅作历史参考）：
 
 ```text
 手机 QQ 私聊
     -> NapCat
-    -> AstrBot
-    -> astrbot_plugin_xy
+    -> AstrBot + 插件（已删除）
     -> FastAPI /api/chat 或 /api/chat/vision
 ```
 
-### 基本步骤
+### 服务端侧仍然有效的契约
 
-1. 准备 NapCat 和 AstrBot 运行环境。
-2. 把 `qq/astrbot_plugin_xy/` 作为 AstrBot 插件使用。
-3. 在 AstrBot 配置中填写服务器地址、主人 QQ 号、主人 token、访客 token 和身份 secret。
-4. 服务端 `.env` 中配置对应的角色 token 和 `QQ_IDENTITY_SECRET`。
-5. 先用主人私聊测试文字，再测试图片和文件。
-6. 确认群聊始终静默。
+下面这些是服务端已实现、新链路可直接复用的部分，不随插件删除而失效：
 
-常见配置项：
-
-| 插件配置 | 说明 |
+| 服务端能力 | 说明 |
 |---|---|
-| `api_base` | FastAPI 服务根地址 |
-| `owner_qq` | 主人 QQ 号，只填本地配置 |
-| `owner_api_token` | 主人 token |
-| `api_token` | 访客 QQ token |
-| `identity_secret` | 与服务器 `QQ_IDENTITY_SECRET` 一致 |
-| `onebot_http` | NapCat onebot HTTP 地址 |
-| `onebot_token` | NapCat onebot HTTP token |
+| `POST /api/chat` | 接受 `message`、`user_id`、`group_id`、`group_directed`、`request_id` |
+| QQ 身份签名 | `x-qq-user-id`、`x-qq-timestamp`、`x-qq-signature`、`x-qq-request-id`，HMAC-SHA256 |
+| `QQ_IDENTITY_SECRET` | 服务端 `.env` 中的共享密钥，用于校验上述签名 |
+| 角色 token | 主人与访客分离；群请求必须走访客身份，用主人身份会被拒绝 |
+| `request_id` 幂等 | 同一用户同一 `request_id` 只执行一次，重试不会重复回复 |
+| `qq_push` 发送出口 | 走 NapCat OneBot HTTP，提醒推送当前仍在使用 |
 | `vision_timeout` | 图片下载和识别超时 |
 | `container_path_map` | NapCat 容器路径到宿主路径的映射 |
 
@@ -800,15 +795,7 @@ server/.venv/bin/python -m pytest server/tests/ -q
 
 服务端测试使用隔离数据库；不要把测试指向真实生产数据库。
 
-### QQ 插件测试
-
-在具备测试依赖的环境中执行：
-
-```bash
-python -m pytest qq/astrbot_plugin_xy/test_main.py -q
-```
-
-测试使用 AstrBot 和 HTTP 桩，不应发送真实 QQ 消息。
+> QQ 插件测试已随插件目录于 2026-09-15 删除；新接入方案落地时需重新编写对应测试。
 
 ### Windows 桌面端测试
 

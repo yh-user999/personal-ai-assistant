@@ -1,5 +1,8 @@
 # QQ 接入运维手册 —— NapCat / AstrBot / 插件
 
+> **失效提示（2026-09-15）**：AstrBot 宿主、`astrbot_plugin_xy` 插件与 MaiBot 链路均已删除，本文涉及 AstrBot 宿主、插件同步与插件测试的章节**已不可执行**。
+> 服务器上只保留 NapCat（QQ 登录 + OneBot），当前无组件消费群消息。NapCat 侧的运维与安全边界仍然有效，可继续参考；接入部分待新方案落地后重写。
+
 > 本文以 **2026-09-06** 已核对的 QQ 鉴权分流与图片识别实现为准。文本私聊走 `/api/chat` JSON，图片私聊走 `/api/chat/vision` multipart；本文不含真实 token、HMAC secret、QQ 号或公网地址。
 
 ## 一、架构与数据流

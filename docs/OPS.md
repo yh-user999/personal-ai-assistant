@@ -1,55 +1,45 @@
 # 运维手册 —— 组件启停与排查
 
-> 本手册以 **2026-09-05** 已核对的当前实例为准。服务端当前是手工进程，不把 systemd 示例当作正在运行的事实。
-> QQ/NapCat/AstrBot 的运维见 `docs/QQ_OPS.md`。
+> 本手册以 **2026-09-15** 已核对的当前实例为准。服务端由 systemd 单元 `personal-assistant.service` 管理（2026-09-15 起，取代原手工进程方式）。
+> QQ/NapCat 的运维见 `docs/QQ_OPS.md`（其中 AstrBot 相关章节已失效）。
 
 ## 组件总览
 
 | 组件 | 位置 | 管理方式 | 日志 |
 |---|---|---|---|
-| 服务端 | `/root/personal-ai-assistant/server` | **手工进程**（uvicorn，端口 8000） | `/tmp/assistant.log` |
+| 服务端 | `/opt/personal-ai-assistant/server` | **systemd** `personal-assistant.service`（User=paa，端口 8000） | `journalctl -u personal-assistant` |
 | 采集器 | Windows `F:\Projects\git\personal-ai-assistant\collector` | 任务计划 `PAA-Collector` | `collector\logs\collector.log` |
 | 机器人 | Windows `F:\Projects\git\personal-ai-assistant\desktop` | 守护进程 `PAA-Robot-Supervisor` | `desktop\logs\desktop.log` + `faulthandler.log` |
-| QQ 接入 | NapCat + AstrBot 宿主 | 见 `QQ_OPS.md` | AstrBot 控制台 / NapCat 容器日志 |
+| QQ 接入 | NapCat（AstrBot 已于 2026-09-15 删除） | 见 `QQ_OPS.md` | NapCat 容器日志 |
 
-> `scripts/deploy_server.sh` 内的 systemd unit、服务用户和目录权限是新装模板；当前实例仍以 `/root/personal-ai-assistant/server` 下的手工进程和 `/tmp/assistant.log` 为准。
+> `scripts/deploy_server.sh` 内的 systemd unit 是新装模板；当前实例由部署目录 `/opt/personal-ai-assistant` 的 `personal-assistant.service` 托管（2026-09-15 现场核对过启动与 health/ready）。
 
 ---
 
-## 一、服务端（JD 服务器，SSH 登录后执行）——手工进程
+## 一、服务端（JD 服务器，SSH 登录后执行）——systemd
 
 ### 启动
 
 ```bash
-cd /root/personal-ai-assistant/server
-nohup .venv/bin/python run.py >> /tmp/assistant.log 2>&1 &
-echo $! > /tmp/assistant.pid
+systemctl start personal-assistant
 ```
 
 ### 停止 / 重启
 
 ```bash
-# 先查看当前实例 PID，避免误杀其他 Python 进程
-pgrep -af '/root/personal-ai-assistant/server/.venv/bin/python run.py'
-
-# 有记录的 PID 才执行停止
-if test -f /tmp/assistant.pid; then kill "$(cat /tmp/assistant.pid)"; fi
-
-# 重启（停止后重新执行启动命令）
-cd /root/personal-ai-assistant/server
-nohup .venv/bin/python run.py >> /tmp/assistant.log 2>&1 &
-echo $! > /tmp/assistant.pid
+systemctl restart personal-assistant   # 先停后起
+systemctl stop personal-assistant      # 仅停止
 ```
 
 ### 状态与日志
 
 ```bash
-pgrep -af '/root/personal-ai-assistant/server/.venv/bin/python run.py'
-tail -n 50 /tmp/assistant.log
-tail -f /tmp/assistant.log
+systemctl status personal-assistant --no-pager
+journalctl -u personal-assistant -n 50 --no-pager
+journalctl -u personal-assistant -f
 ```
 
-不要按 systemd 服务名操作当前实例；若将来切换 systemd，先执行部署模板并同步更新本手册。
+服务端单元：`/etc/systemd/system/personal-assistant.service`（`User=paa`、`WorkingDirectory=/opt/personal-ai-assistant/server`、`EnvironmentFile` 提供 `PORT=8000`、已 enabled）。不要在服务端使用 `kill`/`pkill` 或手工 `nohup` 方式，避免与 systemd 的重启策略冲突。
 
 ### 健康与就绪检查
 
@@ -63,7 +53,7 @@ curl -s http://127.0.0.1:8000/api/ready
 ### 视觉配置无副作用核对
 
 ```bash
-cd /root/personal-ai-assistant/server
+cd /opt/personal-ai-assistant/server
 .venv/bin/python - <<'PY'
 from app.config import settings
 from app.main import app
@@ -86,13 +76,13 @@ PY
 
 | 现象 | 排查顺序 |
 |---|---|
-| 聊天无响应 | ① `/api/health` ② `/api/ready` ③ `pgrep` 确认进程 ④ `tail -n 50 /tmp/assistant.log` |
-| 服务起不来 | 查看 `/tmp/assistant.log`；常见原因是 `.env` 配置校验失败、LLM Key 池为空、视觉上限/超时为非正数 |
-| 图片接口路由不存在 | 执行上面的无副作用 route 检查；确认代码版本和启动目录是 `/root/personal-ai-assistant/server` |
+| 聊天无响应 | ① `/api/health` ② `/api/ready` ③ `systemctl status personal-assistant` ④ `journalctl -u personal-assistant -n 50 --no-pager` |
+| 服务起不来 | 查看 `journalctl -u personal-assistant`；常见原因是 `.env` 配置校验失败、LLM Key 池为空、视觉上限/超时为非正数 |
+| 图片接口路由不存在 | 执行上面的无副作用 route 检查；确认代码版本和启动目录是 `/opt/personal-ai-assistant/server` |
 | 图片返回 400/413/415 | 400=缺 `image`/`request_id`、空文件或损坏文件；413=超过 `VISION_MAX_IMAGE_BYTES`；415=格式或 MIME 不支持 |
 | 图片返回 401/403 | 核对 Bearer 角色 token；QQ 入口继续核对 `QQ_API_TOKEN`、`QQ_IDENTITY_SECRET`、时间戳和签名 request_id |
-| 图片一直识别失败 | 先核对 `VISION_LLM_MODEL`、`VISION_TIMEOUT`、Key 数量和 `/tmp/assistant.log`；不要在排障循环里反复调用真实视觉服务 |
-| 周报/小结没生成 | ① `grep "定时任务" /tmp/assistant.log` ② QQ 是否收到失败告警 ③ 仅在明确需要时手动 POST 生成接口 |
+| 图片一直识别失败 | 先核对 `VISION_LLM_MODEL`、`VISION_TIMEOUT`、Key 数量和 `journalctl -u personal-assistant`；不要在排障循环里反复调用真实视觉服务 |
+| 周报/小结没生成 | ① `journalctl -u personal-assistant` 查“定时任务” ② QQ 是否收到失败告警 ③ 仅在明确需要时手动 POST 生成接口 |
 
 ---
 
@@ -122,7 +112,7 @@ Get-ScheduledTaskInfo -TaskName "PAA-Collector" | Select-Object LastRunTime, Las
 ### 验证数据在推（服务器上查）
 
 ```bash
-sqlite3 /root/personal-ai-assistant/server/data/assistant.db \
+sqlite3 /opt/personal-ai-assistant/server/data/assistant.db \
   "SELECT COUNT(*) FROM behavior_events WHERE start_ts >= datetime('now','-10 minutes');"
 ```
 
@@ -159,10 +149,10 @@ tailscale up --unattended        # 重连（断线时）
 
 | 现象 | 排查顺序 |
 |---|---|
-| 聊天无响应 | ① 服务器 `/api/health` ② 机器人状态灯（红=断线）③ `/tmp/assistant.log` |
+| 聊天无响应 | ① 服务器 `/api/health` ② 机器人状态灯（红=断线）③ 服务器 `journalctl -u personal-assistant` |
 | 采集器不推数据 | ① collector.log ② 任务 LastTaskResult ③ 服务器 health 心跳 |
 | 机器人没出现 | ① supervisor.log（守护是否拉起）② desktop.log 黑匣子 ③ faulthandler.log（原生崩溃？） |
-| 周报没生成 | ① QQ 是否收到“定时任务失败”告警 ② `/tmp/assistant.log` 查 weekly_reflect ③ 明确需要时手动 POST `/api/reports/generate` |
+| 周报没生成 | ① QQ 是否收到“定时任务失败”告警 ② 服务器 `journalctl -u personal-assistant` 查 weekly_reflect ③ 明确需要时手动 POST `/api/reports/generate` |
 | QQ 提醒不响 | 见 `QQ_OPS.md` 排查节 |
 | 全部正常但数据重复 | 服务器幂等兜底，无需处理 |
 

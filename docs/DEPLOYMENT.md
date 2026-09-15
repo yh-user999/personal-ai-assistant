@@ -1,7 +1,7 @@
 # 部署环境记录
 
 > 本文以 **2026-09-05** 已核对的实例状态为准。本文档已脱敏，不含公网 IP、真实 token、HMAC secret 或 QQ 号。
-> 当前 FastAPI 服务端是手工进程启动；`scripts/deploy_server.sh` 里的 systemd 仅是新装模板，不代表当前实例已经由 systemd 接管。
+> 当前 FastAPI 服务端由 systemd 托管（2026-09-15 起）；`scripts/deploy_server.sh` 里的 systemd 安装模板与实际实例一致。
 
 ## 服务器
 
@@ -12,13 +12,13 @@
 | 配置 | 4 核 Xeon Gold 6148 / 8G 内存 / 177G 磁盘 |
 | Python | 3.12.3（系统包受 PEP 668 限制，必须用 venv） |
 | SSH | 密钥认证 + fail2ban（22 端口为唯一公网暴露） |
-| 项目路径 | `/root/personal-ai-assistant` |
-| 当前服务目录 | `/root/personal-ai-assistant/server` |
-| 当前启动方式 | 手工进程：`nohup .venv/bin/python run.py > /tmp/assistant.log 2>&1 &` |
-| 当前日志 | `/tmp/assistant.log` |
+| 项目路径 | `/root/personal-ai-assistant`（开发工作区） |
+| 当前服务目录 | `/opt/personal-ai-assistant/server`（部署仓库） |
+| 当前启动方式 | systemd 单元 `personal-assistant.service`（User=paa，enabled） |
+| 当前日志 | `journalctl -u personal-assistant` |
 | Tailscale | 已部署（v1.x），主机名 `jd-clash` |
 
-> 当前实例没有以 systemd unit 作为事实依据；需要迁移到 systemd 时，另按部署脚本评估权限、数据目录和回滚方案。
+> 当前实例以 `/etc/systemd/system/personal-assistant.service` 与部署目录 `/opt/personal-ai-assistant` 为事实依据；改动 unit 前先评估权限、数据目录与回滚方案。
 
 ## 网络架构（2026-08-25 起）
 
@@ -41,7 +41,7 @@ Windows / 手机 ──Tailscale 加密专线──→ JD 服务器（100.x.y.z:
 | 开机自启 | 任务计划 `PAA-Collector`（登录+30s）+ `PAA-Robot`（登录+15s）；脚本 `scripts/install_autostart.ps1` |
 | 崩溃自愈 | 采集器重启 3 次 / 机器人 1 次 |
 | 网络依赖 | Tailscale `--unattended`（登录前自动连专线，机器人启动不红灯） |
-| 日志 | 采集器 `collector/logs/collector.log`；服务端 `/tmp/assistant.log` |
+| 日志 | 采集器 `collector/logs/collector.log`；服务端 `journalctl -u personal-assistant`（服务器上查看） |
 | 采集范围 | 前台窗口（8s）/ Chrome+Edge 历史（10min）/ git 指定仓库（15min），本地脱敏后推送 |
 
 ## 服务规划
@@ -106,7 +106,7 @@ QQ_ADMIN_ID=<owner-qq-id>
 curl -s http://127.0.0.1:8000/api/health
 curl -s http://127.0.0.1:8000/api/ready
 
-cd /root/personal-ai-assistant/server
+cd /opt/personal-ai-assistant/server
 .venv/bin/python - <<'PY'
 from app.main import app
 assert any(getattr(route, "path", "") == "/api/chat/vision" for route in app.routes)
@@ -117,7 +117,7 @@ PY
 检查要点：
 
 1. `/api/health` 返回 `status=ok`；`/api/ready` 的 database、scheduler、LLM 配置检查不能出现 `failed`。
-2. 手工启动后查看 `/tmp/assistant.log`，确认没有配置校验错误；不要在日志或命令历史里回显 token/secret。
+2. 启动后查看 `journalctl -u personal-assistant`，确认没有配置校验错误；不要在日志或命令历史里回显 token/secret。
 3. 核对普通模型、视觉模型、10MB 上限和 90 秒超时来自当前 `.env`；多 Key 只核对数量与脱敏指纹。
 4. 不把真实图片请求放进健康检查。若要做一次性端到端验收，应由入口验收清单单独记录，不在日常启停脚本里重复调用外部视觉服务。
 5. QQ 入口还要核对主人插件 `owner_api_token` ↔ `OWNER_API_TOKEN`（未配置时 ↔ `API_TOKEN`）、访客插件 `api_token` ↔ `QQ_API_TOKEN`、访客 `identity_secret` ↔ `QQ_IDENTITY_SECRET`，以及 HMAC `request_id` 与 multipart 表单值一致。

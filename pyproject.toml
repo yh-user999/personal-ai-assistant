@@ -5,7 +5,7 @@
 #   python -m pytest desktop/tests/ -q（需 PySide6）
 
 [tool.ruff]
-# 目标范围：全部 Python 代码（server/collector/desktop/common/qq/scripts）。
+# 目标范围：全部 Python 代码（server/collector/desktop/common/scripts）。
 # .venv 等目录由 ruff 默认排除规则覆盖。
 target-version = "py312"
 

@@ -126,8 +126,8 @@ QQ 插件为访客请求构造 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request
 
 ## 六、升级注意
 
-- 插件目录 `qq/astrbot_plugin_xy` 改动后需同步到 AstrBot 宿主并重载插件。
-- 小月服务端视觉/QQ 配置变更后重启当前手工服务端进程，日志位置为 `/tmp/assistant.log`；不要假定存在 systemd 服务。
+- 原 AstrBot 插件目录 `qq/astrbot_plugin_xy` 已于 2026-09-15 删除，该链路不可执行（见文首失效提示）。
+- 小月服务端视觉/QQ 配置变更后重启 `personal-assistant.service`（`systemctl restart personal-assistant`），日志用 `journalctl -u personal-assistant`。
 - NapCat 容器升级后重新扫码，检查 `onebot_http`、`onebot_token`、`container_path_map` 与新镜像路径约定。
 - 任何 token、HMAC secret、QQ 号和公网地址只写本地配置，不写入仓库文档。
 

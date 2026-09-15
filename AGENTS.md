@@ -80,7 +80,7 @@ QQ/NapCat 登录（保留）
 
 - QQ 入口当前断开：NapCat 仍在线，但没有任何下游消费 OneBot 事件，群聊不会有任何回复。
 - 新 QQ 接入架构尚未确定；“仅真实 @ 回复”的确定性门禁、以及决策放在网关还是服务端，都还没有结论。
-- FastAPI 当前未运行（`/api/health` 无响应），需要时按第 6 节手工启动。
+- 启动 FastAPI 必须显式固定端口：`run.py` 读取环境变量 `PORT`，会继承宿主 shell 里已有的 `PORT`（实测被继承为 7778 并因端口占用启动失败）。用 `env -u PORT PORT=8000 .venv/bin/python run.py` 启动。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
 - 群聊真实消息回复、身份回答与通用续话验收全部未通过，且在新 QQ 接入方案落地前没有运行环境可验收。
@@ -112,6 +112,13 @@ cd server
 .venv/bin/ruff check app tests
 curl -s http://localhost:8000/api/health
 curl -s http://localhost:8000/api/ready
+```
+
+启动服务端（必须显式固定端口，避免继承宿主 `PORT`）：
+
+```bash
+cd /opt/personal-ai-assistant/server
+env -u PORT PORT=8000 setsid nohup .venv/bin/python run.py </dev/null >/tmp/assistant.log 2>&1 &
 ```
 
 历史 QQ 插件源码（仓库内仍可跑测试，但无运行环境）：
@@ -225,3 +232,11 @@ docker inspect napcat --format 'status={{.State.Status}} restart={{.HostConfig.R
 - 提交：文档改动待本次脱敏扫描后提交。
 - 运行状态：删除容器 `maim-bot-core`、镜像 `sengokucola/maibot:latest`、目录 `/opt/maibot`；`systemctl disable --now astrbot` 并删除单元与 `/opt/astrbot`；删除从未启动的空容器 `naughty_gould`；NapCat 与 searxng 保持运行；FastAPI 本轮未启动。
 - 未完成：QQ 入口当前无下游消费者，群聊不会回复；新 QQ 接入架构、“仅真实 @ 回复”门禁落点，以及 `qq/astrbot_plugin_xy/`、`deploy/maibot/` 的去留均待决策。
+
+### 2026-09-15 — 清理后服务端健康基线
+
+- 代码/配置：未改动业务代码；在本文件记录 `run.py` 会继承宿主 `PORT` 的启动陷阱和显式固定端口的启动命令。
+- 验证：服务端 1695 passed、`ruff` 全通过；历史 QQ 插件源码 36 passed、`ruff` 全通过；FastAPI 以 `PORT=8000` 启动后 `/api/health` 与 `/api/ready` 均 200，`ready` 中 database（schema 17、integrity 正常）、scheduler、llm、vector 全部 ok，无 failures/degraded。
+- 提交：本次文档改动待脱敏扫描后提交。
+- 运行状态：FastAPI 已在 8000 端口运行；NapCat 与 searxng 保持运行；未新增任何 QQ 侧组件。
+- 未完成：QQ 入口仍无下游消费者；新架构三项待决问题未定，群聊真实消息验收继续 blocked。

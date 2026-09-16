@@ -12,8 +12,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.common.timeutil import utc_iso
-from app.models.database import db_connection
+from app.fitness.repository import SQLiteFitnessRepository
 from app.services.sanitize import sanitize
+
+repository = SQLiteFitnessRepository()
 
 PLAN_STATUSES = frozenset({"draft", "active", "archived"})
 SESSION_STATUSES = frozenset({"in_progress", "completed", "cancelled"})
@@ -99,70 +101,6 @@ def _parse_datetime(value: Any, *, name: str, default_now: bool = False) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def _exercise_exists(conn, exercise_id: int) -> bool:
-    return bool(conn.execute("SELECT 1 FROM fitness_exercises WHERE id=?", (exercise_id,)).fetchone())
-
-
-def _plan_payload(conn, plan_id: int, user_id: str) -> dict[str, Any] | None:
-    plan = conn.execute(
-        "SELECT id, user_id, name, goal, status, source, notes, version, created_at, updated_at "
-        "FROM fitness_plans WHERE id=? AND user_id=?",
-        (plan_id, user_id),
-    ).fetchone()
-    if not plan:
-        return None
-    days = conn.execute(
-        "SELECT id, day_index, name, notes FROM fitness_plan_days WHERE plan_id=? ORDER BY day_index, id",
-        (plan_id,),
-    ).fetchall()
-    result = dict(plan)
-    result["days"] = []
-    for day in days:
-        day_payload = dict(day)
-        exercises = conn.execute(
-            "SELECT pe.id, pe.exercise_id, pe.sort_order, pe.sets, pe.rep_min, pe.rep_max, "
-            "pe.rir_target, pe.rest_seconds, pe.notes, e.name, e.primary_muscles, e.equipment "
-            "FROM fitness_plan_exercises pe JOIN fitness_exercises e ON e.id=pe.exercise_id "
-            "WHERE pe.plan_day_id=? ORDER BY pe.sort_order, pe.id",
-            (day["id"],),
-        ).fetchall()
-        day_payload["exercises"] = []
-        for exercise in exercises:
-            item = dict(exercise)
-            item["primary_muscles"] = _decode_list(item.get("primary_muscles"))
-            day_payload["exercises"].append(item)
-        result["days"].append(day_payload)
-    return result
-
-
-def _session_payload(conn, session_id: int, user_id: str) -> dict[str, Any] | None:
-    session = conn.execute(
-        "SELECT s.id, s.user_id, s.plan_id, s.plan_day_id, s.status, s.source, s.external_id, "
-        "s.notes, s.started_at, s.completed_at, p.name AS plan_name, d.name AS day_name "
-        "FROM fitness_sessions s LEFT JOIN fitness_plans p ON p.id=s.plan_id "
-        "LEFT JOIN fitness_plan_days d ON d.id=s.plan_day_id "
-        "WHERE s.id=? AND s.user_id=?",
-        (session_id, user_id),
-    ).fetchone()
-    if not session:
-        return None
-    result = dict(session)
-    sets = conn.execute(
-        "SELECT fs.id, fs.exercise_id, fs.set_order, fs.set_type, fs.reps, fs.weight_kg, fs.rpe, "
-        "fs.rir, fs.rest_seconds, fs.is_warmup, fs.note, fs.created_at, e.name AS exercise_name "
-        "FROM fitness_sets fs JOIN fitness_exercises e ON e.id=fs.exercise_id "
-        "WHERE fs.session_id=? ORDER BY fs.exercise_id, fs.set_order, fs.id",
-        (session_id,),
-    ).fetchall()
-    result["sets"] = [dict(row) for row in sets]
-    result["set_count"] = len(result["sets"])
-    result["volume_kg"] = round(
-        sum((row["reps"] or 0) * (row["weight_kg"] or 0) for row in sets if not row["is_warmup"]),
-        2,
-    )
-    return result
-
-
 def upsert_profile(user_id: str | None, profile: Mapping[str, Any]) -> dict[str, Any]:
     uid = _uid(user_id)
     goal = _text(profile.get("goal"), name="目标", limit=200)
@@ -177,31 +115,21 @@ def upsert_profile(user_id: str | None, profile: Mapping[str, Any]) -> dict[str,
     equipment = [_text(item, name="器械", limit=80) for item in list(equipment)[:32] if str(item).strip()]
     limitations = _text(profile.get("limitations"), name="限制条件", limit=500)
     notes = _text(profile.get("notes"), name="备注", limit=1000)
-    now = utc_iso()
-    with db_connection() as conn:
-        conn.execute(
-            "INSERT INTO fitness_profile(user_id, goal, experience, sessions_per_week, session_minutes, equipment, "
-            "limitations, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET goal=excluded.goal, experience=excluded.experience, "
-            "sessions_per_week=excluded.sessions_per_week, session_minutes=excluded.session_minutes, "
-            "equipment=excluded.equipment, limitations=excluded.limitations, notes=excluded.notes, updated_at=excluded.updated_at",
-            (uid, goal, experience, sessions_per_week, session_minutes, json.dumps(equipment, ensure_ascii=False), limitations, notes, now, now),
-        )
-        row = conn.execute("SELECT * FROM fitness_profile WHERE user_id=?", (uid,)).fetchone()
-    result = dict(row)
-    result["equipment"] = _decode_list(result.get("equipment"))
-    return result
+    return repository.upsert_profile(
+        uid,
+        goal=goal,
+        experience=experience,
+        sessions_per_week=sessions_per_week,
+        session_minutes=session_minutes,
+        equipment=json.dumps(equipment, ensure_ascii=False),
+        limitations=limitations,
+        notes=notes,
+        now=utc_iso(),
+    )
 
 
 def get_profile(user_id: str | None) -> dict[str, Any] | None:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        row = conn.execute("SELECT * FROM fitness_profile WHERE user_id=?", (uid,)).fetchone()
-    if not row:
-        return None
-    result = dict(row)
-    result["equipment"] = _decode_list(result.get("equipment"))
-    return result
+    return repository.get_profile(_uid(user_id))
 
 
 def create_plan(user_id: str | None, plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -218,82 +146,57 @@ def create_plan(user_id: str | None, plan: Mapping[str, Any]) -> dict[str, Any]:
 
     normalized_days: list[dict[str, Any]] = []
     seen_day_indexes: set[int] = set()
-    with db_connection() as conn:
-        for position, raw_day in enumerate(days, 1):
-            if not isinstance(raw_day, Mapping):
-                raise ValueError("训练日必须是对象")
-            day_index = _int(raw_day.get("day_index", position), name="训练日序号", minimum=1, maximum=MAX_PLAN_DAYS)
-            if day_index in seen_day_indexes:
-                raise ValueError("训练日序号不能重复")
-            seen_day_indexes.add(day_index)
-            day_name = _text(raw_day.get("name") or f"训练日 {day_index}", name="训练日名称", limit=160, required=True)
-            day_notes = _text(raw_day.get("notes"), name="训练日备注", limit=500)
-            raw_exercises = raw_day.get("exercises", [])
-            if not isinstance(raw_exercises, Sequence) or isinstance(raw_exercises, (bytes, bytearray, str)):
-                raise ValueError("训练日动作必须是数组")
-            if len(raw_exercises) > MAX_DAY_EXERCISES:
-                raise ValueError(f"单个训练日最多{MAX_DAY_EXERCISES}个动作")
-            normalized_exercises: list[dict[str, Any]] = []
-            seen_orders: set[int] = set()
-            for order, raw_exercise in enumerate(raw_exercises, 1):
-                if not isinstance(raw_exercise, Mapping):
-                    raise ValueError("计划动作必须是对象")
-                exercise_id = _int(raw_exercise.get("exercise_id"), name="动作 ID", minimum=1, maximum=2_147_483_647)
-                if not _exercise_exists(conn, exercise_id):
-                    raise ValueError(f"动作不存在：{exercise_id}")
-                sort_order = _int(raw_exercise.get("sort_order", order), name="动作顺序", minimum=1, maximum=MAX_DAY_EXERCISES)
-                if sort_order in seen_orders:
-                    raise ValueError("动作顺序不能重复")
-                seen_orders.add(sort_order)
-                sets = _int(raw_exercise.get("sets"), name="组数", minimum=1, maximum=MAX_SETS)
-                rep_min = _int(raw_exercise.get("rep_min", raw_exercise.get("reps", 8)), name="最低次数", minimum=1, maximum=MAX_REPS)
-                rep_max = _int(raw_exercise.get("rep_max", raw_exercise.get("reps", rep_min)), name="最高次数", minimum=rep_min, maximum=MAX_REPS)
-                rir_target = _float(raw_exercise.get("rir_target"), name="目标 RIR", minimum=0, maximum=5)
-                rest_seconds = _int(raw_exercise.get("rest_seconds"), name="组间休息", minimum=0, maximum=MAX_REST_SECONDS, default=None)
-                exercise_notes = _text(raw_exercise.get("notes"), name="动作备注", limit=500)
-                normalized_exercises.append({
-                    "exercise_id": exercise_id,
-                    "sort_order": sort_order,
-                    "sets": sets,
-                    "rep_min": rep_min,
-                    "rep_max": rep_max,
-                    "rir_target": rir_target,
-                    "rest_seconds": rest_seconds,
-                    "notes": exercise_notes,
-                })
-            normalized_days.append({"day_index": day_index, "name": day_name, "notes": day_notes, "exercises": normalized_exercises})
+    for position, raw_day in enumerate(days, 1):
+        if not isinstance(raw_day, Mapping):
+            raise ValueError("训练日必须是对象")
+        day_index = _int(raw_day.get("day_index", position), name="训练日序号", minimum=1, maximum=MAX_PLAN_DAYS)
+        if day_index in seen_day_indexes:
+            raise ValueError("训练日序号不能重复")
+        seen_day_indexes.add(day_index)
+        day_name = _text(raw_day.get("name") or f"训练日 {day_index}", name="训练日名称", limit=160, required=True)
+        day_notes = _text(raw_day.get("notes"), name="训练日备注", limit=500)
+        raw_exercises = raw_day.get("exercises", [])
+        if not isinstance(raw_exercises, Sequence) or isinstance(raw_exercises, (bytes, bytearray, str)):
+            raise ValueError("训练日动作必须是数组")
+        if len(raw_exercises) > MAX_DAY_EXERCISES:
+            raise ValueError(f"单个训练日最多{MAX_DAY_EXERCISES}个动作")
+        normalized_exercises: list[dict[str, Any]] = []
+        seen_orders: set[int] = set()
+        for order, raw_exercise in enumerate(raw_exercises, 1):
+            if not isinstance(raw_exercise, Mapping):
+                raise ValueError("计划动作必须是对象")
+            exercise_id = _int(raw_exercise.get("exercise_id"), name="动作 ID", minimum=1, maximum=2_147_483_647)
+            sort_order = _int(raw_exercise.get("sort_order", order), name="动作顺序", minimum=1, maximum=MAX_DAY_EXERCISES)
+            if sort_order in seen_orders:
+                raise ValueError("动作顺序不能重复")
+            seen_orders.add(sort_order)
+            sets = _int(raw_exercise.get("sets"), name="组数", minimum=1, maximum=MAX_SETS)
+            rep_min = _int(raw_exercise.get("rep_min", raw_exercise.get("reps", 8)), name="最低次数", minimum=1, maximum=MAX_REPS)
+            rep_max = _int(raw_exercise.get("rep_max", raw_exercise.get("reps", rep_min)), name="最高次数", minimum=rep_min, maximum=MAX_REPS)
+            rir_target = _float(raw_exercise.get("rir_target"), name="目标 RIR", minimum=0, maximum=5)
+            rest_seconds = _int(raw_exercise.get("rest_seconds"), name="组间休息", minimum=0, maximum=MAX_REST_SECONDS, default=None)
+            exercise_notes = _text(raw_exercise.get("notes"), name="动作备注", limit=500)
+            normalized_exercises.append({
+                "exercise_id": exercise_id,
+                "sort_order": sort_order,
+                "sets": sets,
+                "rep_min": rep_min,
+                "rep_max": rep_max,
+                "rir_target": rir_target,
+                "rest_seconds": rest_seconds,
+                "notes": exercise_notes,
+            })
+        normalized_days.append({"day_index": day_index, "name": day_name, "notes": day_notes, "exercises": normalized_exercises})
 
-        now = utc_iso()
-        cur = conn.execute(
-            "INSERT INTO fitness_plans(user_id, name, goal, status, source, notes, version, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'draft', ?, ?, 1, ?, ?)",
-            (uid, name, goal, source, notes, now, now),
-        )
-        plan_id = int(cur.lastrowid)
-        for day in normalized_days:
-            day_cur = conn.execute(
-                "INSERT INTO fitness_plan_days(plan_id, day_index, name, notes) VALUES (?, ?, ?, ?)",
-                (plan_id, day["day_index"], day["name"], day["notes"]),
-            )
-            day_id = int(day_cur.lastrowid)
-            for item in day["exercises"]:
-                conn.execute(
-                    "INSERT INTO fitness_plan_exercises(plan_day_id, exercise_id, sort_order, sets, rep_min, rep_max, "
-                    "rir_target, rest_seconds, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        day_id,
-                        item["exercise_id"],
-                        item["sort_order"],
-                        item["sets"],
-                        item["rep_min"],
-                        item["rep_max"],
-                        item["rir_target"],
-                        item["rest_seconds"],
-                        item["notes"],
-                    ),
-                )
-        result = _plan_payload(conn, plan_id, uid)
-    return result or {}
+    return repository.create_plan(
+        uid,
+        name=name,
+        goal=goal,
+        source=source,
+        notes=notes,
+        days=normalized_days,
+        now=utc_iso(),
+    ) or {}
 
 
 def list_plans(user_id: str | None, *, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -301,60 +204,20 @@ def list_plans(user_id: str | None, *, status: str | None = None, limit: int = 2
     if status and status not in PLAN_STATUSES:
         raise ValueError("非法计划状态")
     limit = max(1, min(int(limit), 50))
-    clauses = ["user_id=?"]
-    args: list[Any] = [uid]
-    if status:
-        clauses.append("status=?")
-        args.append(status)
-    args.append(limit)
-    with db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, user_id, name, goal, status, source, notes, version, created_at, updated_at "
-            f"FROM fitness_plans WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC, id DESC LIMIT ?",
-            args,
-        ).fetchall()
-    return [dict(row) for row in rows]
+    return repository.list_plans(uid, status=status, limit=limit)
 
 
 def get_plan(user_id: str | None, plan_id: int) -> dict[str, Any] | None:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        return _plan_payload(conn, int(plan_id), uid)
+    return repository.get_plan(_uid(user_id), int(plan_id))
 
 
 def activate_plan(user_id: str | None, plan_id: int) -> dict[str, Any]:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        target = conn.execute(
-            "SELECT id FROM fitness_plans WHERE id=? AND user_id=?", (int(plan_id), uid)
-        ).fetchone()
-        if not target:
-            raise KeyError("计划不存在")
-        now = utc_iso()
-        conn.execute(
-            "UPDATE fitness_plans SET status='archived', version=version+1, updated_at=? "
-            "WHERE user_id=? AND status='active' AND id<>?",
-            (now, uid, int(plan_id)),
-        )
-        conn.execute(
-            "UPDATE fitness_plans SET status='active', version=version+1, updated_at=? WHERE id=? AND user_id=?",
-            (now, int(plan_id), uid),
-        )
-        result = _plan_payload(conn, int(plan_id), uid)
+    result = repository.activate_plan(_uid(user_id), int(plan_id), now=utc_iso())
     return result or {}
 
 
 def archive_plan(user_id: str | None, plan_id: int) -> dict[str, Any]:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        cur = conn.execute(
-            "UPDATE fitness_plans SET status='archived', version=version+1, updated_at=? "
-            "WHERE id=? AND user_id=? AND status<>'archived'",
-            (utc_iso(), int(plan_id), uid),
-        )
-        if not cur.rowcount:
-            raise KeyError("计划不存在")
-        result = _plan_payload(conn, int(plan_id), uid)
+    result = repository.archive_plan(_uid(user_id), int(plan_id), now=utc_iso())
     return result or {}
 
 
@@ -371,44 +234,19 @@ def start_session(
     source = _text(source or "local", name="来源", limit=80, required=True)
     external_id = _text(external_id, name="外部 ID", limit=200) or None
     notes = _text(notes, name="备注", limit=1000)
-    with db_connection() as conn:
-        if external_id:
-            existing = conn.execute(
-                "SELECT id FROM fitness_sessions WHERE user_id=? AND source=? AND external_id=?",
-                (uid, source, external_id),
-            ).fetchone()
-            if existing:
-                return _session_payload(conn, int(existing["id"]), uid) or {}
-        if plan_id is not None:
-            plan = conn.execute(
-                "SELECT id FROM fitness_plans WHERE id=? AND user_id=?", (int(plan_id), uid)
-            ).fetchone()
-            if not plan:
-                raise KeyError("计划不存在")
-        if plan_day_id is not None:
-            day = conn.execute(
-                "SELECT d.id, d.plan_id FROM fitness_plan_days d JOIN fitness_plans p ON p.id=d.plan_id "
-                "WHERE d.id=? AND p.user_id=?",
-                (int(plan_day_id), uid),
-            ).fetchone()
-            if not day:
-                raise KeyError("训练日不存在")
-            if plan_id is not None and int(day["plan_id"]) != int(plan_id):
-                raise ValueError("训练日不属于指定计划")
-            plan_id = int(day["plan_id"])
-        now = utc_iso()
-        cur = conn.execute(
-            "INSERT INTO fitness_sessions(user_id, plan_id, plan_day_id, status, source, external_id, notes, started_at) "
-            "VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)",
-            (uid, plan_id, plan_day_id, source, external_id, notes, now),
-        )
-        return _session_payload(conn, int(cur.lastrowid), uid) or {}
+    return repository.start_session(
+        uid,
+        plan_id=plan_id,
+        plan_day_id=plan_day_id,
+        source=source,
+        external_id=external_id,
+        notes=notes,
+        now=utc_iso(),
+    ) or {}
 
 
 def get_session(user_id: str | None, session_id: int) -> dict[str, Any] | None:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        return _session_payload(conn, int(session_id), uid)
+    return repository.get_session(_uid(user_id), int(session_id))
 
 
 def list_sessions(
@@ -421,19 +259,7 @@ def list_sessions(
     if status and status not in SESSION_STATUSES:
         raise ValueError("非法训练会话状态")
     limit = max(1, min(int(limit), 50))
-    clauses = ["user_id=?"]
-    args: list[Any] = [uid]
-    if status:
-        clauses.append("status=?")
-        args.append(status)
-    args.append(limit)
-    with db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id FROM fitness_sessions "
-            f"WHERE {' AND '.join(clauses)} ORDER BY started_at DESC, id DESC LIMIT ?",
-            args,
-        ).fetchall()
-        return [_session_payload(conn, int(row["id"]), uid) or {} for row in rows]
+    return repository.list_sessions(uid, status=status, limit=limit)
 
 
 def log_set(
@@ -459,68 +285,31 @@ def log_set(
     rest_seconds = _int(rest_seconds, name="休息时间", minimum=0, maximum=MAX_REST_SECONDS, default=None)
     set_type = _text(set_type or "working", name="组类型", limit=40, required=True).casefold()
     note = _text(note, name="备注", limit=500)
-    with db_connection() as conn:
-        session = conn.execute(
-            "SELECT id, status FROM fitness_sessions WHERE id=? AND user_id=?", (int(session_id), uid)
-        ).fetchone()
-        if not session:
-            raise KeyError("训练会话不存在")
-        if session["status"] != "in_progress":
-            raise ValueError("只有进行中的训练会话可以记录训练组")
-        if not _exercise_exists(conn, int(exercise_id)):
-            raise KeyError("动作不存在")
-        if set_order is None:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(set_order), 0) + 1 AS next_order FROM fitness_sets "
-                "WHERE session_id=? AND exercise_id=?",
-                (int(session_id), int(exercise_id)),
-            ).fetchone()
-            set_order = int(row["next_order"])
-        else:
-            set_order = _int(set_order, name="组序号", minimum=1, maximum=MAX_SETS)
-        cur = conn.execute(
-            "INSERT INTO fitness_sets(session_id, exercise_id, set_order, set_type, reps, weight_kg, rpe, rir, "
-            "rest_seconds, is_warmup, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (int(session_id), int(exercise_id), set_order, set_type, reps, weight_kg, rpe, rir, rest_seconds, int(is_warmup), note, utc_iso()),
-        )
-        row = conn.execute(
-            "SELECT fs.id, fs.session_id, fs.exercise_id, fs.set_order, fs.set_type, fs.reps, fs.weight_kg, "
-            "fs.rpe, fs.rir, fs.rest_seconds, fs.is_warmup, fs.note, fs.created_at, e.name AS exercise_name "
-            "FROM fitness_sets fs JOIN fitness_exercises e ON e.id=fs.exercise_id WHERE fs.id=?",
-            (int(cur.lastrowid),),
-        ).fetchone()
-    return dict(row)
+    if set_order is not None:
+        set_order = _int(set_order, name="组序号", minimum=1, maximum=MAX_SETS)
+    return repository.log_set(
+        uid,
+        int(session_id),
+        int(exercise_id),
+        reps=reps,
+        weight_kg=weight_kg,
+        set_order=set_order,
+        set_type=set_type,
+        rpe=rpe,
+        rir=rir,
+        rest_seconds=rest_seconds,
+        is_warmup=bool(is_warmup),
+        note=note,
+        now=utc_iso(),
+    )
 
 
 def complete_session(user_id: str | None, session_id: int) -> dict[str, Any]:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        session = conn.execute(
-            "SELECT status FROM fitness_sessions WHERE id=? AND user_id=?", (int(session_id), uid)
-        ).fetchone()
-        if not session:
-            raise KeyError("训练会话不存在")
-        if session["status"] == "cancelled":
-            raise ValueError("已取消的训练会话不能完成")
-        if session["status"] == "in_progress":
-            conn.execute(
-                "UPDATE fitness_sessions SET status='completed', completed_at=? WHERE id=? AND user_id=?",
-                (utc_iso(), int(session_id), uid),
-            )
-        return _session_payload(conn, int(session_id), uid) or {}
+    return repository.complete_session(_uid(user_id), int(session_id), now=utc_iso()) or {}
 
 
 def cancel_session(user_id: str | None, session_id: int) -> dict[str, Any]:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        cur = conn.execute(
-            "UPDATE fitness_sessions SET status='cancelled', completed_at=COALESCE(completed_at, ?) "
-            "WHERE id=? AND user_id=? AND status='in_progress'",
-            (utc_iso(), int(session_id), uid),
-        )
-        if not cur.rowcount:
-            raise KeyError("进行中的训练会话不存在")
-        return _session_payload(conn, int(session_id), uid) or {}
+    return repository.cancel_session(_uid(user_id), int(session_id), now=utc_iso()) or {}
 
 
 def record_measurement(
@@ -548,25 +337,15 @@ def record_measurement(
     unit = _text(unit or default_unit, name="单位", limit=20, required=True)
     note = _text(note, name="备注", limit=500)
     measured_at = _parse_datetime(measured_at, name="测量时间", default_now=True)
-    now = utc_iso()
-    with db_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO fitness_measurements(user_id, kind, value, unit, note, measured_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (uid, kind, value, unit, note, measured_at, now),
-        )
-        # 旧版命令读取 fitness_log；体重 API 同步一份，保持两个入口的趋势一致。
-        if kind == "weight" and unit.casefold() in {"kg", "公斤", "千克"}:
-            conn.execute(
-                "INSERT INTO fitness_log(user_id, kind, value, detail, created_at) VALUES (?, 'weight', ?, '', ?)",
-                (uid, value, measured_at),
-            )
-        row = conn.execute(
-            "SELECT id, user_id, kind, value, unit, note, measured_at, created_at "
-            "FROM fitness_measurements WHERE id=?",
-            (int(cur.lastrowid),),
-        ).fetchone()
-    return dict(row)
+    return repository.record_measurement(
+        uid,
+        kind=kind,
+        value=value,
+        unit=unit,
+        note=note,
+        measured_at=measured_at,
+        now=utc_iso(),
+    ) or {}
 
 
 def list_measurements(
@@ -579,50 +358,18 @@ def list_measurements(
     if kind and kind not in MEASUREMENT_KINDS:
         raise ValueError("非法指标类型")
     limit = max(1, min(int(limit), 100))
-    args: list[Any] = [uid]
-    clause = "user_id=?"
-    if kind:
-        clause += " AND kind=?"
-        args.append(kind)
-    args.append(limit)
-    with db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, user_id, kind, value, unit, note, measured_at, created_at "
-            f"FROM fitness_measurements WHERE {clause} ORDER BY measured_at DESC, id DESC LIMIT ?",
-            args,
-        ).fetchall()
-    return [dict(row) for row in rows]
+    return repository.list_measurements(uid, kind=kind, limit=limit)
 
 
 def get_summary(user_id: str | None, *, days: int = 30) -> dict[str, Any]:
     uid = _uid(user_id)
     days = max(1, min(int(days), 365))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    with db_connection() as conn:
-        sessions = conn.execute(
-            "SELECT id, status, started_at, completed_at FROM fitness_sessions "
-            "WHERE user_id=? AND started_at>=? AND status<>'cancelled' "
-            "ORDER BY started_at DESC, id DESC",
-            (uid, since),
-        ).fetchall()
-        set_rows = conn.execute(
-            "SELECT fs.exercise_id, fs.reps, fs.weight_kg, fs.rpe, fs.rir, fs.is_warmup, fs.created_at, "
-            "e.name, e.primary_muscles FROM fitness_sets fs "
-            "JOIN fitness_sessions s ON s.id=fs.session_id "
-            "JOIN fitness_exercises e ON e.id=fs.exercise_id "
-            "WHERE s.user_id=? AND s.started_at>=? AND s.status<>'cancelled'",
-            (uid, since),
-        ).fetchall()
-        measurements = conn.execute(
-            "SELECT kind, value, unit, measured_at FROM fitness_measurements "
-            "WHERE user_id=? AND kind='weight' AND measured_at>=? "
-            "ORDER BY measured_at ASC, id ASC LIMIT 1000",
-            (uid, since),
-        ).fetchall()
-        legacy = conn.execute(
-            "SELECT kind, COUNT(*) AS count FROM fitness_log WHERE user_id=? AND created_at>=? GROUP BY kind",
-            (uid, since),
-        ).fetchall()
+    rows = repository.summary_rows(uid, since=since)
+    sessions = rows["sessions"]
+    set_rows = rows["set_rows"]
+    measurements = rows["measurements"]
+    legacy = rows["legacy"]
 
     completed = sum(1 for row in sessions if row["status"] == "completed")
     in_progress = sum(1 for row in sessions if row["status"] == "in_progress")
@@ -711,12 +458,7 @@ def summary_text(user_id: str | None, *, days: int = 30) -> str:
         lines.append("⚠️ 最近 7 天没有新的训练会话，恢复训练建议从低容量开始。")
     if summary["recent_prs"]:
         lines.append("近期高重量动作：" + "、".join(f"{item['name']} {item['max_weight_kg']:.1f} kg" for item in summary["recent_prs"][:3]))
-    with db_connection() as conn:
-        legacy_recent = conn.execute(
-            "SELECT kind, value, detail, created_at FROM fitness_log WHERE user_id=? "
-            "ORDER BY id DESC LIMIT 5",
-            (_uid(user_id),),
-        ).fetchall()
+    legacy_recent = repository.latest_legacy_logs(_uid(user_id), limit=5)
     if legacy_recent:
         lines.append("最近记录：")
         for row in legacy_recent:
@@ -730,25 +472,11 @@ def summary_text(user_id: str | None, *, days: int = 30) -> str:
 
 
 def get_active_plan(user_id: str | None) -> dict[str, Any] | None:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        row = conn.execute(
-            "SELECT id FROM fitness_plans WHERE user_id=? AND status='active' "
-            "ORDER BY updated_at DESC, id DESC LIMIT 1",
-            (uid,),
-        ).fetchone()
-        return _plan_payload(conn, int(row["id"]), uid) if row else None
+    return repository.get_active_plan(_uid(user_id))
 
 
 def latest_in_progress_session(user_id: str | None) -> dict[str, Any] | None:
-    uid = _uid(user_id)
-    with db_connection() as conn:
-        row = conn.execute(
-            "SELECT id FROM fitness_sessions WHERE user_id=? AND status='in_progress' "
-            "ORDER BY started_at DESC, id DESC LIMIT 1",
-            (uid,),
-        ).fetchone()
-        return _session_payload(conn, int(row["id"]), uid) if row else None
+    return repository.latest_in_progress_session(_uid(user_id))
 
 
 def parse_chat_set(text: str) -> dict[str, Any] | None:

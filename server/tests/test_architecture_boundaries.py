@@ -69,6 +69,12 @@ KNOWN_PACKAGE_CYCLES = {
 # 函数体内 import 的数量上限（审计基线 229）。留少量余量吸收正常改动，
 # 但显著增长会触发失败：延迟导入会把真实依赖藏起来，静态分析看不见。
 MAX_DEFERRED_INTERNAL_IMPORTS = 235
+STRUCTURED_FITNESS_MODULES = {
+    "app.fitness.catalog",
+    "app.fitness.nutrition",
+    "app.fitness.training",
+}
+FITNESS_DATABASE_ADAPTER = "app.fitness.repository"
 
 
 def _module_name(path: Path) -> str:
@@ -163,6 +169,22 @@ def _external_imports_from_target_layers() -> set[tuple[str, str]]:
             if not target.startswith("app."):
                 imports.add((source, target))
     return imports
+
+
+def test_structured_fitness_modules_use_repository_database_boundary():
+    edges = _internal_edges()
+    violations: list[str] = []
+    for module in sorted(STRUCTURED_FITNESS_MODULES):
+        if (module, FITNESS_DATABASE_ADAPTER) not in edges:
+            violations.append(f"{module} 未依赖 {FITNESS_DATABASE_ADAPTER}")
+        if (module, "app.models.database") in edges:
+            violations.append(f"{module} 直接依赖 app.models.database")
+        path = APP_ROOT.joinpath(*module.removeprefix("app.").split(".")).with_suffix(".py")
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        external = _import_targets(module, tree)
+        if "sqlite3" in external:
+            violations.append(f"{module} 直接依赖 sqlite3")
+    assert not violations, "\\n".join(violations)
 
 
 def test_sensitive_legacy_reverse_edges_are_explicitly_exempted():

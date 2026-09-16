@@ -12,8 +12,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from app.common.timeutil import utc_iso
-from app.models.database import db_connection
+from app.fitness.repository import SQLiteFitnessRepository
 from app.services.sanitize import sanitize
+
+repository = SQLiteFitnessRepository()
 
 MAX_NAME_CHARS = 160
 MAX_ALIAS_CHARS = 80
@@ -126,10 +128,6 @@ def _items(value: Any, *, limit: int, item_limit: int) -> list[str]:
     return result
 
 
-def _json(value: Any, default: list[str] | None = None) -> str:
-    return json.dumps(value if value is not None else (default or []), ensure_ascii=False, separators=(",", ":"))
-
-
 def normalize_exercise_record(
     record: Mapping[str, Any],
     *,
@@ -183,16 +181,6 @@ def normalize_exercise_record(
     }
 
 
-def _row_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    result = dict(row)
-    for key in ("aliases", "primary_muscles", "secondary_muscles", "instructions", "images"):
-        try:
-            result[key] = json.loads(result.get(key) or "[]")
-        except (TypeError, json.JSONDecodeError):
-            result[key] = []
-    return result
-
-
 def import_exercises(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -210,45 +198,7 @@ def import_exercises(
         )
         for record in records
     ]
-    now = utc_iso()
-    created = updated = 0
-    with db_connection() as conn:
-        for item in normalized:
-            old = conn.execute(
-                "SELECT id FROM fitness_exercises WHERE source=? AND source_id=?",
-                (item["source"], item["source_id"]),
-            ).fetchone()
-            values = (
-                item["source"],
-                item["source_id"],
-                item["name"],
-                _json(item["aliases"]),
-                _json(item["primary_muscles"]),
-                _json(item["secondary_muscles"]),
-                item["equipment"],
-                _json(item["instructions"]),
-                _json(item["images"]),
-                item["license"],
-                item["attribution"],
-                now,
-            )
-            if old:
-                conn.execute(
-                    "UPDATE fitness_exercises SET name=?, aliases=?, primary_muscles=?, secondary_muscles=?, "
-                    "equipment=?, instructions=?, images=?, license=?, attribution=?, updated_at=? WHERE id=?",
-                    values[2:] + (old["id"],),
-                )
-                updated += 1
-            else:
-                conn.execute(
-                    "INSERT INTO fitness_exercises "
-                    "(source, source_id, name, aliases, primary_muscles, secondary_muscles, equipment, "
-                    "instructions, images, license, attribution, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        values[:11] + (now, now),
-                )
-                created += 1
-    return {"created": created, "updated": updated, "total": len(normalized)}
+    return repository.upsert_exercises(normalized, now=utc_iso())
 
 
 def seed_builtin_exercises() -> dict[str, int]:
@@ -262,11 +212,7 @@ def seed_builtin_exercises() -> dict[str, int]:
 
 def ensure_builtin_exercises() -> None:
     with _BUILTIN_LOCK:
-        with db_connection() as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM fitness_exercises WHERE source='builtin' LIMIT 1"
-            ).fetchone()
-        if not exists:
+        if not repository.has_builtin_exercises():
             seed_builtin_exercises()
 
 
@@ -279,41 +225,17 @@ def list_exercises(
 ) -> list[dict[str, Any]]:
     ensure_builtin_exercises()
     limit = max(1, min(int(limit), 100))
-    terms = [value.strip() for value in (query, muscle, equipment)]
-    clauses: list[str] = []
-    args: list[Any] = []
-    if terms[0]:
-        like = f"%{terms[0][:MAX_NAME_CHARS]}%"
-        clauses.append("(name LIKE ? OR aliases LIKE ? OR primary_muscles LIKE ? OR secondary_muscles LIKE ?)")
-        args.extend([like, like, like, like])
-    if terms[1]:
-        clauses.append("(primary_muscles LIKE ? OR secondary_muscles LIKE ?)")
-        like = f"%{terms[1][:MAX_ITEM_CHARS]}%"
-        args.extend([like, like])
-    if terms[2]:
-        clauses.append("equipment LIKE ?")
-        args.append(f"%{terms[2][:MAX_ITEM_CHARS]}%")
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    with db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, source, source_id, name, aliases, primary_muscles, secondary_muscles, equipment, "
-            "instructions, images, license, attribution, created_at, updated_at "
-            f"FROM fitness_exercises {where} ORDER BY name COLLATE NOCASE, id LIMIT ?",
-            args + [limit],
-        ).fetchall()
-    return [_row_payload(row) for row in rows]
+    return repository.list_exercises(
+        query=query[:MAX_NAME_CHARS],
+        muscle=muscle[:MAX_ITEM_CHARS],
+        equipment=equipment[:MAX_ITEM_CHARS],
+        limit=limit,
+    )
 
 
 def get_exercise(exercise_id: int) -> dict[str, Any] | None:
     ensure_builtin_exercises()
-    with db_connection() as conn:
-        row = conn.execute(
-            "SELECT id, source, source_id, name, aliases, primary_muscles, secondary_muscles, equipment, "
-            "instructions, images, license, attribution, created_at, updated_at "
-            "FROM fitness_exercises WHERE id=?",
-            (int(exercise_id),),
-        ).fetchone()
-    return _row_payload(row) if row else None
+    return repository.get_exercise(int(exercise_id))
 
 
 def load_json_records(payload: Any) -> list[Mapping[str, Any]]:
@@ -347,21 +269,14 @@ def record_import(
     content_hash = _text(content_hash, limit=128)
     status = _text(status, limit=40, required=True)
     imported_count = max(0, min(int(imported_count), 5000))
-    now = utc_iso()
-    with db_connection() as conn:
-        conn.execute(
-            "INSERT INTO fitness_imports(user_id, source, external_id, content_hash, status, imported_count, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(user_id, source, external_id, content_hash) DO UPDATE SET status=excluded.status, "
-            "imported_count=excluded.imported_count, updated_at=excluded.updated_at",
-            (uid, source, external_id, content_hash, status, imported_count, now, now),
-        )
-        row = conn.execute(
-            "SELECT id, user_id, source, external_id, content_hash, status, imported_count, created_at, updated_at "
-            "FROM fitness_imports WHERE user_id=? AND source=? AND external_id IS ? AND content_hash=?",
-            (uid, source, external_id, content_hash),
-        ).fetchone()
-    return dict(row)
+    return repository.record_import(
+        uid,
+        source=source,
+        external_id=external_id,
+        content_hash=content_hash,
+        status=status,
+        imported_count=imported_count,
+    )
 
 
 def content_hash(payload: Any) -> str:

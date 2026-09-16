@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -13,8 +12,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.common.timeutil import utc_iso
-from app.models.database import db_connection
+from app.fitness.repository import SQLiteFitnessRepository
 from app.services.sanitize import sanitize
+
+repository = SQLiteFitnessRepository()
 
 MAX_FOOD_NAME_CHARS = 200
 MAX_ALIAS_CHARS = 100
@@ -304,16 +305,6 @@ def normalize_food_record(
     }
 
 
-def _food_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    result = dict(row)
-    for key, default in (("aliases", []), ("nutrients", {})):
-        try:
-            result[key] = json.loads(result.get(key) or json.dumps(default))
-        except (TypeError, json.JSONDecodeError):
-            result[key] = default
-    return result
-
-
 def load_food_records(
     payload: Any,
     *,
@@ -368,66 +359,12 @@ def import_foods(
                 raise
             errors.append(f"第 {index} 条：{exc}")
 
-    now = utc_iso()
-    created = updated = 0
-    with db_connection() as conn:
-        for item in normalized:
-            old = conn.execute(
-                "SELECT id FROM fitness_foods WHERE source=? AND source_id=?",
-                (item["source"], item["source_id"]),
-            ).fetchone()
-            values = (
-                item["source"],
-                item["source_id"],
-                item["name"],
-                json.dumps(item["aliases"], ensure_ascii=False, separators=(",", ":")),
-                item["brand"],
-                item["barcode"],
-                item["serving_size_g"],
-                item["calories_kcal"],
-                item["protein_g"],
-                item["fat_g"],
-                item["carbs_g"],
-                item["fiber_g"],
-                item["sodium_mg"],
-                json.dumps(item["nutrients"], ensure_ascii=False, separators=(",", ":")),
-                item["license"],
-                item["attribution"],
-            )
-            if old:
-                conn.execute(
-                    "UPDATE fitness_foods SET name=?, aliases=?, brand=?, barcode=?, serving_size_g=?, "
-                    "calories_kcal=?, protein_g=?, fat_g=?, carbs_g=?, fiber_g=?, sodium_mg=?, nutrients=?, "
-                    "license=?, attribution=?, updated_at=? WHERE id=?",
-                    values[2:] + (now, old["id"]),
-                )
-                updated += 1
-            else:
-                conn.execute(
-                    "INSERT INTO fitness_foods(source, source_id, name, aliases, brand, barcode, serving_size_g, "
-                    "calories_kcal, protein_g, fat_g, carbs_g, fiber_g, sodium_mg, nutrients, license, attribution, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    values + (now, now),
-                )
-                created += 1
-    result: dict[str, Any] = {
-        "created": created,
-        "updated": updated,
-        "imported": len(normalized),
-        "skipped": len(errors),
-        "total": len(raw_records),
-    }
+    result = repository.upsert_foods(normalized, now=utc_iso())
+    result["total"] = len(raw_records)
+    result["skipped"] = len(errors)
     if errors:
         result["errors"] = errors[:20]
     return result
-
-
-def _food_select() -> str:
-    return (
-        "SELECT id, source, source_id, name, aliases, brand, barcode, serving_size_g, calories_kcal, "
-        "protein_g, fat_g, carbs_g, fiber_g, sodium_mg, nutrients, license, attribution, created_at, updated_at "
-        "FROM fitness_foods"
-    )
 
 
 def list_foods(
@@ -438,28 +375,16 @@ def list_foods(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 100))
-    clauses: list[str] = []
-    args: list[Any] = []
-    if query.strip():
-        like = f"%{sanitize(query.strip())[:MAX_FOOD_NAME_CHARS]}%"
-        clauses.append("(name LIKE ? OR aliases LIKE ? OR brand LIKE ? OR barcode LIKE ?)")
-        args.extend([like, like, like, like])
-    if brand.strip():
-        clauses.append("brand LIKE ?")
-        args.append(f"%{sanitize(brand.strip())[:MAX_BRAND_CHARS]}%")
-    if source.strip():
-        clauses.append("source=?")
-        args.append(_text(source, name="食品来源", limit=MAX_SOURCE_CHARS))
-    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    with db_connection() as conn:
-        rows = conn.execute(_food_select() + where + " ORDER BY name COLLATE NOCASE, id LIMIT ?", args + [limit]).fetchall()
-    return [_food_payload(row) for row in rows]
+    return repository.list_foods(
+        query=sanitize(query.strip())[:MAX_FOOD_NAME_CHARS],
+        brand=sanitize(brand.strip())[:MAX_BRAND_CHARS],
+        source=_text(source, name="食品来源", limit=MAX_SOURCE_CHARS) if source.strip() else "",
+        limit=limit,
+    )
 
 
 def get_food(food_id: int) -> dict[str, Any] | None:
-    with db_connection() as conn:
-        row = conn.execute(_food_select() + " WHERE id=?", (int(food_id),)).fetchone()
-    return _food_payload(row) if row else None
+    return repository.get_food(int(food_id))
 
 
 def _date(value: Any, *, default_today: bool = False) -> str:
@@ -521,10 +446,6 @@ def calculate_nutrition(food: Mapping[str, Any], grams: Any) -> dict[str, Any]:
     }
 
 
-def _log_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    return dict(row)
-
-
 def log_food(
     user_id: str | None,
     food_id: int,
@@ -545,70 +466,22 @@ def log_food(
     meal_value = _text(meal, name="餐次", limit=40)
     note_value = _text(note, name="备注", limit=500)
     eaten_value = _parse_datetime(eaten_at)
-    now = utc_iso()
-    with db_connection() as conn:
-        food_row = conn.execute(_food_select() + " WHERE id=?", (int(food_id),)).fetchone()
-        if not food_row:
-            raise KeyError("食品不存在")
-        food = _food_payload(food_row)
-        nutrition = calculate_nutrition(food, grams_value)
-        values = (
-            uid,
-            int(food_id),
-            source_value,
-            external_value,
-            food["name"],
-            food.get("brand", ""),
-            nutrition["grams"],
-            meal_value,
-            nutrition["calories_kcal"],
-            nutrition["protein_g"],
-            nutrition["fat_g"],
-            nutrition["carbs_g"],
-            nutrition["fiber_g"],
-            nutrition["sodium_mg"],
-            note_value,
-            eaten_value,
-        )
-        existing = None
-        if external_value is not None:
-            existing = conn.execute(
-                "SELECT id FROM fitness_food_logs WHERE user_id=? AND source=? AND external_id=?",
-                (uid, source_value, external_value),
-            ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE fitness_food_logs SET food_id=?, food_name=?, brand=?, grams=?, meal=?, calories_kcal=?, "
-                "protein_g=?, fat_g=?, carbs_g=?, fiber_g=?, sodium_mg=?, note=?, eaten_at=?, created_at=? WHERE id=?",
-                (
-                    values[1],
-                    values[4],
-                    values[5],
-                    values[6],
-                    values[7],
-                    values[8],
-                    values[9],
-                    values[10],
-                    values[11],
-                    values[12],
-                    values[13],
-                    values[14],
-                    values[15],
-                    now,
-                    existing["id"],
-                ),
-            )
-            log_id = int(existing["id"])
-        else:
-            cur = conn.execute(
-                "INSERT INTO fitness_food_logs(user_id, food_id, source, external_id, food_name, brand, grams, meal, "
-                "calories_kcal, protein_g, fat_g, carbs_g, fiber_g, sodium_mg, note, eaten_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                values + (now,),
-            )
-            log_id = int(cur.lastrowid)
-        row = conn.execute("SELECT * FROM fitness_food_logs WHERE id=? AND user_id=?", (log_id, uid)).fetchone()
-    return _log_payload(row)
+    food = repository.get_food(int(food_id))
+    if not food:
+        raise KeyError("食品不存在")
+    nutrition = calculate_nutrition(food, grams_value)
+    return repository.upsert_food_log(
+        uid,
+        int(food_id),
+        source=source_value,
+        external_id=external_value,
+        food=food,
+        nutrition=nutrition,
+        meal=meal_value,
+        note=note_value,
+        eaten_at=eaten_value,
+        now=utc_iso(),
+    )
 
 
 def _parse_datetime(value: Any) -> str:
@@ -635,20 +508,7 @@ def list_food_logs(
     uid = normalize_user_id(user_id)
     date_value = _date(date) if date else ""
     limit = max(1, min(int(limit), 200))
-    clauses = ["user_id=?"]
-    args: list[Any] = [uid]
-    if date_value:
-        clauses.append("substr(eaten_at, 1, 10)=?")
-        args.append(date_value)
-    args.append(limit)
-    with db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, user_id, food_id, source, external_id, food_name, brand, grams, meal, calories_kcal, "
-            "protein_g, fat_g, carbs_g, fiber_g, sodium_mg, note, eaten_at, created_at "
-            f"FROM fitness_food_logs WHERE {' AND '.join(clauses)} ORDER BY eaten_at DESC, id DESC LIMIT ?",
-            args,
-        ).fetchall()
-    return [_log_payload(row) for row in rows]
+    return repository.list_food_logs(uid, date=date_value or None, limit=limit)
 
 
 def nutrition_summary(user_id: str | None, *, date: str | None = None) -> dict[str, Any]:
@@ -656,16 +516,7 @@ def nutrition_summary(user_id: str | None, *, date: str | None = None) -> dict[s
 
     uid = normalize_user_id(user_id)
     date_value = _date(date, default_today=True)
-    with db_connection() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS log_count, COALESCE(SUM(calories_kcal), 0) AS calories_kcal, "
-            "COALESCE(SUM(protein_g), 0) AS protein_g, COALESCE(SUM(fat_g), 0) AS fat_g, "
-            "COALESCE(SUM(carbs_g), 0) AS carbs_g, COALESCE(SUM(fiber_g), 0) AS fiber_g, "
-            "COALESCE(SUM(sodium_mg), 0) AS sodium_mg FROM fitness_food_logs "
-            "WHERE user_id=? AND substr(eaten_at, 1, 10)=?",
-            (uid, date_value),
-        ).fetchone()
-    result = dict(row)
+    result = repository.nutrition_summary(uid, date=date_value)
     for key in ("calories_kcal", "protein_g", "fat_g", "carbs_g", "fiber_g", "sodium_mg"):
         result[key] = round(float(result.get(key) or 0), 2)
     result["date"] = date_value
@@ -717,7 +568,4 @@ def delete_food_log(user_id: str | None, log_id: int) -> None:
     from app.core.memory import normalize_user_id
 
     uid = normalize_user_id(user_id)
-    with db_connection() as conn:
-        cur = conn.execute("DELETE FROM fitness_food_logs WHERE id=? AND user_id=?", (int(log_id), uid))
-        if not cur.rowcount:
-            raise KeyError("饮食记录不存在")
+    repository.delete_food_log(uid, int(log_id))

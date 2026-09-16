@@ -391,7 +391,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ### 2026-09-16 — 架构债棘轮基线与 /api/ready 完整性缓存
 
 - 代码/配置：`tests/test_architecture_boundaries.py` 新增两项棘轮断言——6 组包级双向耦合与 229 处函数体内延迟导入记为基线，只禁止新增、消除后须收紧清单（含收紧提示）；`app/main.py` 给 `/api/ready` 的全库 `PRAGMA integrity_check` 加 300 秒 TTL 缓存（成功才缓存、失败不缓存、提供手动失效入口），轻量检查仍每次实时执行；`tests/test_smoke.py` 补缓存命中与失败不缓存两个行为用例；`docs/OPS.md` 补探活缓存说明。
-- 验证：棘轮双向有效性经等效验证（注入新增循环会失败、消除会提示收紧）；smoke 7 passed；服务端全量 1719 passed；`ruff check app tests` 通过；staged 脱敏扫描待提交前完成。
-- 提交：见本次提交号（下方报告）。
+- 验证：棘轮双向有效性经等效验证（注入新增循环会失败、消除会提示收紧）；smoke 7 passed；服务端全量 1719 passed；`ruff check app tests` 通过；staged 脱敏扫描 0 命中。
+- 提交：`a900227`；已推送 GitHub `origin/main`。
 - 运行状态：未同步部署机、未重启服务；改动为测试基线与探活缓存，不改 HTTP 契约与数据库 schema。
 - 未完成：sync 部署机以启用 ready 缓存；审计的 repository 收口与 `database.py` 拆分未实施；QQ 登录与链路验收按用户要求暂缓。

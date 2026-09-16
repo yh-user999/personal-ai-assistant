@@ -87,7 +87,9 @@ journalctl -u personal-qq-gateway -n 50 --no-pager
 journalctl -u personal-assistant -n 50 --no-pager
 ```
 
-本次实现不自动改 NapCat 配置、不自动启用 systemd、不重启现网服务。启用前先备份 NapCat 本地配置，并确认登录态不会因容器重启丢失。
+本次实现不自动改 NapCat 配置、不自动启用 systemd、不重启现网服务。启用前先备份 NapCat 本地配置。
+
+> **登录态提示（2026-09-16 实测）**：NapCat 容器重启不保证登录态有效。QQ 会话可能先被服务端踢下线（日志出现 `KickedOffLine` / “登录已失效”），此时容器重启只会暴露该状态并要求重新扫码。发现掉线后，直接在 NapCat WebUI（默认 `:6099`）用手机 QQ 重新扫码，不要反复重启容器。
 
 ## 五、服务端 HTTP 契约
 

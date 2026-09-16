@@ -558,7 +558,7 @@ cd <project-root>\desktop
 ## 十、QQ 接入（NapCat + 自建 OneBot 网关）
 
 > **当前状态**：仓库已加入独立 `qq/onebot_gateway` 薄网关；旧 AstrBot 插件与 MaiBot 链路已删除。网关负责 OneBot 事件接收、群白名单、真实 At/Reply/前缀门禁、短时续话和发送限流，FastAPI 继续负责身份、群作用域、聊天编排和最终安全约束。
-> 本轮不自动改 NapCat 运行配置、不启用 systemd、不重启现网服务；实际启用步骤见 [QQ 接入运维手册](docs/QQ_OPS.md)。
+> 2026-09-16 已在部署机安装并启用 `personal-qq-gateway.service`，NapCat reverse HTTP 推送已配置；QQ 会话需在 NapCat WebUI 重新扫码后才会恢复事件。启用与排障见 [QQ 接入运维手册](docs/QQ_OPS.md)。
 
 当前链路：
 

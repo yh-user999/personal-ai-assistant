@@ -70,15 +70,16 @@ QQ/NapCat 登录（保留）
 - FastAPI 实际运行目录：`/opt/personal-ai-assistant/server`，端口 8000；当前由 systemd 单元 `personal-assistant.service` 管理（`User=paa`、`EnvironmentFile` 提供 `PORT=8000`、enabled 开机自启），手工 `setsid nohup` 方式已停用。
 - 服务日志：`journalctl -u personal-assistant`（旧 `/tmp/assistant.log` 已停止写入）；检查优先使用 `/api/health` 和 `/api/ready`。
 - 部署仓库同步：`paa` 直接对 `/opt/personal-ai-assistant` 执行 `git pull --ff-only`（SSH 凭据在该仓库 `.ssh/`，权限 600、直连 GitHub、不进入 Git）；命令见第 6 节。
-- 最近已部署功能提交：`7c934b1`（群聊通用上下文续话）。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
+- 最近已部署功能提交：`e954cf4`（QQ 薄网关专用 OneBot 出口变量）；部署仓库已同步。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
 
 ### QQ / NapCat（与服务器同机，2026-09-15 核对）
 
 - NapCat 容器：`napcat`，`network=host`，`restart=always`；持久化目录 `/opt/napcat/{qq_config,cache,config,qq-login}`。
 - QQ 登录态保留在 `/opt/napcat/qq_config`，清理过程中未重新扫码。
-- NapCat OneBot 配置中当前只保留 `httpServers[xy-push]`；原 `websocketServers[maibot]` 与 `wsReverse/websocketClients[astrbot]` 条目已删除。
-- 仓库新增 `scripts/personal-qq-gateway.service` 模板，默认网关监听 `127.0.0.1:3101`；本阶段未应用部署机 systemd 或 NapCat reverse HTTP 配置。
-- 本机端口现状：`6099`（NapCat WebUI）开放；`3001`（原 MaiBot 正向 WebSocket）已随配置删除而关闭；`3101` 尚未作为现网服务启用。
+- NapCat OneBot 配置中当前只保留 `httpServers[xy-push]`；原 `websocketServers[maibot]` 与 `wsReverse/websocketClients[astrbot]` 条目已删除。2026-09-16 新增 `httpClients[xy-gateway]` → `http://127.0.0.1:3101/onebot`（token 与网关入站一致，仅存本机配置与 `.env`）。
+- 网关 systemd 单元 `personal-qq-gateway.service` 已于 2026-09-16 安装并启用（`User=paa`，仅监听 `127.0.0.1:3101`，入口 `python -m qq.onebot_gateway`）。
+- 本机端口现状：`6099`（NapCat WebUI）开放；`3001`（原 MaiBot 正向 WebSocket）已随配置删除而关闭；`3101` 由 `personal-qq-gateway` 监听（仅回环）。
+- QQ 登录态：2026-09-16 09:57 被 QQ 服务端踢下线（日志 `KickedOffLine` / “登录已失效”），14:57 容器重启只是暴露该状态；等待手机 QQ 在 NapCat WebUI 重新扫码，登录前网关收不到事件。
 - MaiBot 与 AstrBot 已彻底删除：容器 `maim-bot-core`、镜像 `sengokucola/maibot:latest`、目录 `/opt/maibot`、`astrbot.service` 单元与 `/opt/astrbot` 均不存在。
 - 清理前的配置类文件已转存到服务器本地 `0700` 备份目录 `/opt/cleanup-backup-<UTC 时间戳>/`，仅保留在服务器，不进入 Git。
 - 2026-09-15 二次清理：4 条失效 crontab 任务（指向已删脚本与 `/opt/astrbot`）、26 个挂死部署进程与 `/opt/astrbot`、`/opt/health-dash`、`/opt/astrbot_plugin_meme_manager`、`/opt/meme.tar.gz` 等残留已处置；保活/自愈任务 `jd-qqwatch`、`jd-shield` 与备份任务 `jd-backup` 保留。
@@ -96,15 +97,18 @@ QQ/NapCat 登录（保留）
 - 代码结构重组完成：健身/群聊/小说各自成领域包（`app/fitness`、`app/group`、`app/novel`），`app/chat/pipeline.py` 只留编排骨架，群聊轮次编排在 `app/group/turn.py`；新增模块流程见 `docs/模块开发指南.md`。
 - 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查、identity/scope 基础抽取、ChatApplication HTTP 入口收敛和 MCP 记忆/知识工具接入 application ports 已完成。
 - QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
+- QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效，入站鉴权与安全忽略冒烟验证通过；`.env` 密钥与配置仅存本机。
 
 ### 未完成/明确限制
 
-- QQ 入口代码已具备，但部署机尚未安装/启用 `personal-qq-gateway.service`，NapCat reverse HTTP 运行配置也尚未修改；因此真实 QQ 消息回复仍未验收。
+- QQ 会话于 2026-09-16 09:57 被 QQ 服务端踢下线，需手机扫码重新登录后才能做真实消息验收；真实 At/Reply/续话链路尚未实测。
+- 登录恢复前网关不会收到事件；验收还受上游 LLM 429 影响（04:30 日志显示月度额度约 2 天后重置）。
+- `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复提醒推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
 - 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
-- 群聊真实消息回复、身份回答与通用续话仍未在部署机验收；网关代码测试已通过，但运行环境尚未接线。
+- 2026-09-16 `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503（同一库的新连接与副本均 `ok`），重启 `personal-assistant` 后恢复；若复现需排查该连接状态的根因。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
 - 模块化单体尚未完成 fitness/novel/group application 门面迁移。
 
@@ -358,3 +362,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：实现 `b986d68`、状态记录 `b53e3d5`，均已推送 GitHub `origin/main`。
 - 运行状态：未修改 NapCat 运行配置，未安装/启用网关 systemd，未重启任何现网服务。
 - 未完成：真实 QQ 消息验收需后续在部署机应用配置后进行。
+
+### 2026-09-16 — QQ 薄网关部署接线（部署机）
+
+- 代码/配置：部署仓库 `/opt/personal-ai-assistant` fast-forward 至 `e954cf4`；`.env` 追加 `QQ_GATEWAY_*`（随机入站 token、群白名单 `*`、`QQ_GATEWAY_ONEBOT_URL/TOKEN` 指向本机 NapCat 3100、`QQ_GATEWAY_OWNER_ID` 取自本机旧插件配置备份）；NapCat `onebot11` 配置新增 `httpClients[xy-gateway]` → `127.0.0.1:3101/onebot`；安装并启用 `personal-qq-gateway.service`。网关首次启动因部署 `.env` 的 `QQ_PUSH_URL` 为空而失败，因此网关改为优先读专用变量（提交 `e954cf4`），避免牵动服务端提醒推送与主人身份语义；NapCat 配置与 `.env` 改动前已备份到 `/opt/cleanup-backup-20260916T064709Z/`（0700）。
+- 验证：网关 `/health` 200；入站 token 401/200、媒体与超长安全忽略冒烟通过；NapCat 容器重启后 `httpClients` 配置保留；`/api/ready` 曾因服务进程内单个长连接的 FTS5 视图异常返回 503（同一库的新连接与备份副本均为 `ok`，写锁无滞留），重启 `personal-assistant` 后并发 8/8 `ready`；日志确认 09-16 00:04 仍在接收群消息。
+- 提交：`e954cf4`（变量调整）与本次状态记录提交；均已推送 GitHub `origin/main`。
+- 运行状态：`personal-assistant` 与 `personal-qq-gateway` 均 active；NapCat 容器运行中，但 QQ 会话于 09-16 09:57 被踢下线（`KickedOffLine`），等待手机扫码重新登录；登录前网关收不到事件。
+- 未完成：扫码后做真实消息验收（真实 At/Reply/前缀、非直达静默、续话、幂等与 NapCat 发送）；恢复提醒推送与主人数字身份（`QQ_PUSH_*`/`QQ_ADMIN_ID`）属待决事项；上游 LLM 429 月度额度约 2 天后重置，期间回复可能失败。

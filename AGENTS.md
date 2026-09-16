@@ -407,7 +407,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ### 2026-09-16 — 首批健身结构化数据 repository 迁移
 
 - 代码/配置：新增 `server/app/fitness/repository.py`，收口健身动作目录、食品营养、饮食记录、训练计划/会话/训练组/身体指标及统计查询；`catalog.py`、`nutrition.py`、`training.py` 不再直接导入数据库模块；新增仓储契约测试与结构化健身边界棘轮断言；更新 `docs/模块开发指南.md`。
-- 验证：健身全域（含 API、MCP）68 passed；仓储/架构边界定向 31 passed；服务端全量 1722 passed；`ruff check app tests` 与 `git diff --check` 通过；未改数据库 schema、HTTP/MCP 契约、QQ 配置。
-- 提交：本阶段提交号待脱敏扫描后生成并推送。
-- 运行状态：尚未同步部署机或重启服务；旧 `fitness/service.py` 自由文本台账/知识卡保留兼容路径。
-- 未完成：脱敏扫描、提交推送与部署验收；Novel/Group repository 迁移及 `database.py` 拆分未实施；QQ 登录与链路验收按用户要求暂缓。
+- 验证：健身全域（含 API、MCP）68 passed；仓储/架构边界定向 31 passed；服务端全量 1722 passed；`ruff check app tests`、`git diff --check` 与 staged 脱敏扫描通过；未改数据库 schema、HTTP/MCP 契约、QQ 配置。
+- 提交：`e08c75a`；已推送 GitHub `origin/main`，部署仓已 fast-forward 同步。
+- 运行状态：部署仓健身目录属主已修正；`personal-assistant` 重启后 active，`/api/health`、`/api/ready` 均正常；`personal-qq-gateway` 未重启但 active，网关 `/health` 正常；旧 `fitness/service.py` 自由文本台账/知识卡保留兼容路径。
+- 未完成：Novel/Group repository 迁移及 `database.py` 拆分未实施；部署仓保留一个同步前的已核验 stash；QQ 登录与链路验收按用户要求暂缓。

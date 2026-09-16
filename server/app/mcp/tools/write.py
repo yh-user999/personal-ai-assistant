@@ -5,9 +5,12 @@ from typing import Any
 
 from mcp.server.mcpserver.context import Context
 
-from app.core import memory
+from app.application.ports import get_default_ports
 from app.services import goals
 from app.services.sanitize import sanitize
+
+
+memory = get_default_ports().memory
 
 from ..audit import audited_tool
 from ..permissions import require_owner

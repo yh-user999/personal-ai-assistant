@@ -35,6 +35,12 @@ class MemoryPort(Protocol):
         group_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    def get_facts_injection(
+        self,
+        limit: int = 40,
+        user_id: str | None = None,
+    ) -> str: ...
+
 
 class KnowledgePort(Protocol):
     async def search_knowledge(

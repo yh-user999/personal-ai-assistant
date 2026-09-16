@@ -45,6 +45,7 @@ TARGET_LAYER_EDGE_EXEMPTIONS = {
     ("app.application.chat", "app.chat.pipeline"),  # pipeline 迁移前复用旧编排
     ("app.application.chat", "app.chat.prompting"),  # 旧 prompt 导出兼容
     ("app.application.chat", "app.chat.routing"),  # 旧命令导出兼容
+    ("app.application.ports", "app.core"),  # 单体组合根装配 legacy 端口实现
 }
 GUARDED_LEGACY_PREFIXES = {
     "app.models": ("app.core", "app.services"),
@@ -176,5 +177,13 @@ def test_chat_http_and_routing_have_no_reverse_compatibility_edge():
 def test_mcp_adapter_does_not_depend_on_http_chat_adapter():
     assert not any(
         source.startswith("app.mcp") and target.startswith("app.api.chat")
+        for source, target in _internal_edges()
+    )
+
+
+def test_mcp_adapter_uses_application_ports_instead_of_core_modules():
+    assert not any(
+        source.startswith("app.mcp")
+        and (target == "app.core" or target.startswith("app.core."))
         for source, target in _internal_edges()
     )

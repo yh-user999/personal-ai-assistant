@@ -90,7 +90,7 @@ QQ/NapCat 登录（保留）
 - 服务端与历史 QQ 插件源码均有回归测试、lint 和脱敏检查。
 - MaiBot 与 AstrBot 两套第三方机器人链路已彻底清理，QQ 登录态保留在 NapCat。
 - 代码结构重组完成：健身/群聊/小说各自成领域包（`app/fitness`、`app/group`、`app/novel`），`app/chat/pipeline.py` 只留编排骨架，群聊轮次编排在 `app/group/turn.py`；新增模块流程见 `docs/模块开发指南.md`。
-- 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查、identity/scope 基础抽取和 ChatApplication HTTP 入口收敛已完成；当前下一步是为 MCP 记忆/知识工具接入 application ports。
+- 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查、identity/scope 基础抽取、ChatApplication HTTP 入口收敛和 MCP 记忆/知识工具接入 application ports 已完成。
 
 ### 未完成/明确限制
 
@@ -101,7 +101,7 @@ QQ/NapCat 登录（保留）
 - 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
 - 群聊真实消息回复、身份回答与通用续话验收全部未通过，且在新 QQ 接入方案落地前没有运行环境可验收。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
-- 模块化单体尚未完成 MCP/fitness/novel/group application 门面迁移；QQ 入站方案仍待决定。
+- 模块化单体尚未完成 fitness/novel/group application 门面迁移；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
 
 ## 5. 安全与隐私硬规则
 
@@ -329,3 +329,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`20e0d16`；已推送 GitHub `origin/main`，本地 HEAD 与远程一致。
 - 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
 - 未完成：MCP 记忆/知识工具仍直接使用 legacy core/service，待下一阶段通过 application ports 收敛；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+
+### 2026-09-16 — MCP 记忆/知识工具接入 application ports
+
+- 代码/配置：新增 `app/application/ports.py` 组合根，HTTP ChatApplication 复用默认端口装配；MCP 记忆、知识、写入工具和 facts resource 改从 application ports 获取 Memory/Knowledge 实现；MCP 身份上下文改用 `app.identity`；新增 MCP 不得直接依赖 `app.core` 的架构断言；未改数据库 schema、配置和运行服务。
+- 验证：MCP/架构定向测试 23 passed；服务端全量 1692 passed；`ruff check server/app server/tests` 通过；`git diff --check` 通过；脱敏扫描待提交前完成。
+- 提交：待本阶段提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
+- 未完成：fitness/novel/group application 门面迁移；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。

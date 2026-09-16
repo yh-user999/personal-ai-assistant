@@ -5,8 +5,8 @@ from typing import Any
 
 from mcp.server.mcpserver.context import Context
 
+from app.application.ports import get_default_ports
 from app.chat.retrieval import build_search_query
-from app.core import knowledge, memory
 from app.novel import entities
 from app.services import knowledge_domain
 
@@ -15,6 +15,11 @@ from ..permissions import require_read
 from ..schemas import cap_payload
 from .common import get_context, known_anchors, text
 from .common import limit as bounded_count
+
+
+_ports = get_default_ports()
+knowledge = _ports.knowledge
+memory = _ports.memory
 
 
 def _public_hit(item: dict[str, Any]) -> dict[str, Any]:
@@ -41,7 +46,7 @@ async def search_knowledge(
     domains, docs = knowledge_domain.detect_domains(search_query)
     hits = await knowledge.search_knowledge(search_query, top_k=k)
     hits = knowledge.expand_chunks(hits, radius=1, max_chars=4000)
-    degraded = bool(getattr(knowledge, "_vector_degraded_last", None) and knowledge._vector_degraded_last.get())
+    degraded = knowledge.last_vector_degraded()
     return cap_payload({
         "original_query": original,
         "search_query": search_query,

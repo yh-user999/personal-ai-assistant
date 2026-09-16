@@ -4,13 +4,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.core import memory
+from app.application.ports import get_default_ports
 from app.novel.repository import SQLiteNovelRepository
 from app.services import daily_summary, goals, profile, unresolved
 
 from .context import current_context
 from .permissions import require_owner
 from .schemas import cap_payload
+
+
+memory = get_default_ports().memory
 
 
 def _json(value: Any) -> str:

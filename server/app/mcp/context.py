@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.config import settings
-from app.core.memory import normalize_user_id, owner_user_id
+from app.identity import normalize_user_id, owner_user_id
 
 
 @dataclass(frozen=True, slots=True)

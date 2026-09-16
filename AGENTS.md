@@ -395,3 +395,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`a900227`；已推送 GitHub `origin/main`。
 - 运行状态：未同步部署机、未重启服务；改动为测试基线与探活缓存，不改 HTTP 契约与数据库 schema。
 - 未完成：sync 部署机以启用 ready 缓存；审计的 repository 收口与 `database.py` 拆分未实施；QQ 登录与链路验收按用户要求暂缓。
+
+### 2026-09-16 — /api/ready 缓存部署验收
+
+- 代码/配置：部署仓库 `/opt/personal-ai-assistant` 由 `e1dfe00` fast-forward 至 `ec7658f`（包含 `a900227` 的架构基线与探活缓存代码）；仅重启 `personal-assistant`，未改 QQ 网关配置。
+- 验证：服务启动完成后 `personal-assistant` active；`/api/health` 返回 ok；`/api/ready` 返回 ready，database schema 17、完整性与外键检查正常，failures/degraded 为空；`personal-qq-gateway` active 且 `/health` ok。
+- 提交：`ec7658f`；部署仓库与 GitHub `origin/main` 一致。
+- 运行状态：服务已加载 300 秒 TTL 的 `/api/ready` 完整性缓存；QQ 登录与网关真机验收状态不变。
+- 未完成：按包建 repository 的迁移方案待确认；`database.py` 拆分未实施；QQ 登录与链路验收按用户要求暂缓。

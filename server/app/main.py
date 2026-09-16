@@ -6,9 +6,11 @@ M3 里程碑：注册 reports 路由 + Web 静态页 + 周报定时任务。
 """
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import replace as _dataclasses_replace
 from pathlib import Path
+from threading import Lock
 from typing import ClassVar
 
 from fastapi import FastAPI, HTTPException, Request
@@ -44,6 +46,44 @@ logger = logging.getLogger("assistant")
 
 APP_VERSION = "0.4.1"  # 唯一版本来源：FastAPI 元数据与 /api/health 共用（v0.4 多人隔离）
 NOVEL_WORKBENCH_VERSION = "7"
+
+# /api/ready 的完整性检查缓存：PRAGMA integrity_check 会全库扫描，
+# 探活按分钟级轮询时会持续吃 IO，也会把偶发的单连接异常放大成持续 503。
+# 结果按 TTL 复用；schema 版本与建表缺失等轻量检查仍每次实时执行。
+READY_INTEGRITY_TTL_SECONDS = 300.0
+_integrity_cache: dict[str, object] = {}
+_integrity_cache_lock = Lock()
+
+
+def _integrity_snapshot() -> tuple[tuple[str, ...], int] | None:
+    """取仍在 TTL 内的完整性检查结果；过期或未缓存返回 None。"""
+    with _integrity_cache_lock:
+        expires_at = float(_integrity_cache.get("expires_at", 0.0))
+        rows = _integrity_cache.get("rows")
+        if rows is None or expires_at <= time.monotonic():
+            return None
+        return rows, int(_integrity_cache.get("foreign_key_count", 0))
+
+
+def _remember_integrity(rows: list[str], foreign_key_count: int) -> tuple[str, ...]:
+    """缓存本次完整性检查结果；失败结果不缓存，便于下次探活立刻复检。"""
+    snapshot = tuple(rows)
+    with _integrity_cache_lock:
+        if snapshot == ("ok",) and foreign_key_count == 0:
+            _integrity_cache.update(
+                rows=snapshot,
+                foreign_key_count=foreign_key_count,
+                expires_at=time.monotonic() + READY_INTEGRITY_TTL_SECONDS,
+            )
+        else:
+            _integrity_cache.clear()
+    return snapshot
+
+
+def reset_ready_integrity_cache() -> None:
+    """清空缓存（测试与运维手动复检用）。"""
+    with _integrity_cache_lock:
+        _integrity_cache.clear()
 
 
 @asynccontextmanager
@@ -207,6 +247,7 @@ async def ready(request: Request):
     def _database_check() -> dict:
         from app.models import database
 
+        integrity_cached = _integrity_snapshot()
         with database.db_connection() as conn:
             required = {
                 "schema_version", "memories", "facts", "behavior_events",
@@ -227,13 +268,23 @@ async def ready(request: Request):
                 "SELECT version FROM schema_version WHERE id=1"
             ).fetchone()
             version = int(version_row[0]) if version_row else None
-            # integrity_check 失败时会返回多行原因；只取首行既无法诊断，
-            # 也会在首行恰为提示性文本时误判。这里保留原因用于排障。
-            integrity_rows = [
-                str(row[0]) for row in conn.execute("PRAGMA integrity_check").fetchall()
-            ]
+            # integrity_check 会全库扫描，在大库上是重操作：按 TTL 缓存，
+            # 避免高频探活把单次异常放大成持续 503（2026-09-16 实际发生过）。
+            # 失败时返回多行原因；只取首行既无法诊断，也可能误判提示性文本。
+            if integrity_cached is None:
+                integrity_rows = [
+                    str(row[0]) for row in conn.execute("PRAGMA integrity_check").fetchall()
+                ]
+                foreign_key_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+                integrity_rows_cached = _remember_integrity(
+                    integrity_rows, len(foreign_key_rows)
+                )
+            else:
+                integrity_rows_cached, foreign_key_count = integrity_cached
+                integrity_rows = list(integrity_rows_cached)
+                foreign_key_rows = [None] * foreign_key_count
             integrity_ok = integrity_rows == ["ok"]
-            foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
+            foreign_keys = foreign_key_rows
             ok = not missing and version == database.SCHEMA_VERSION and integrity_ok and not foreign_keys
             result = {
                 "status": "ok" if ok else "failed",

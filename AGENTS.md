@@ -111,7 +111,7 @@ QQ/NapCat 登录（保留）
 - 2026-09-16 `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503（同一库的新连接与副本均 `ok`），重启 `personal-assistant` 后恢复；若复现需排查该连接状态的根因。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
 - 模块化单体尚未完成 fitness/novel/group application 门面迁移。
-- 2026-09-16 架构审计待办（按优先级）：① 数据访问未收口——66 个文件直接写 SQL、63 个文件各自 `connect()`，建议与 fitness/novel/group 门面迁移合并，按包建 repository；② 六组包级双向耦合（`services↔core`、`services↔novel`、`services↔models`、`novel↔core`、`chat↔application`、`chat↔group`）与 229 处函数体内延迟导入尚未纳入架构测试基线；③ `models/database.py`（1631 行）混了 schema/迁移/连接/完整性检查，建议拆分；④ `/api/ready` 每次跑全库 `PRAGMA integrity_check`，高频探活会放大抖动，建议加缓存或降频。
+- 2026-09-16 架构审计待办（按优先级）：① 数据访问未收口——66 个文件直接写 SQL、63 个文件各自 `connect()`，建议与 fitness/novel/group 门面迁移合并，按包建 repository；② `models/database.py`（1631 行）混了 schema/迁移/连接/完整性检查，建议拆分。包级循环棘轮基线与 `/api/ready` 完整性缓存已完成（见 2026-09-16 变更记录）。
 
 ## 5. 安全与隐私硬规则
 
@@ -387,3 +387,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：见本次提交号（下方报告）。
 - 运行状态：部署仓库已 fast-forward 至 `e1dfe00`，`personal-qq-gateway` 与 `personal-assistant` 均已重启并加载新代码（网关 `ChatConfigError` 就位、`_topic_boost_map/_topic_boost_for` 已带群作用域并由 `search()` 透传）；`/api/health` 200、`/api/ready` 并发 8/8 ready、网关 `/health` 200，日志无异常。未改 HTTP 契约与数据库 schema。
 - 未完成：真机送达仍需用户扫码后确认（用户已暂缓登录）；架构审计的数据访问收口、包级循环基线、`database.py` 拆分、`/api/ready` 降频未实施。
+
+### 2026-09-16 — 架构债棘轮基线与 /api/ready 完整性缓存
+
+- 代码/配置：`tests/test_architecture_boundaries.py` 新增两项棘轮断言——6 组包级双向耦合与 229 处函数体内延迟导入记为基线，只禁止新增、消除后须收紧清单（含收紧提示）；`app/main.py` 给 `/api/ready` 的全库 `PRAGMA integrity_check` 加 300 秒 TTL 缓存（成功才缓存、失败不缓存、提供手动失效入口），轻量检查仍每次实时执行；`tests/test_smoke.py` 补缓存命中与失败不缓存两个行为用例；`docs/OPS.md` 补探活缓存说明。
+- 验证：棘轮双向有效性经等效验证（注入新增循环会失败、消除会提示收紧）；smoke 7 passed；服务端全量 1719 passed；`ruff check app tests` 通过；staged 脱敏扫描待提交前完成。
+- 提交：见本次提交号（下方报告）。
+- 运行状态：未同步部署机、未重启服务；改动为测试基线与探活缓存，不改 HTTP 契约与数据库 schema。
+- 未完成：sync 部署机以启用 ready 缓存；审计的 repository 收口与 `database.py` 拆分未实施；QQ 登录与链路验收按用户要求暂缓。

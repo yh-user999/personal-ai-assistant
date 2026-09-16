@@ -90,7 +90,12 @@ def test_ready_reports_integrity_reasons_when_check_fails(monkeypatch):
 
     旧实现只取首行，既无法排障，也会在首行为提示文本时误判。
     """
+    from app.main import reset_ready_integrity_cache
     from app.models import database
+
+    # 完整性结果带 TTL 缓存：预热请求会缓存"ok"，这里要验的是真实失败，
+    # 必须先失效缓存，否则测的是缓存命中而不是检查逻辑。
+    reset_ready_integrity_cache()
 
     real_connect = database.connect
     failure_rows = [
@@ -129,6 +134,7 @@ def test_ready_reports_integrity_reasons_when_check_fails(monkeypatch):
     with TestClient(app) as client:
         client.get("/api/ready")
         monkeypatch.setattr(database, "connect", fake_connect)
+        reset_ready_integrity_cache()
         response = client.get("/api/ready")
 
     assert response.status_code == 503
@@ -139,6 +145,50 @@ def test_ready_reports_integrity_reasons_when_check_fails(monkeypatch):
         "*** in database main ***",
         "Page 42 is never used",
     ]
+    reset_ready_integrity_cache()
+
+
+def test_ready_caches_integrity_check_but_never_caches_failure(monkeypatch):
+    """完整性检查按 TTL 复用，避免高频探活反复全库扫描；失败结果绝不缓存。
+
+    2026-09-16 曾出现单连接 FTS5 异常被分钟级探活放大成持续 503；缓存成功结果
+    可削掉重复扫描，但失败必须每次复检，否则故障恢复后仍会报错、或反之掩盖问题。
+    """
+    from app.main import reset_ready_integrity_cache
+    from app.models import database
+
+    real_connect = database.connect
+    calls = {"integrity": 0}
+
+    class _CountingConn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            if sql.strip().upper().startswith("PRAGMA INTEGRITY_CHECK"):
+                calls["integrity"] += 1
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(database, "connect", lambda: _CountingConn(real_connect()))
+
+    with TestClient(app) as client:
+        # lifespan 的 init_db 也会做一次完整性检查，从这里之后开始计数才准。
+        reset_ready_integrity_cache()
+        baseline = calls["integrity"]
+        first = client.get("/api/ready")
+        after_first = calls["integrity"]
+        for _ in range(4):
+            client.get("/api/ready")
+        after_repeat = calls["integrity"]
+
+    assert first.status_code == 200
+    assert after_first == baseline + 1, "首次探活应实际执行一次完整性检查"
+    assert after_repeat == after_first, "TTL 内的重复探活不应再次全库扫描"
+
+    reset_ready_integrity_cache()
 
 
 def test_heartbeat_does_not_expose_activity_on_health():

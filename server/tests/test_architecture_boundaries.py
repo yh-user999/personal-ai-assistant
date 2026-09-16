@@ -54,6 +54,22 @@ GUARDED_LEGACY_PREFIXES = {
     "app.core.memory": ("app.services",),
 }
 
+# 2026-09-16 架构审计记录的包级双向耦合现状。这里只做"不许再增"的棘轮：
+# 消除一组就从清单里删一组，新增一组会让测试失败，迫使显式审查而不是默默积累。
+# 不强制立刻清零——收敛路径依赖 fitness/novel/group 的 application 门面迁移。
+KNOWN_PACKAGE_CYCLES = {
+    ("app.application", "app.chat"),  # ChatApplication 仍复用旧 chat 编排
+    ("app.chat", "app.group"),  # 群聊轮次编排与聊天流水线互相回调
+    ("app.core", "app.novel"),  # 旧知识/记忆与小说领域互相取数
+    ("app.core", "app.services"),  # 混合共享层双向依赖
+    ("app.models", "app.services"),  # 迁移逻辑复用服务层分类器
+    ("app.novel", "app.services"),  # 小说领域复用脱敏/分类工具
+}
+
+# 函数体内 import 的数量上限（审计基线 229）。留少量余量吸收正常改动，
+# 但显著增长会触发失败：延迟导入会把真实依赖藏起来，静态分析看不见。
+MAX_DEFERRED_INTERNAL_IMPORTS = 235
+
 
 def _module_name(path: Path) -> str:
     parts = path.relative_to(APP_ROOT).with_suffix("").parts
@@ -161,6 +177,85 @@ def test_sensitive_legacy_reverse_edges_are_explicitly_exempted():
                     unexpected.add((source, target))
     assert not unexpected, "未记录的 legacy 反向依赖：\n" + "\n".join(
         f"{source} -> {target}" for source, target in sorted(unexpected)
+    )
+
+
+def _package_of(module_name: str) -> str:
+    parts = module_name.split(".")
+    return ".".join(parts[:2]) if len(parts) > 1 else module_name
+
+
+def _package_cycles() -> set[tuple[str, str]]:
+    """包级双向依赖（A 依赖 B 且 B 依赖 A），忽略包内部边。"""
+    outgoing: dict[str, set[str]] = {}
+    for source, target in _internal_edges():
+        source_pkg, target_pkg = _package_of(source), _package_of(target)
+        if source_pkg != target_pkg:
+            outgoing.setdefault(source_pkg, set()).add(target_pkg)
+    return {
+        tuple(sorted((a, b)))
+        for a, targets in outgoing.items()
+        for b in targets
+        if a in outgoing.get(b, ())
+    }
+
+
+def _deferred_internal_imports() -> dict[str, int]:
+    """统计函数体内的 app.* import（每个模块的次数）。"""
+    counts: dict[str, int] = {}
+    for path in APP_ROOT.rglob("*.py"):
+        source = _module_name(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        inside_function: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.Import, ast.ImportFrom)):
+                        inside_function.add(id(child))
+        total = 0
+        for node in ast.walk(tree):
+            if id(node) not in inside_function:
+                continue
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                targets = [
+                    _resolve_relative(
+                        source, node, is_package=path.name == "__init__.py"
+                    )
+                ]
+            else:
+                continue
+            total += sum(1 for t in targets if t.startswith("app") and t != source)
+        if total:
+            counts[source] = total
+    return counts
+
+
+def test_package_level_cycles_do_not_grow_beyond_recorded_baseline():
+    """包级循环只减不增：新增一组必须显式审查并记录，不能默默积累。"""
+    observed = _package_cycles()
+    added = observed - KNOWN_PACKAGE_CYCLES
+    assert not added, "新增包级双向耦合（需消除或显式记录）：\n" + "\n".join(
+        f"{a} <-> {b}" for a, b in sorted(added)
+    )
+    resolved = KNOWN_PACKAGE_CYCLES - observed
+    assert not resolved, (
+        "以下循环已消除，请从 KNOWN_PACKAGE_CYCLES 删除，保持棘轮收紧：\n"
+        + "\n".join(f"{a} <-> {b}" for a, b in sorted(resolved))
+    )
+
+
+def test_deferred_internal_imports_do_not_grow():
+    """函数体内 import 会把真实依赖藏起来，总量不得显著增长。"""
+    counts = _deferred_internal_imports()
+    total = sum(counts.values())
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    assert total <= MAX_DEFERRED_INTERNAL_IMPORTS, (
+        f"函数体内 app.* import 增至 {total}（上限 {MAX_DEFERRED_INTERNAL_IMPORTS}）。"
+        "新增依赖请放模块顶层；确有循环需先解开或显式提高上限并说明原因。\n"
+        "当前最多的模块：\n"
+        + "\n".join(f"  {name}: {count}" for name, count in top)
     )
 
 

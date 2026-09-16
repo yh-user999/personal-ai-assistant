@@ -15,7 +15,17 @@ from fastapi import APIRouter, File, Form, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.errors import api_error
+from app.application.chat import (
+    ChatApplication,
+    GUEST_BLOCKED_HANDLERS,
+    SYSTEM_PROMPT,
+    _COMMAND_HANDLERS,
+    _GENERATION_INTENT,
+    _untrusted_reference,
+    parse_time_question,
+)
 from app.auth import require_roles
+from app.chat.composition import get_chat_application
 from app.chat.context import (
     ChatRequest,
     ChatResponse,
@@ -29,17 +39,9 @@ from app.chat.context import (
     deduplicate_request,
     guest_rate_limited,
 )
-from app.chat.pipeline import run_chat, run_chat_stream
-from app.chat.services_registry import make_services
 from app.services import message_search, mood, vision
-from app.chat.prompting import _GENERATION_INTENT, SYSTEM_PROMPT, _untrusted_reference
-from app.chat.routing import (
-    _COMMAND_HANDLERS,
-    GUEST_BLOCKED_HANDLERS,
-    parse_time_question,
-)
 from app.config import settings
-from app.core import knowledge, llm, memory
+from app.core import knowledge, llm, memory  # noqa: F401 - legacy monkeypatch exports
 from app.models import repo
 
 router = APIRouter()
@@ -59,19 +61,15 @@ __all__ = [
 
 # 后台任务引用集：保持原模块级符号，兼容测试与外部调用方。
 _bg_tasks = set()
+_chat_application: ChatApplication = get_chat_application(
+    bg_tasks=_bg_tasks,
+    logger=getLogger("assistant.chat"),
+)
 
 
 def _build_runtime(request: Request | None = None) -> ChatRuntime:
-    """按当前 API 模块依赖创建运行时；服务清单统一在 services_registry 维护。"""
-    return ChatRuntime(
-        settings=settings,
-        llm=llm,
-        memory=memory,
-        knowledge=knowledge,
-        services=make_services(),
-        bg_tasks=_bg_tasks,
-        logger=getLogger("assistant.chat"),
-    )
+    """兼容旧调用方；实际运行时由 ChatApplication 组合根创建。"""
+    return _chat_application.build_runtime(request)
 
 
 def _guest_rate_limited(uid: str) -> bool:
@@ -85,9 +83,8 @@ def _computer_online(hb: dict | None, stale_seconds: int | None = None) -> bool:
 
 
 async def _chat_impl(req: ChatRequest, request: Request) -> ChatResponse:
-    """兼容旧调用方的主链路入口。"""
-    ctx = build_context(req, request, memory)
-    return await run_chat(ctx, _build_runtime(request))
+    """兼容旧调用方的主链路入口；业务委托给 ChatApplication。"""
+    return await _chat_application.run(req, request)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -192,8 +189,8 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
     """
     if req.image is not None:
         raise api_error(400, "image_not_supported", "图片提问请使用 multipart /api/chat/vision")
-    ctx = build_context(req, request, memory)
-    runtime = _build_runtime(request)
+    ctx = _chat_application.build_context(req, request)
+    runtime = _chat_application.build_runtime(request)
 
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
@@ -203,7 +200,7 @@ async def chat_stream_api(req: ChatRequest, request: Request) -> StreamingRespon
 
         async def drive() -> None:
             try:
-                resp = await run_chat_stream(ctx, runtime, on_delta)
+                resp = await _chat_application.run_stream(ctx, on_delta, runtime=runtime)
                 await queue.put(("done", resp))
             except Exception:
                 runtime.logger.exception("流式聊天链路异常")

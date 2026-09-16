@@ -35,15 +35,19 @@ DOMAIN_FORBIDDEN_EXTERNAL_ROOTS = {
 # 把整个包加入白名单。
 LEGACY_EDGE_EXEMPTIONS = {
     ("app.models.database", "app.services.self_reflect"),  # 旧 lessons 迁移复用分类器
-    ("app.chat.routing", "app.api"),  # 旧 handler 签名兼容转发
     ("app.chat.retrieval", "app.chat.prompting"),  # 提示词安全包装的延迟导入
     ("app.core.knowledge", "app.services.knowledge_domain"),  # 旧知识域分类器
     ("app.core.knowledge", "app.services.sanitize"),  # 旧入库脱敏工具
     ("app.core.memory", "app.services.sanitize"),  # 旧记忆入库脱敏工具
 }
+TARGET_LAYER_EDGE_EXEMPTIONS = {
+    ("app.application.chat", "app.chat.context"),  # pipeline 迁移前复用旧请求契约
+    ("app.application.chat", "app.chat.pipeline"),  # pipeline 迁移前复用旧编排
+    ("app.application.chat", "app.chat.prompting"),  # 旧 prompt 导出兼容
+    ("app.application.chat", "app.chat.routing"),  # 旧命令导出兼容
+}
 GUARDED_LEGACY_PREFIXES = {
     "app.models": ("app.core", "app.services"),
-    "app.chat.routing": ("app.api",),
     "app.chat.retrieval": ("app.chat.prompting",),
     "app.core.knowledge": ("app.services",),
     "app.core.memory": ("app.services",),
@@ -111,7 +115,9 @@ def test_target_layers_follow_declared_dependency_direction():
         if source_layer is None:
             continue
         target_layer = _layer_for(target)
-        if target_layer not in ALLOWED_LAYERS[source_layer]:
+        if target_layer not in ALLOWED_LAYERS[source_layer] and (
+            source, target
+        ) not in TARGET_LAYER_EDGE_EXEMPTIONS:
             violations.append(
                 f"{source} -> {target}：{source_layer} 不得依赖 {target_layer or target}"
             )
@@ -159,3 +165,16 @@ def test_sensitive_legacy_reverse_edges_are_explicitly_exempted():
 
 def test_models_repo_does_not_depend_on_core_memory():
     assert ("app.models.repo", "app.core.memory") not in _internal_edges()
+
+
+def test_chat_http_and_routing_have_no_reverse_compatibility_edge():
+    edges = _internal_edges()
+    assert ("app.api.chat", "app.chat.routing") not in edges
+    assert ("app.chat.routing", "app.api") not in edges
+
+
+def test_mcp_adapter_does_not_depend_on_http_chat_adapter():
+    assert not any(
+        source.startswith("app.mcp") and target.startswith("app.api.chat")
+        for source, target in _internal_edges()
+    )

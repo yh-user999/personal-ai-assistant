@@ -101,11 +101,11 @@ def _coerce_context(msg: str, request: Any, ctx: ChatContext | dict | None) -> C
 def _runtime_or_default(request: Any, runtime: ChatRuntime | None) -> ChatRuntime:
     if runtime is not None:
         return runtime
-    # 兼容旧测试直接调用 handler(msg, request, ctx)；依赖仍从 API 兼容层
-    # 实时组装，以便 monkeypatch app.api.chat.llm/knowledge 等继续生效。
-    from app.api import chat as chat_api
+    # 兼容旧测试直接调用 handler(msg, request, ctx)；默认 runtime 从聊天组合根
+    # 组装，routing 不再反向依赖 HTTP API。
+    from app.chat.composition import get_chat_application
 
-    return chat_api._build_runtime(request)
+    return get_chat_application().build_runtime(request)
 
 
 def parse_time_question(msg: str) -> str | None:

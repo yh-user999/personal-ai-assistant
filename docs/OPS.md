@@ -90,7 +90,7 @@ PY
 
 仓库内网关入口为 `python -m qq.onebot_gateway`，默认监听 `127.0.0.1:3101`。它只处理文本事件，负责群白名单、真实 At/Reply/前缀门禁、`group_directed`、有限 follow-up 和回复限流；FastAPI 继续负责身份、群作用域和最终安全约束。
 
-本轮代码阶段不自动应用部署机 systemd 或 NapCat 配置。部署时从 GitHub 拉取后，在确认 `.env` 已配置且不含于仓库，再执行：
+2026-09-16 已在部署机应用：`personal-qq-gateway.service` 已启用，NapCat 已配置 reverse HTTP 推送（`httpClients[xy-gateway]`）。重新部署或迁移到新机器时，从 GitHub 拉取后先确认 `.env` 已配置且不含于仓库，再执行：
 
 ```bash
 sudo install -m 0644 scripts/personal-qq-gateway.service /etc/systemd/system/personal-qq-gateway.service

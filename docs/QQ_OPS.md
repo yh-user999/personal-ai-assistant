@@ -50,6 +50,8 @@ FastAPI personal-assistant.service（默认 127.0.0.1:8000）
 | `QQ_GATEWAY_HOST` / `QQ_GATEWAY_PORT` | 网关监听地址，默认 `127.0.0.1:3101` |
 | `QQ_GATEWAY_INBOUND_TOKEN` | NapCat reverse HTTP 事件推送 token；非回环监听必填 |
 | `QQ_GATEWAY_SELF_ID` | 可选的本账号 ID；不匹配事件 self_id 时拒绝唤醒 |
+| `QQ_GATEWAY_ONEBOT_URL` / `QQ_GATEWAY_ONEBOT_TOKEN` | 网关调用 NapCat action（`get_msg`/`send_*`）的出口与鉴权；留空回退 `QQ_PUSH_URL` / `QQ_PUSH_TOKEN` |
+| `QQ_GATEWAY_OWNER_ID` | 网关识别主人私聊的 QQ 号；留空回退 `QQ_ADMIN_ID`；群聊始终使用访客身份 |
 | `QQ_GATEWAY_GROUP_ALLOWED_IDS` | 群白名单；空值拒绝所有群，`*` 才全开 |
 | `QQ_GATEWAY_GROUP_REQUIRE_MENTION` | 是否要求真实 At/Reply/前缀，默认 `true` |
 | `QQ_GATEWAY_GROUP_TRIGGER_PREFIX` | 可选群触发前缀 |

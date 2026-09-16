@@ -101,6 +101,27 @@ def test_parse_group_allowlist_is_fail_closed_by_default():
     assert parse_group_allowlist("*") == (True, frozenset())
 
 
+def test_settings_prefer_gateway_specific_vars_with_legacy_fallback(monkeypatch):
+    monkeypatch.setenv("QQ_PUSH_URL", "http://legacy.test")
+    monkeypatch.setenv("QQ_PUSH_TOKEN", "legacy-token")
+    monkeypatch.setenv("QQ_ADMIN_ID", "111")
+    monkeypatch.setenv("QQ_GATEWAY_ONEBOT_URL", "http://gateway.test/")
+    monkeypatch.setenv("QQ_GATEWAY_ONEBOT_TOKEN", "gateway-token")
+    monkeypatch.setenv("QQ_GATEWAY_OWNER_ID", "222")
+
+    preferred = GatewaySettings.from_env()
+    assert preferred.onebot_api_url == "http://gateway.test"
+    assert preferred.onebot_token == "gateway-token"
+    assert preferred.owner_id == "222"
+
+    for name in ("QQ_GATEWAY_ONEBOT_URL", "QQ_GATEWAY_ONEBOT_TOKEN", "QQ_GATEWAY_OWNER_ID"):
+        monkeypatch.delenv(name, raising=False)
+    fallback = GatewaySettings.from_env()
+    assert fallback.onebot_api_url == "http://legacy.test"
+    assert fallback.onebot_token == "legacy-token"
+    assert fallback.owner_id == "111"
+
+
 def test_event_parser_rejects_untrusted_message_ids_and_malformed_segments():
     assert OneBotMessage.from_payload(_event("你好", message_id="1\\n2")) is None
     message = OneBotMessage.from_payload(

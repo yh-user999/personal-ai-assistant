@@ -92,7 +92,7 @@ class GatewaySettings:
             raise ValueError("QQ_GATEWAY_API_BASE 必须是 http(s) URL")
         onebot = urlparse(self.onebot_api_url)
         if onebot.scheme not in {"http", "https"} or not onebot.netloc:
-            raise ValueError("QQ_PUSH_URL 必须是 http(s) URL")
+            raise ValueError("QQ_GATEWAY_ONEBOT_URL/QQ_PUSH_URL 必须是 http(s) URL")
         if not self.qq_api_token:
             raise ValueError("QQ_API_TOKEN 未配置")
         if not self.identity_secret:
@@ -115,13 +115,14 @@ class GatewaySettings:
             listen_host=_env("QQ_GATEWAY_HOST", "127.0.0.1"),
             listen_port=_int("QQ_GATEWAY_PORT", 3101, minimum=1, maximum=65535),
             server_api_base=_env("QQ_GATEWAY_API_BASE", "http://127.0.0.1:8000").rstrip("/"),
-            onebot_api_url=_env("QQ_PUSH_URL").rstrip("/"),
-            onebot_token=_env("QQ_PUSH_TOKEN"),
+            # 优先网关专用出口；未配置时回退服务端提醒推送使用的 QQ_PUSH_*。
+            onebot_api_url=(_env("QQ_GATEWAY_ONEBOT_URL") or _env("QQ_PUSH_URL")).rstrip("/"),
+            onebot_token=_env("QQ_GATEWAY_ONEBOT_TOKEN") or _env("QQ_PUSH_TOKEN"),
             inbound_token=_env("QQ_GATEWAY_INBOUND_TOKEN"),
             qq_api_token=_env("QQ_API_TOKEN"),
             identity_secret=_env("QQ_IDENTITY_SECRET"),
             owner_api_token=owner_api_token,
-            owner_id=_env("QQ_ADMIN_ID"),
+            owner_id=_env("QQ_GATEWAY_OWNER_ID") or _env("QQ_ADMIN_ID"),
             group_allow_all=allow_all,
             group_allowed_ids=allowed_ids,
             configured_self_id=_env("QQ_GATEWAY_SELF_ID"),

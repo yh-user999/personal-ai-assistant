@@ -237,15 +237,23 @@ async def update_summary(memory_id: int, summary: str, topics: list[str]) -> Non
 
 # ── 检索 ──────────────────────────────────────────────────
 
-def _topic_boost_map(conn, days: int = 7, user_id: str | None = None) -> Counter:
-    """统计近 days 天当前用户各 topic 出现频次（用于热点补偿）。调用方负责关闭连接。"""
+def _topic_boost_map(
+    conn, days: int = 7, user_id: str | None = None, group_id: str | None = None
+) -> Counter:
+    """统计近 days 天当前作用域内各 topic 出现频次（用于热点补偿）。调用方负责关闭连接。
+
+    必须与检索同作用域：群聊热点不参与私聊排序，反之亦然，否则同一个 QQ 号
+    在群里聊的话题会污染他私聊检索的权重。
+    """
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     uid = normalize_user_id(user_id)
     clause, uargs = _user_scope(uid)
+    gclause, gargs = _group_scope(group_id)
     counter: Counter = Counter()
     rows = conn.execute(
-        f"SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? AND {clause}",
-        (since, *uargs),
+        f"SELECT topics FROM memories WHERE topics != '' AND topics != '[]' AND ts >= ? "
+        f"AND {clause} AND {gclause}",
+        (since, *uargs, *gargs),
     )
     for r in rows:
         try:
@@ -345,10 +353,10 @@ def _knn_fetch(vec_json: str, uid: str, gid: str = "") -> list[dict]:
         conn.close()
 
 
-def _topic_boost_for(uid: str) -> dict:
+def _topic_boost_for(uid: str, gid: str = "") -> dict:
     conn = connect()
     try:
-        return _topic_boost_map(conn, user_id=uid)
+        return _topic_boost_map(conn, user_id=uid, group_id=gid)
     finally:
         conn.close()
 
@@ -403,8 +411,8 @@ async def search(
         return []
     candidates = [by_id[cid] for cid, _ in sorted(rrf.items(), key=lambda kv: -kv[1])[: top_k * 2]]
 
-    # 4) 主题活跃度补偿（限定当前用户）
-    freq = await asyncio.to_thread(_topic_boost_for, uid)
+    # 4) 主题活跃度补偿（限定当前用户 + 当前群/私聊作用域）
+    freq = await asyncio.to_thread(_topic_boost_for, uid, gid)
 
     # 5) 综合评分 = 相似度 × importance × 时间衰减 × 话题补偿
     #    distance 为 cosine 距离（0~2）：sim = 1 - distance；

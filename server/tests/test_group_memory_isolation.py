@@ -120,3 +120,39 @@ def test_group_messages_excluded_from_older_summaries(db_env):
     _seed()
     older = memory_module.get_older_summaries(window_size=1, user_id=GUEST)
     assert all("群里" not in text for text in older), "更早摘要不得包含群消息"
+
+
+# ── 排序权重也必须同作用域 ──────────────────────────────────
+
+def test_topic_boost_is_scoped_to_current_conversation(db_env):
+    """话题活跃度补偿只能统计当前作用域的话题。
+
+    这里是排序权重而不是返回内容：漏加群条件不会泄漏正文，但会让群聊话题
+    污染私聊检索排序（反向亦然），违反群作用域不注入私聊数据的约定。
+    """
+    asyncio.run(memory_module.write_message("user", "私聊话题", user_id=GUEST))
+    asyncio.run(memory_module.write_message("user", "群聊话题", user_id=GUEST, group_id=GROUP))
+
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE memories SET topics=? WHERE group_id='' AND user_id=?",
+            ('["私聊专属话题"]', GUEST),
+        )
+        conn.execute(
+            "UPDATE memories SET topics=? WHERE group_id=? AND user_id=?",
+            ('["群专属话题"]', GROUP, GUEST),
+        )
+        conn.commit()
+
+        private = memory_module._topic_boost_map(conn, user_id=GUEST)
+        in_group = memory_module._topic_boost_map(conn, user_id=GUEST, group_id=GROUP)
+        other_group = memory_module._topic_boost_map(conn, user_id=GUEST, group_id=OTHER_GROUP)
+    finally:
+        conn.close()
+
+    assert private["私聊专属话题"] == 1
+    assert private["群专属话题"] == 0, "私聊热点补偿不得统计群话题"
+    assert in_group["群专属话题"] == 1
+    assert in_group["私聊专属话题"] == 0, "群热点补偿不得统计私聊话题"
+    assert other_group["群专属话题"] == 0, "其他群的话题不得互相影响"

@@ -111,6 +111,7 @@ QQ/NapCat 登录（保留）
 - 2026-09-16 `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503（同一库的新连接与副本均 `ok`），重启 `personal-assistant` 后恢复；若复现需排查该连接状态的根因。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
 - 模块化单体尚未完成 fitness/novel/group application 门面迁移。
+- 2026-09-16 架构审计待办（按优先级）：① 数据访问未收口——66 个文件直接写 SQL、63 个文件各自 `connect()`，建议与 fitness/novel/group 门面迁移合并，按包建 repository；② 六组包级双向耦合（`services↔core`、`services↔novel`、`services↔models`、`novel↔core`、`chat↔application`、`chat↔group`）与 229 处函数体内延迟导入尚未纳入架构测试基线；③ `models/database.py`（1631 行）混了 schema/迁移/连接/完整性检查，建议拆分；④ `/api/ready` 每次跑全库 `PRAGMA integrity_check`，高频探活会放大抖动，建议加缓存或降频。
 
 ## 5. 安全与隐私硬规则
 
@@ -370,3 +371,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`e954cf4`（变量调整）与本次状态记录提交；均已推送 GitHub `origin/main`。
 - 运行状态：`personal-assistant` 与 `personal-qq-gateway` 均 active；NapCat 容器运行中，但 QQ 会话于 09-16 09:57 被踢下线（`KickedOffLine`），等待手机扫码重新登录；登录前网关收不到事件。
 - 未完成：扫码后做真实消息验收（真实 At/Reply/前缀、非直达静默、续话、幂等与 NapCat 发送）；恢复提醒推送与主人数字身份（`QQ_PUSH_*`/`QQ_ADMIN_ID`）属待决事项；上游 LLM 429 月度额度约 2 天后重置，期间回复可能失败。
+
+### 2026-09-16 — 架构审计与群/私聊话题补偿隔离修复
+
+- 代码/配置：只读审计服务端架构（依赖矩阵、SQL 分布、异常处理、模块级状态、测试覆盖），结论记入第 4 节待办；修复审计发现的隔离缺口——`core/memory.py` 的 `_topic_boost_map`/`_topic_boost_for` 补群作用域并由 `search()` 透传当前 `group_id`，使话题活跃度补偿不再跨群/私聊统计。
+- 验证：新增 `test_topic_boost_is_scoped_to_current_conversation`；在临时库上以等效 SQL 对比证明修复前三个作用域返回相同话题集（互相污染）、修复后各自隔离；服务端全量 1707 passed、`ruff check app tests` 通过、`git diff --check` 通过、staged 脱敏扫描 0 命中。
+- 提交：见本次提交号（下方报告）。
+- 运行状态：未重启服务；本次改动只影响检索排序权重，不改 schema 与 HTTP 契约。
+- 未完成：审计列出的数据访问收口、包级循环纳入基线、`database.py` 拆分、`/api/ready` 完整性检查降频均未实施；QQ 登录与链路验收按用户要求暂缓。

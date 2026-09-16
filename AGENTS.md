@@ -354,7 +354,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ### 2026-09-16 — 自建 OneBot 薄网关实现
 
 - 代码/配置：新增 `qq/onebot_gateway` 包，实现 OneBot v11 HTTP 事件解析、群白名单、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、有限 follow-up、发送频率控制、QQ 身份 HMAC、`request_id` 幂等和 NapCat action 客户端；补充 CQ 码兼容、配置 self_id 缺失拒绝和有界状态存储；新增 13 项契约测试、systemd 模板、`.env.example` 网关配置说明，并同步更新 README、`docs/QQ_OPS.md` 与 `docs/OPS.md`。
-- 验证：网关定向测试 13 passed；服务端全量 1705 passed；`ruff check app tests`、`git diff --cached --check` 已通过；最终 staged 脱敏扫描和提交前验证待完成。
-- 提交：未提交。
+- 验证：网关定向测试 13 passed；服务端全量 1705 passed；`ruff check app tests`、`git diff --cached --check` 和 staged 脱敏扫描均通过。
+- 提交：`b986d68`，待推送 GitHub。
 - 运行状态：未修改 NapCat 运行配置，未安装/启用网关 systemd，未重启任何现网服务。
-- 未完成：完成全量回归和脱敏检查后提交并推送；真实 QQ 消息验收需后续在部署机应用配置后进行。
+- 未完成：推送本阶段提交；真实 QQ 消息验收需后续在部署机应用配置后进行。

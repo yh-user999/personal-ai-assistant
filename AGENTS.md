@@ -334,6 +334,6 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 
 - 代码/配置：新增 `app/application/ports.py` 组合根，HTTP ChatApplication 复用默认端口装配；MCP 记忆、知识、写入工具和 facts resource 改从 application ports 获取 Memory/Knowledge 实现；MCP 身份上下文改用 `app.identity`；新增 MCP 不得直接依赖 `app.core` 的架构断言；未改数据库 schema、配置和运行服务。
 - 验证：MCP/架构定向测试 23 passed；服务端全量 1692 passed；`ruff check server/app server/tests` 通过；`git diff --check` 通过；脱敏扫描待提交前完成。
-- 提交：待本阶段提交。
+- 提交：本阶段代码已提交（主提交号见 Git 历史）；待推送 GitHub。
 - 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
 - 未完成：fitness/novel/group application 门面迁移；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。

@@ -337,3 +337,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：本阶段代码与状态补记已提交并推送 GitHub（提交号见 Git 历史）。
 - 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
 - 未完成：fitness/novel/group application 门面迁移；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+
+### 2026-09-16 — QQ 入站方案与真实 @ 门禁取证
+
+- 代码/配置：未改服务端运行时代码或 NapCat 配置；核对现有 `/api/chat` 群作用域、QQ 身份 HMAC、`request_id` 幂等、`group_directed` 字段和 `qq_push` 出站契约，并回看已删除 QQ 插件的 fail-closed 真实 @ 判定与回复出口。
+- 验证：确认当前没有 OneBot 入站消费者；历史判定仅接受前缀、框架唤醒标记、目标为本账号的 At、目标为本账号的 Reply，无法确认账号或引用目标时拒绝触发；现有群聊服务端已能按 `group_directed` 区分直达与非直达并在非直达默认关闭主动插话。
+- 提交：本次取证记录随阶段提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
+- 未完成：需要选择自建轻量 OneBot 网关或第三方框架，并确定门禁在网关/服务端的唯一归属及 @ 后是否强制发送。

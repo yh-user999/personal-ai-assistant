@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from app.core.memory import _user_scope
+from app.identity import user_scope as _user_scope
 from app.models.database import connect
 
 

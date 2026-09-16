@@ -49,6 +49,15 @@ QQ/NapCat 登录（保留）
 3. “仅真实 @ 回复”作为确定性门禁的落点，以及 @ 后是否强制发送。
 4. 服务端已有的 QQ 接入契约（`group_directed`、QQ 身份 HMAC 头、`request_id` 幂等、`qq_push` 发送出口）在新方案里如何复用。
 
+## 2.3 服务端只读架构审计结论（2026-09-16）
+
+- FastAPI 入口由 `server/run.py` 启动，`server/app/main.py` 负责生命周期、鉴权中间件、路由注册、健康检查和静态页；另有 MCP 入口，当前没有 OneBot 入站消费者。
+- HTTP 聊天主链路为 `api.chat` 兼容层 → `services_registry` 全量模块装配 → `chat.pipeline` → 群聊闸门/响应规划 → 检索 → 提示词 → LLM → 审校 → 持久化；MCP 与部分领域 API 仍绕过统一应用服务。
+- `services/` 是混合共享层，不是稳定边界；`chat` 同时承载路由、领域触发、检索、提示词、审校和基础设施编排；fitness/novel/group 虽已成包，仍直接依赖 SQLite、core 和旧 services。
+- 已确认循环/反向依赖：`models.database` 的迁移逻辑延迟导入 `services.self_reflect`；`chat.retrieval` 反向导入 `chat.prompting`；`api.chat ↔ chat.routing`、`models.repo → core.memory`、`core ↔ services` 等靠延迟导入或兼容层维持。
+- 模块化单体目标分层为 `transport → application → domain → ports → adapters`；保留单进程、单 SQLite 和现有领域代码，先用兼容包装迁移，不拆微服务。
+- 迁移顺序：冻结 HTTP/MCP/聊天契约并补回归基线 → 建依赖约束 → 抽取 identity/scope 与基础端口 → 收敛 ChatApplication → 统一 fitness/novel/group 应用门面 → 在 QQ 方案确定后接入薄 OneBot 网关 → 清理兼容层。
+
 ## 3. 已核对运行事实（2026-09-15）
 
 ### 服务器
@@ -81,6 +90,7 @@ QQ/NapCat 登录（保留）
 - 服务端与历史 QQ 插件源码均有回归测试、lint 和脱敏检查。
 - MaiBot 与 AstrBot 两套第三方机器人链路已彻底清理，QQ 登录态保留在 NapCat。
 - 代码结构重组完成：健身/群聊/小说各自成领域包（`app/fitness`、`app/group`、`app/novel`），`app/chat/pipeline.py` 只留编排骨架，群聊轮次编排在 `app/group/turn.py`；新增模块流程见 `docs/模块开发指南.md`。
+- 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查和 identity/scope 基础抽取已完成；当前下一步是收敛 ChatApplication。
 
 ### 未完成/明确限制
 
@@ -91,6 +101,7 @@ QQ/NapCat 登录（保留）
 - 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
 - 群聊真实消息回复、身份回答与通用续话验收全部未通过，且在新 QQ 接入方案落地前没有运行环境可验收。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
+- 模块化单体尚未完成 application 门面迁移；ChatApplication 统一 HTTP/MCP 入口与 QQ 入站方案仍待按阶段实施。
 
 ## 5. 安全与隐私硬规则
 
@@ -278,3 +289,35 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`a38db20`（主改动）、`c7d6162`（同步通道与收尾记录）；备份处置随本次补充提交。
 - 运行状态：systemd 服务保持运行，本轮无业务代码变更、无需重载。
 - 未完成：QQ 入口仍无下游消费者；新接入架构待决策。
+
+### 2026-09-16 — 服务端只读架构审计与重构分阶段方案
+
+- 代码/配置：未改业务代码；完成入口、调用链、模块边界、循环/反向依赖、测试契约和 QQ 残留契约审计；确定模块化单体目标分层与六阶段迁移顺序。
+- 验证：静态阅读、依赖图扫描和独立交叉审计完成；本轮无代码改动，未运行全量测试或服务重载。
+- 提交：未提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 均未改变。
+- 未完成：契约回归基线和依赖约束检查进入下一阶段；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+
+### 2026-09-16 — 契约回归基线
+
+- 代码/配置：新增 `server/tests/test_contract_baseline.py`，锁定关键 HTTP 路由/方法、鉴权规则覆盖、聊天请求/响应字段、群聊 `interaction`、MCP 工具唯一性与关闭语义；未改生产运行时代码。
+- 验证：相关回归 50 passed；服务端全量 1678 passed；`ruff check server/app server/tests` 通过；脱敏扫描（Token/邮箱/IPv4/QQ 号）无命中。
+- 提交：未提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
+- 未完成：身份作用域与基础端口进入下一阶段；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+
+### 2026-09-16 — 模块化单体依赖方向检查
+
+- 代码/配置：新增 `server/tests/test_architecture_boundaries.py`，以 AST 检查目标层依赖方向、domain 禁止传输/存储 SDK，并逐条记录当前 legacy 反向依赖豁免；未改生产运行时代码。
+- 验证：依赖边界定向测试 3 passed；服务端全量 1681 passed；`ruff check server/app server/tests` 通过；脱敏扫描（Token/邮箱/IPv4/QQ 号）无命中。
+- 提交：未提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
+- 未完成：ChatApplication 收敛进入下一阶段；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+
+### 2026-09-16 — identity/scope 与基础端口抽取
+
+- 代码/配置：新增纯 `domain.identity`、配置适配层 `app.identity` 与 `contracts` 中的 Memory/Knowledge/LLM Protocol；`core.memory` 保留兼容导出，`models.repo` 改为直接依赖 identity，ChatRuntime 改用端口类型注解；未改数据库 schema 或 HTTP/MCP 运行时行为。
+- 验证：身份边界定向测试 44 passed；服务端全量 1686 passed；`ruff check server/app server/tests` 通过；脱敏扫描（Token/邮箱/IPv4/QQ 号）无命中。
+- 提交：未提交。
+- 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
+- 未完成：ChatApplication 收敛进入下一阶段；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。

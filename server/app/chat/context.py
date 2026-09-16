@@ -22,6 +22,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings as default_settings
+from app.contracts.ports import KnowledgePort, LanguageModelPort, MemoryPort
 
 logger = logging.getLogger("assistant.chat.context")
 
@@ -155,9 +156,9 @@ class ChatRuntime:
     """
 
     settings: Any
-    llm: Any
-    memory: Any
-    knowledge: Any
+    llm: LanguageModelPort
+    memory: MemoryPort
+    knowledge: KnowledgePort
     services: Any
     bg_tasks: set[asyncio.Task]
     logger: Any

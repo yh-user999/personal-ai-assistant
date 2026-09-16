@@ -21,56 +21,19 @@ from openai import OpenAIError
 
 from app.config import settings
 from app.core import embedding
+from app.identity import (
+    _group_scope,
+    _user_scope,
+    is_owner_user,
+    normalize_user_id,
+    owner_user_id,
+)
 from app.models.database import connect
 from app.common.timeutil import utc_iso as _now
 
 logger = logging.getLogger("assistant.memory")
 
 INJECT_FORMAT = "[记忆] {ts}: {content}"
-
-
-# ── 用户标识（v0.4 多人支持）───────────────────────────────
-# 主人 = settings.qq_admin_id（QQ 推送同款配置），未配置回退 'owner'（测试/本地）。
-# 访客 = 其 QQ 号。user_id 是数字串校验过的值或 'owner'，不是自由文本。
-
-def owner_user_id() -> str:
-    from app.config import settings
-
-    return settings.qq_admin_id.strip() or "owner"
-
-
-def normalize_user_id(user_id: str | None) -> str:
-    """外部 user_id（QQ 号）→ 内部标识；空 = 主人。非法值抛 ValueError（fail-closed）。"""
-    if user_id is None or not str(user_id).strip():
-        return owner_user_id()
-    uid = str(user_id).strip()
-    if uid == owner_user_id():
-        return uid  # 主人身份（QQ 号或未配置时的 'owner' 哨兵）
-    if not uid.isdigit() or len(uid) > 12:
-        raise ValueError("非法 user_id：必须是 1-12 位数字 QQ 号")
-    return uid
-
-
-def is_owner_user(user_id: str) -> bool:
-    return user_id == owner_user_id()
-
-
-def _user_scope(uid: str, col: str = "user_id") -> tuple[str, tuple]:
-    """用户范围过滤子句：主人兼容回填前的 '' 行（老数据未回填时属于主人），
-    访客严格只查自己——隔离铁律不变。col 用于 JOIN 场景限定表别名。"""
-    if uid == owner_user_id():
-        return f"{col} IN (?, '')", (uid,)
-    return f"{col} = ?", (uid,)
-
-
-def _group_scope(group_id: str | None, prefix: str = "") -> tuple[str, tuple]:
-    """群作用域过滤子句：私聊只查 group_id=''，群聊只查该群。
-
-    两侧都必须显式限定：否则同一个人在群里说的话会被他的私聊检索到，
-    群里也会读到他的私聊内容。
-    """
-    col = f"{prefix}group_id" if prefix else "group_id"
-    return f"{col} = ?", (str(group_id or "").strip(),)
 
 
 # ── FTS5 全文索引（替代 Python 全表扫描）───────────────────

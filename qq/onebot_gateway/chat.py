@@ -13,7 +13,15 @@ from .event import OneBotMessage
 
 
 class ChatUpstreamError(RuntimeError):
-    """聊天服务调用失败。"""
+    """聊天服务调用失败（网络、超时、5xx、响应格式等可重试或临时故障）。"""
+
+
+class ChatConfigError(ChatUpstreamError):
+    """网关自身鉴权/配置错误（401/403 或缺少 token）。
+
+    这类失败重试也不会成功，且原因在服务器侧，不应向群成员播报——
+    否则每条 @ 都会换来一句"服务不可达"，把内部配置故障暴露给整个群。
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +49,7 @@ class ChatClient:
     def _headers(self, message: OneBotMessage, request_id: str, *, owner: bool) -> dict[str, str]:
         token = self.settings.owner_api_token if owner else self.settings.qq_api_token
         if not token:
-            raise ChatUpstreamError("聊天鉴权配置缺失")
+            raise ChatConfigError("聊天鉴权配置缺失")
         headers = {"Authorization": f"Bearer {token}"}
         if not owner:
             timestamp = str(int(time.time()))
@@ -79,8 +87,13 @@ class ChatClient:
                 json=body,
                 headers=self._headers(message, request_id, owner=owner),
             )
+            if response.status_code in {401, 403}:
+                # 鉴权失败的原因在服务器配置（token/HMAC 不一致），不是用户能解决的
+                raise ChatConfigError("聊天服务拒绝网关身份")
             response.raise_for_status()
             payload = response.json()
+        except ChatConfigError:
+            raise
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             raise ChatUpstreamError("聊天服务请求失败") from exc
         if not isinstance(payload, dict):
@@ -97,4 +110,4 @@ class ChatClient:
         self._client = None
 
 
-__all__ = ["ChatClient", "ChatResult", "ChatUpstreamError"]
+__all__ = ["ChatClient", "ChatConfigError", "ChatResult", "ChatUpstreamError"]

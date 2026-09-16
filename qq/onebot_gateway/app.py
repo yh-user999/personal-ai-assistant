@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
-from .chat import ChatClient, ChatUpstreamError
+from .chat import ChatClient, ChatConfigError, ChatUpstreamError
 from .config import GatewaySettings, settings as default_settings
 from .event import OneBotMessage
 from .gate import (
@@ -138,6 +138,11 @@ class Gateway:
     ) -> dict[str, Any]:
         try:
             result = await self.chat.chat(message, group_directed=directed)
+        except ChatConfigError as exc:
+            # 服务器侧鉴权/配置错误：重试无用，也不该让群成员看到内部故障提示。
+            self.limiter.release(reservation)
+            logger.error("QQ 网关鉴权/配置错误，已静默：%s", type(exc).__name__)
+            return {"status": "error", "handled": True, "directed": directed, "sent": False}
         except ChatUpstreamError as exc:
             logger.warning("QQ 聊天上游失败：%s", type(exc).__name__)
             return await self._send_error(message, reservation)

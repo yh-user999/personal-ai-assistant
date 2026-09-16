@@ -105,6 +105,7 @@ journalctl -u personal-assistant -n 50 --no-pager
 ## 六、当前限制与排障
 
 - 本轮网关只处理 OneBot 文本消息；图片、语音、视频和文件事件安全忽略，不会把媒体占位符误当作普通文本。媒体入口需另立有限任务。
+- 上游失败分两类：鉴权/配置错误（401/403、缺 token）**静默丢弃并记 error 日志**，不向群里发提示（重试无用，且不应把服务器配置故障播报给群成员）；网络/超时/5xx 等临时故障才按 `QQ_GATEWAY_SEND_ERROR_REPLY` 回一句不可达提示。群里持续无回复且日志出现「鉴权/配置错误」时，核对 `QQ_API_TOKEN` 与 `QQ_IDENTITY_SECRET` 两端是否一致。
 - 群无回复：依次检查 `QQ_GATEWAY_GROUP_ALLOWED_IDS`、事件 self_id、At/Reply 的 OneBot 消息段、Reply 的 `get_msg` action、服务端 `/api/health` 和两套 token/HMAC 配置。
 - 返回 401/403：检查访客 Bearer、HMAC 的 user/timestamp/request_id 是否一致；群请求不能使用主人 token。
 - 重复消息：网关按 OneBot message_id 生成稳定 request_id；服务端幂等和网关成功投递缓存都命中时不会重复发送。

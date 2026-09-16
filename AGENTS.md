@@ -385,5 +385,5 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 代码/配置：新增 `server/tests/test_qq_gateway_end_to_end.py`（9 项），网关 `ChatClient` 经 `httpx.ASGITransport` 直连真实 FastAPI，只桩 `llm.chat` 与 embedding，覆盖真实 At、Reply 目标判定、前缀、纯名字静默、非白名单群静默、重复事件不二次发送、每群小时上限、群作用域落库隔离、配置 self_id fail-closed；据此把待人工验收面压缩到「NapCat 真机送达」。修复端到端暴露的缺陷：`qq/onebot_gateway/chat.py` 新增 `ChatConfigError`（401/403 与缺 token），`app.py` 对该类失败静默并记 error 日志，仅临时故障才回「服务暂时不可达」，避免把服务器鉴权配置故障广播给群成员；`docs/QQ_OPS.md` 补充两类失败的排障口径。
 - 验证：端到端 9 passed、网关契约 14 passed；服务端全量 1716 passed；`ruff check app tests` 与 `ruff check qq` 均通过；反向验证确认错误 HMAC 会被真实服务端 401 拒绝（证明鉴权确实在链路内生效）。
 - 提交：见本次提交号（下方报告）。
-- 运行状态：未重启现网服务；本次为测试新增与网关失败分类，未改 HTTP 契约与数据库 schema。
+- 运行状态：部署仓库已 fast-forward 至 `e1dfe00`，`personal-qq-gateway` 与 `personal-assistant` 均已重启并加载新代码（网关 `ChatConfigError` 就位、`_topic_boost_map/_topic_boost_for` 已带群作用域并由 `search()` 透传）；`/api/health` 200、`/api/ready` 并发 8/8 ready、网关 `/health` 200，日志无异常。未改 HTTP 契约与数据库 schema。
 - 未完成：真机送达仍需用户扫码后确认（用户已暂缓登录）；架构审计的数据访问收口、包级循环基线、`database.py` 拆分、`/api/ready` 降频未实施。

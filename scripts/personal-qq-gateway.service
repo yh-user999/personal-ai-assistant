@@ -1,0 +1,25 @@
+[Unit]
+Description=Personal AI Assistant QQ OneBot Gateway
+After=network-online.target personal-assistant.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paa
+Group=paa
+WorkingDirectory=/opt/personal-ai-assistant
+EnvironmentFile=/opt/personal-ai-assistant/.env
+ExecStart=/opt/personal-ai-assistant/server/.venv/bin/python -m qq.onebot_gateway
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+Restart=on-failure
+RestartSec=5
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=2048
+
+[Install]
+WantedBy=multi-user.target

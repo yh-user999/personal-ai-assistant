@@ -1,7 +1,7 @@
 # 运维手册 —— 组件启停与排查
 
 > 本手册以 **2026-09-15** 已核对的当前实例为准。服务端由 systemd 单元 `personal-assistant.service` 管理（2026-09-15 起，取代原手工进程方式）。
-> QQ/NapCat 的运维见 `docs/QQ_OPS.md`（其中 AstrBot 相关章节已失效）。
+> QQ/NapCat 与自建 OneBot 网关的运维见 [`docs/QQ_OPS.md`](QQ_OPS.md)；旧 AstrBot/MaiBot 链路不再执行。
 
 ## 组件总览
 
@@ -10,7 +10,7 @@
 | 服务端 | `/opt/personal-ai-assistant/server` | **systemd** `personal-assistant.service`（User=paa，端口 8000） | `journalctl -u personal-assistant` |
 | 采集器 | Windows `F:\Projects\git\personal-ai-assistant\collector` | 任务计划 `PAA-Collector` | `collector\logs\collector.log` |
 | 机器人 | Windows `F:\Projects\git\personal-ai-assistant\desktop` | 守护进程 `PAA-Robot-Supervisor` | `desktop\logs\desktop.log` + `faulthandler.log` |
-| QQ 接入 | NapCat（AstrBot 已于 2026-09-15 删除） | 见 `QQ_OPS.md` | NapCat 容器日志 |
+| QQ 接入 | NapCat + `personal-qq-gateway`（薄 OneBot 网关） | NapCat 容器 + systemd `personal-qq-gateway.service` | `journalctl -u personal-qq-gateway` + NapCat 容器日志 |
 
 > `scripts/deploy_server.sh` 内的 systemd unit 是新装模板；当前实例由部署目录 `/opt/personal-ai-assistant` 的 `personal-assistant.service` 托管（2026-09-15 现场核对过启动与 health/ready）。
 
@@ -86,7 +86,32 @@ PY
 
 ---
 
-## 二、采集器（Windows，管理员 PowerShell）
+## 二、QQ OneBot 网关（JD 服务器）
+
+仓库内网关入口为 `python -m qq.onebot_gateway`，默认监听 `127.0.0.1:3101`。它只处理文本事件，负责群白名单、真实 At/Reply/前缀门禁、`group_directed`、有限 follow-up 和回复限流；FastAPI 继续负责身份、群作用域和最终安全约束。
+
+本轮代码阶段不自动应用部署机 systemd 或 NapCat 配置。部署时从 GitHub 拉取后，在确认 `.env` 已配置且不含于仓库，再执行：
+
+```bash
+sudo install -m 0644 scripts/personal-qq-gateway.service /etc/systemd/system/personal-qq-gateway.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now personal-qq-gateway
+systemctl status personal-qq-gateway --no-pager
+curl -s http://127.0.0.1:3101/health
+```
+
+网关排障：
+
+```bash
+journalctl -u personal-qq-gateway -n 50 --no-pager
+systemctl restart personal-qq-gateway  # 仅配置或代码已同步且确认需要时
+```
+
+不要把 `QQ_GATEWAY_INBOUND_TOKEN`、`QQ_PUSH_TOKEN`、`QQ_API_TOKEN`、`QQ_IDENTITY_SECRET` 或真实 QQ 号写入仓库；不要把网关端口或 FastAPI 端口公开到公网。空群白名单拒绝所有群，Reply 查询失败和无法确认真实 At 时均拒绝触发。
+
+---
+
+## 三、采集器（Windows，管理员 PowerShell）
 
 ### 重启（任务计划隔离，不误伤机器人）
 
@@ -122,7 +147,7 @@ sqlite3 /opt/personal-ai-assistant/server/data/assistant.db \
 
 ---
 
-## 三、机器人（Windows）
+## 四、机器人（Windows）
 
 ### 重启 / 查日志
 
@@ -136,7 +161,7 @@ Get-Content F:\Projects\git\personal-ai-assistant\desktop\logs\faulthandler.log 
 
 ---
 
-## 四、Tailscale（一般不用动）
+## 五、Tailscale（一般不用动）
 
 ```powershell
 tailscale status                 # 连接状态
@@ -145,7 +170,7 @@ tailscale up --unattended        # 重连（断线时）
 
 ---
 
-## 五、常见问题速查
+## 六、常见问题速查
 
 | 现象 | 排查顺序 |
 |---|---|
@@ -156,7 +181,7 @@ tailscale up --unattended        # 重连（断线时）
 | QQ 提醒不响 | 见 `QQ_OPS.md` 排查节 |
 | 全部正常但数据重复 | 服务器幂等兜底，无需处理 |
 
-## 图片一期回归证据
+## 七、图片一期回归证据
 
 - 服务端隔离回归：**1004 passed / 2 skipped**，视觉用例包含在内。
 - QQ 图片专项：**5 passed**。

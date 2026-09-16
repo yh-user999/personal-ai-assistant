@@ -555,45 +555,26 @@ cd <project-root>\desktop
 
 如果你只是单人本地使用，可以先配置 `API_TOKEN`；如果要把 QQ、采集器和执行器分开，建议为不同角色配置不同 token。
 
-## 十、QQ 接入（待重构）
+## 十、QQ 接入（NapCat + 自建 OneBot 网关）
 
-> **当前状态（2026-09-15）**：原 AstrBot 插件与 MaiBot 链路已彻底删除，本节描述的接入方式**已不可用**。
-> 服务器上只保留 NapCat 的 QQ 登录与 OneBot 能力，当前没有任何组件消费群消息，QQ 侧不会有回复。
-> 新接入方案尚未确定，待决问题见 `AGENTS.md`；历史 @ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`。
+> **当前状态**：仓库已加入独立 `qq/onebot_gateway` 薄网关；旧 AstrBot 插件与 MaiBot 链路已删除。网关负责 OneBot 事件接收、群白名单、真实 At/Reply/前缀门禁、短时续话和发送限流，FastAPI 继续负责身份、群作用域、聊天编排和最终安全约束。
+> 本轮不自动改 NapCat 运行配置、不启用 systemd、不重启现网服务；实际启用步骤见 [QQ 接入运维手册](docs/QQ_OPS.md)。
 
-原链路（仅作历史参考）：
+当前链路：
 
 ```text
-手机 QQ 私聊
-    -> NapCat
-    -> AstrBot + 插件（已删除）
-    -> FastAPI /api/chat 或 /api/chat/vision
+手机 QQ
+    -> NapCat OneBot reverse HTTP
+    -> personal-qq-gateway
+    -> FastAPI /api/chat（带 group_directed 与 QQ HMAC）
+    -> 网关调用 NapCat send_*_msg
 ```
 
-### 服务端侧仍然有效的契约
+群消息默认必须命中白名单，并且只有真实 @ 本账号、Reply 本账号、配置前缀或有限 follow-up 才会设置 `group_directed=true`；无法确认目标时 fail-closed。非直达消息默认不调用服务端，只有显式开启主动插话透传才进入服务端既有群聊闸门。
 
-下面这些是服务端已实现、新链路可直接复用的部分，不随插件删除而失效：
+网关配置使用 `QQ_GATEWAY_*` 环境变量；真实 token、HMAC secret、QQ 号和部署地址只放服务器 `.env`。网关 health 地址默认 `http://127.0.0.1:3101/health`，服务模板为 [`scripts/personal-qq-gateway.service`](scripts/personal-qq-gateway.service)。
 
-| 服务端能力 | 说明 |
-|---|---|
-| `POST /api/chat` | 接受 `message`、`user_id`、`group_id`、`group_directed`、`request_id` |
-| QQ 身份签名 | `x-qq-user-id`、`x-qq-timestamp`、`x-qq-signature`、`x-qq-request-id`，HMAC-SHA256 |
-| `QQ_IDENTITY_SECRET` | 服务端 `.env` 中的共享密钥，用于校验上述签名 |
-| 角色 token | 主人与访客分离；群请求必须走访客身份，用主人身份会被拒绝 |
-| `request_id` 幂等 | 同一用户同一 `request_id` 只执行一次，重试不会重复回复 |
-| `qq_push` 发送出口 | 走 NapCat OneBot HTTP，提醒推送当前仍在使用 |
-| `vision_timeout` | 图片下载和识别超时 |
-| `container_path_map` | NapCat 容器路径到宿主路径的映射 |
-
-安全行为：
-
-- 群聊消息和群聊图片在上传前静默。
-- 访客只能访问自己的对话范围，不能因为请求体伪造 `user_id` 取得主人权限。
-- 主人文件入库只允许主人私聊。
-- 图片只接受 JPEG、PNG、WebP，默认 10 MB。
-- 入站聊天 token 和出站提醒 token 是两条不同链路，不要混用。
-
-完整排障和升级步骤见 [QQ 接入运维手册](docs/QQ_OPS.md)。
+服务端仍保留的契约包括 `POST /api/chat` 的 `message`、`user_id`、`group_id`、`group_directed`、`request_id`，以及 `x-qq-user-id`、`x-qq-timestamp`、`x-qq-signature`、`x-qq-request-id` HMAC 头。群请求始终使用 QQ 访客身份，不得使用主人 token。
 
 ## 十一、常用聊天示例
 

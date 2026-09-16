@@ -4,7 +4,7 @@
 
 ## 1. 项目一句话
 
-这是一个“服务器大脑 + 可选 Windows 客户端 + QQ 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行。QQ 侧当前只保留 NapCat 登录与 OneBot 能力，MaiBot 与 AstrBot 两套第三方机器人链路已于 2026-09-15 彻底删除，新的 QQ 接入方案尚未确定。
+这是一个“服务器大脑 + 可选 Windows 客户端 + QQ 入口 + 小说工作台”的个人 AI 助手项目。服务器负责聊天、记忆、知识库、图片、提醒、任务和小说工作台；Windows 负责可选的本地采集、桌面端和远程执行。QQ 侧保留 NapCat 登录与 OneBot 能力，并由仓库内独立的 `qq/onebot_gateway` 薄网关承接入站；MaiBot 与 AstrBot 两套第三方机器人链路已于 2026-09-15 彻底删除。
 
 ## 2. 代码地图
 
@@ -19,7 +19,8 @@
 - `server/app/group/`：群聊领域包（`context`/`heartflow`/`interjection`/`attention`/`care`/`expression`/`profile`/`relationship`，`turn.py` 承载群聊轮次编排）；可达性见 `server/app/group/README.md`。
 - `server/app/novel/`：小说领域包（实体、词典、写作、章节分析、生成、审阅和 `api.py`）。
 - `server/benchmarks/`：离线评分/回放基准工具（如 `social_replay.py` 群聊社交回放）。
-- `docs/QQ_MENTION_REFERENCE.md`：历史 @ 判定语义摘录（fail-closed 判据、组件字段兼容坑、限流取舍），QQ 接入重构时的参考。
+- `qq/onebot_gateway/`：独立 OneBot v11 HTTP 网关，负责事件解析、群白名单、真实 At/Reply/前缀门禁、follow-up、`group_directed` 映射和 NapCat 回复。
+- `docs/QQ_MENTION_REFERENCE.md`：历史 @ 判定语义摘录（fail-closed 判据、组件字段兼容坑、限流取舍），网关实现与测试的参考。
 - `docs/QQ_OPS.md`：QQ/NapCat 运维与安全边界；其中 AstrBot 相关章节已失效，需以本文件的“已核对运行事实”为准。
 - `docs/OPS.md`：服务端、Windows 客户端和组件排障；服务端管理方式（systemd 与日志位置）已于 2026-09-15 更新，如与现场冲突以本文件的“已核对运行事实”为准。
 - `docs/模块开发指南.md`：目录归属、四件套契约（service/api/建表迁移/聊天触发词/测试）与新增模块注册流程；新增领域模块前先读。
@@ -29,34 +30,36 @@
 
 ```text
 QQ/NapCat 登录（保留）
-  → OneBot 事件（当前无下游消费者）
+  → OneBot reverse HTTP 事件
+  → qq.onebot_gateway（唯一群直达决策层）
+  → FastAPI /api/chat（身份、作用域、编排和最终安全约束）
+  → OneBot HTTP action 回 NapCat
 ```
 
-服务端聊天流水线本身完好，但 QQ 入口已断开：
+网关已在仓库实现，但尚未应用到部署机或 NapCat 运行配置：
 
-- `server/app/chat/pipeline.py` 是聊天编排骨架；群聊行为编排拆在 `server/app/group/turn.py`，把心流、主动插话、检索、生成和审校串起来。
-- `server/app/group/interjection.py` 负责非直达消息的确定性兴趣评分、冷却、小时上限和 reservation。
-- `server/app/group/heartflow.py` 负责群级活跃度、能量和连续回复限制；`relationship.py` 负责抽象互动熟悉度；`context.py` 负责短期话题上下文。
-- `server/app/chat/followup.py` 生成有限的 `interaction` 元数据，原先由 QQ 插件的 `FollowupStore` 消费；当前没有消费者。
-- `server/app/chat/review.py` 是候选回复的最终审校出口；没有可靠来源的群外部事实必须降级。
+- `qq/onebot_gateway/event.py` 只接受可确认的 OneBot 文本、真实 At 和 Reply 目标；无法确认时 fail-closed。
+- `qq/onebot_gateway/gate.py` 负责群白名单、`group_directed`、成功回复限流和有限 follow-up。
+- `qq/onebot_gateway/chat.py` 复用服务端 QQ 身份 HMAC、访客 Bearer 和 `request_id` 幂等契约。
+- `qq/onebot_gateway/app.py` 编排入站事件、FastAPI 调用与非空回复发送；媒体等非文本事件安全忽略。
+- `server/app/chat/pipeline.py` 是聊天编排骨架；群聊行为编排在 `server/app/group/turn.py`，服务端继续负责最终审校。
+- `server/app/chat/followup.py` 生成有限的 `interaction` 元数据，由网关 `FollowupStore` 消费。
 
-### 2.2 新架构待决问题（2026-09-15）
+### 2.2 新架构决策结果（2026-09-16）
 
-清理后需要重新决定的点，尚未有结论：
-
-1. QQ 接入由自建轻量 OneBot 网关承担，还是重新引入第三方框架。
-2. 群聊“是否发言”的决策放在网关还是服务端，避免再次出现两层重复判定。
-3. “仅真实 @ 回复”作为确定性门禁的落点，以及 @ 后是否强制发送。
-4. 服务端已有的 QQ 接入契约（`group_directed`、QQ 身份 HMAC 头、`request_id` 幂等、`qq_push` 发送出口）在新方案里如何复用。
+1. QQ 接入采用自建、可由 systemd 托管的薄 OneBot v11 HTTP 网关，不重新引入 AstrBot/MaiBot/NoneBot。
+2. 网关是群消息是否直达的唯一确定性决策层，并把结果映射为服务端现有的 `group_directed`；服务端保留最终权限、安全和响应审校。
+3. 真实 At、Reply 目标确认、配置前缀和有限 follow-up 才能放行群直达；无法确认账号或引用目标时拒绝触发。非直达默认不调用服务端，主动插话必须显式开启。
+4. 网关复用服务端的 QQ 身份 HMAC、访客 token、群作用域、`request_id` 幂等和 OneBot action 发送出口。
 
 ## 2.3 服务端只读架构审计结论（2026-09-16）
 
-- FastAPI 入口由 `server/run.py` 启动，`server/app/main.py` 负责生命周期、鉴权中间件、路由注册、健康检查和静态页；另有 MCP 入口，当前没有 OneBot 入站消费者。
+- FastAPI 入口由 `server/run.py` 启动，`server/app/main.py` 负责生命周期、鉴权中间件、路由注册、健康检查和静态页；另有 MCP 入口，OneBot 入站由独立 `qq/onebot_gateway` 进程承接。
 - HTTP 聊天主链路为 `api.chat` 兼容层 → `services_registry` 全量模块装配 → `chat.pipeline` → 群聊闸门/响应规划 → 检索 → 提示词 → LLM → 审校 → 持久化；MCP 与部分领域 API 仍绕过统一应用服务。
 - `services/` 是混合共享层，不是稳定边界；`chat` 同时承载路由、领域触发、检索、提示词、审校和基础设施编排；fitness/novel/group 虽已成包，仍直接依赖 SQLite、core 和旧 services。
 - 已确认循环/反向依赖：`models.database` 的迁移逻辑延迟导入 `services.self_reflect`；`chat.retrieval` 反向导入 `chat.prompting`；`api.chat ↔ chat.routing`、`models.repo → core.memory`、`core ↔ services` 等靠延迟导入或兼容层维持。
 - 模块化单体目标分层为 `transport → application → domain → ports → adapters`；保留单进程、单 SQLite 和现有领域代码，先用兼容包装迁移，不拆微服务。
-- 迁移顺序：冻结 HTTP/MCP/聊天契约并补回归基线 → 建依赖约束 → 抽取 identity/scope 与基础端口 → 收敛 ChatApplication → 统一 fitness/novel/group 应用门面 → 在 QQ 方案确定后接入薄 OneBot 网关 → 清理兼容层。
+- 迁移顺序：冻结 HTTP/MCP/聊天契约并补回归基线 → 建依赖约束 → 抽取 identity/scope 与基础端口 → 收敛 ChatApplication → 统一 fitness/novel/group 应用门面 → 接入薄 OneBot 网关 → 清理兼容层。
 
 ## 3. 已核对运行事实（2026-09-15）
 
@@ -74,7 +77,8 @@ QQ/NapCat 登录（保留）
 - NapCat 容器：`napcat`，`network=host`，`restart=always`；持久化目录 `/opt/napcat/{qq_config,cache,config,qq-login}`。
 - QQ 登录态保留在 `/opt/napcat/qq_config`，清理过程中未重新扫码。
 - NapCat OneBot 配置中当前只保留 `httpServers[xy-push]`；原 `websocketServers[maibot]` 与 `wsReverse/websocketClients[astrbot]` 条目已删除。
-- 本机端口现状：`6099`（NapCat WebUI）开放；`3001`（原 MaiBot 正向 WebSocket）已随配置删除而关闭。
+- 仓库新增 `scripts/personal-qq-gateway.service` 模板，默认网关监听 `127.0.0.1:3101`；本阶段未应用部署机 systemd 或 NapCat reverse HTTP 配置。
+- 本机端口现状：`6099`（NapCat WebUI）开放；`3001`（原 MaiBot 正向 WebSocket）已随配置删除而关闭；`3101` 尚未作为现网服务启用。
 - MaiBot 与 AstrBot 已彻底删除：容器 `maim-bot-core`、镜像 `sengokucola/maibot:latest`、目录 `/opt/maibot`、`astrbot.service` 单元与 `/opt/astrbot` 均不存在。
 - 清理前的配置类文件已转存到服务器本地 `0700` 备份目录 `/opt/cleanup-backup-<UTC 时间戳>/`，仅保留在服务器，不进入 Git。
 - 2026-09-15 二次清理：4 条失效 crontab 任务（指向已删脚本与 `/opt/astrbot`）、26 个挂死部署进程与 `/opt/astrbot`、`/opt/health-dash`、`/opt/astrbot_plugin_meme_manager`、`/opt/meme.tar.gz` 等残留已处置；保活/自愈任务 `jd-qqwatch`、`jd-shield` 与备份任务 `jd-backup` 保留。
@@ -91,17 +95,18 @@ QQ/NapCat 登录（保留）
 - MaiBot 与 AstrBot 两套第三方机器人链路已彻底清理，QQ 登录态保留在 NapCat。
 - 代码结构重组完成：健身/群聊/小说各自成领域包（`app/fitness`、`app/group`、`app/novel`），`app/chat/pipeline.py` 只留编排骨架，群聊轮次编排在 `app/group/turn.py`；新增模块流程见 `docs/模块开发指南.md`。
 - 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查、identity/scope 基础抽取、ChatApplication HTTP 入口收敛和 MCP 记忆/知识工具接入 application ports 已完成。
+- QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
 
 ### 未完成/明确限制
 
-- QQ 入口当前断开：NapCat 仍在线，但没有任何下游消费 OneBot 事件，群聊不会有任何回复。
-- 新 QQ 接入架构尚未确定；“仅真实 @ 回复”的确定性门禁、以及决策放在网关还是服务端，都还没有结论。
+- QQ 入口代码已具备，但部署机尚未安装/启用 `personal-qq-gateway.service`，NapCat reverse HTTP 运行配置也尚未修改；因此真实 QQ 消息回复仍未验收。
+- 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
-- 群聊真实消息回复、身份回答与通用续话验收全部未通过，且在新 QQ 接入方案落地前没有运行环境可验收。
+- 群聊真实消息回复、身份回答与通用续话仍未在部署机验收；网关代码测试已通过，但运行环境尚未接线。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
-- 模块化单体尚未完成 fitness/novel/group application 门面迁移；QQ 入站方案、`group_directed` 与真实 @ 门禁归属仍待决定。
+- 模块化单体尚未完成 fitness/novel/group application 门面迁移。
 
 ## 5. 安全与隐私硬规则
 
@@ -345,3 +350,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：本次取证记录随阶段提交。
 - 运行状态：systemd 服务、NapCat 与 searxng 未改变，未重启服务。
 - 未完成：需要选择自建轻量 OneBot 网关或第三方框架，并确定门禁在网关/服务端的唯一归属及 @ 后是否强制发送。
+
+### 2026-09-16 — 自建 OneBot 薄网关实现
+
+- 代码/配置：新增 `qq/onebot_gateway` 包，实现 OneBot v11 HTTP 事件解析、群白名单、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、有限 follow-up、发送频率控制、QQ 身份 HMAC、`request_id` 幂等和 NapCat action 客户端；补充 CQ 码兼容、配置 self_id 缺失拒绝和有界状态存储；新增 13 项契约测试、systemd 模板、`.env.example` 网关配置说明，并同步更新 README、`docs/QQ_OPS.md` 与 `docs/OPS.md`。
+- 验证：网关定向测试 13 passed；服务端全量 1705 passed；`ruff check app tests`、`git diff --cached --check` 已通过；最终 staged 脱敏扫描和提交前验证待完成。
+- 提交：未提交。
+- 运行状态：未修改 NapCat 运行配置，未安装/启用网关 systemd，未重启任何现网服务。
+- 未完成：完成全量回归和脱敏检查后提交并推送；真实 QQ 消息验收需后续在部署机应用配置后进行。

@@ -1,151 +1,110 @@
-# QQ 接入运维手册 —— NapCat / AstrBot / 插件
+# QQ 接入运维手册 —— NapCat / 自建 OneBot 网关
 
-> **失效提示（2026-09-15）**：AstrBot 宿主、`astrbot_plugin_xy` 插件与 MaiBot 链路均已删除，本文涉及 AstrBot 宿主、插件同步与插件测试的章节**已不可执行**。
-> 服务器上只保留 NapCat（QQ 登录 + OneBot），当前无组件消费群消息。NapCat 侧的运维与安全边界仍然有效，可继续参考；接入部分待新方案落地后重写。
+> 本文记录当前新链路。AstrBot 宿主、`astrbot_plugin_xy` 插件与 MaiBot 已于 2026-09-15 删除，旧章节不再作为运行步骤。
+> 当前仓库只提供网关代码和 systemd 模板；实际 NapCat reverse HTTP 配置、`.env` 密钥和服务启停需在部署机本地完成。
 
-> 本文以 **2026-09-06** 已核对的 QQ 鉴权分流与图片识别实现为准。文本私聊走 `/api/chat` JSON，图片私聊走 `/api/chat/vision` multipart；本文不含真实 token、HMAC secret、QQ 号或公网地址。
-
-## 一、架构与数据流
+## 一、当前数据流
 
 ```text
-主人/访客手机 QQ
-   ↕ 私聊
-NapCat 容器（QQ 协议端，onebot HTTP :3100）
-   ↕ onebot 事件
-AstrBot 宿主（插件 astrbot_plugin_xy）
-   ├─ 主人文本/图片 → 主人 Bearer → /api/chat*（owner）
-   ├─ 主人文件 → 主人 Bearer → /api/knowledge/ingest（owner）
-   └─ 访客文本/图片 → QQ Bearer + 身份 HMAC → /api/chat*（qq）
-                                             ├─ image
-                                             ├─ message（可选）
-                                             ├─ request_id
-                                             └─ user_id（QQ 号）
-小月 FastAPI 服务器（普通聊天模型 / 视觉模型分开配置）
+手机 QQ
+  ↕
+NapCat（QQ 登录 + OneBot）
+  ├─ reverse HTTP 事件 → personal-qq-gateway（默认 127.0.0.1:3101）
+  │                         ├─ 群白名单 / 前缀 / 真实 At / Reply / follow-up 门禁
+  │                         ├─ Bearer + QQ HMAC → FastAPI /api/chat
+  │                         └─ 非空回复 → NapCat send_group_msg/send_private_msg
+  └─ OneBot HTTP action ← 网关与服务端的发送/Reply 查询
+
+FastAPI personal-assistant.service（默认 127.0.0.1:8000）
+  └─ 身份、群作用域、request_id 幂等、聊天编排、最终安全审校
 ```
 
-反向通道：小月的定时提醒经 `qq_push` 服务 → NapCat onebot HTTP → 主人 QQ。
-提醒推送使用 `QQ_PUSH_TOKEN`，与入站聊天使用的 `QQ_API_TOKEN` 是两条不同链路。
+网关和服务端各有一个明确职责：网关是 OneBot 事件的唯一 `group_directed` 判定者；服务端不重新解析 QQ 消息段，但仍拒绝主人身份进入群作用域，并保留最终权限、安全和上游失败处理。
 
-### 图片请求处理顺序
+## 二、确定性群门禁
 
-1. 插件识别 AstrBot `Image` 组件，清理图片占位符和 URL，只保留用户文字作为 caption。
-2. 取图优先使用组件本地路径/文件，再尝试图片 URL、组件 `get_file`，最后尝试 NapCat `get_file` 会话通道。
-3. 下载按流限制大小，随后按文件头与 MIME 校验，只接受 JPEG、PNG、WebP，默认上限 10MB。
-4. 以 `multipart/form-data` 上传到 `/api/chat/vision`，同时发送 `request_id`、`user_id` 和 QQ 身份 HMAC 头。
-5. 请求结束后删除插件创建的临时文件；用户原始本地文件只读、不删除。
+群消息必须先通过 `QQ_GATEWAY_GROUP_ALLOWED_IDS`；空白值不接收任何群，只有单独配置 `*` 才全群接收。
 
-## 二、隐私铁律（插件白名单，多人支持）
+启用 `QQ_GATEWAY_GROUP_REQUIRE_MENTION=true` 时，下列任一条件成立才设置 `group_directed=true`：
 
-- `personal` 模式下群聊消息（包括图片）一律静默，插件先 `stop_event()`，零 API 调用。
-- `group` 模式仅响应白名单群中明确 @/命中前缀且未触发按群限流的消息；群请求始终走 QQ 访客身份，不读取或写入个人数据、不联网、不持久化群消息。
-- 私聊：主人和访客都可聊天；服务端按 QQ 号隔离记忆。访客可识图，但不能读取主人信息或调用主人专属功能。
-- 主人专属功能（文件入库、执行器、提醒、工作日志等）只有 `owner_qq` 可用；门禁在服务端，不依赖插件自称身份。
-- `owner_qq` 未配置 = 全拒（fail-closed）。
-- 文件入库和图片识别是两个分支：陌生人发文件不会入库，但陌生人私聊图片可以进入视觉问答。
+1. 文本以 `QQ_GATEWAY_GROUP_TRIGGER_PREFIX` 开头。
+2. OneBot `at` 消息段的 `data.qq` 等于本账号 `self_id`。
+3. OneBot `reply` 消息段引用的消息，其 `get_msg` 返回发送者等于本账号 `self_id`。
+4. 同一群同一用户在服务端刚成功回复后，命中有限的 `interaction.followup` 窗口。
 
-### AstrBot 会话白名单必须关闭
+无法取得本账号 ID、Reply 查询失败、At 指向他人、纯文本出现机器人名字，全部 fail-closed。直接 @ 不会被 planner 的 `ignore/interject` 静默，但仍受身份校验、空回复、上游失败和每群小时滥用上限约束。
 
-`cmd_config.json` → `platform_settings.enable_id_white_list` **必须为 `false`**。
+非直达消息默认不调用服务端；只有显式打开 `QQ_GATEWAY_GROUP_INTERJECT_ENABLED` 才以 `group_directed=false` 透传，由服务端既有主动插话闸门决定。
 
-白名单开启时，AstrBot 的 `whitelist_check` 会在插件前拦截陌生人私聊，多人支持和访客图片识别都会失效。群聊入口由 xy 插件按 `assistant_mode`、白名单、唤醒和限流规则处理；`personal` 模式收到群聊事件后立即 `stop_event()`，`group` 模式只有通过门禁的群消息才调用服务端。
+## 三、脱敏配置
 
-若发现群聊中有机器人响应，优先检查插件版本至少为 v1.4.1，以及 xy handler 是否早于其他可能回复的插件加载。
+所有真实 token、HMAC secret、QQ 号和地址只写部署机 `.env`，不写仓库。
 
-## 三、日常操作
-
-### NapCat 扫码登录 / 掉线恢复
-
-1. 通过 AstrBot 宿主的 NapCat WebUI 或容器日志获取二维码。
-2. 手机 QQ 扫码登录。
-3. 容器重启后可能掉登录，重新扫码即可；不要为了图片识别临时公开 HTTP 端口。
-
-### AstrBot 插件配置
-
-| 项 | 说明 |
+| 配置 | 作用 |
 |---|---|
-| `assistant_mode` | `personal`（默认，群聊静默）或 `group`（启用群聊入口） |
-| `group_allowed_ids` | 允许响应的群号，逗号/空格/分号分隔；留空不响应任何群；明确填写 `*` 才开放全部群 |
-| `group_require_mention` | 是否要求 @机器人，默认 `true`；短时追问窗口不受普通消息误触发影响 |
-| `group_trigger_prefix` | 可选群聊触发前缀 |
-| `group_followup_enabled` | 小月刚回复后，同一用户可在短时间内免 @ 续接当前对话或补充答案，默认 `true` |
-| `group_followup_window_seconds` | 追问窗口有效期，默认 90 秒 |
-| `group_followup_max_messages` | 每次追问窗口最多消费的补充消息数，默认 1 |
-| `group_cooldown_seconds` | 同群回复冷却秒数，默认 0；需要压制刷屏时再显式调整 |
-| `group_max_replies_per_hour` | 每群每小时最大回复数，默认 6 |
-| `owner_qq` | 主人 QQ 号（纯数字字符串）；只用于私聊主人专属功能和 fail-closed 判断，群聊不生效 |
-| `api_base` | 小月服务根地址，同机通常为 `http://127.0.0.1:8000` |
-| `api_token` | QQ 访客入站 Bearer token；应与服务器 `QQ_API_TOKEN` 一致，不要填主人 token 或出站 `QQ_PUSH_TOKEN` |
-| `owner_api_token` | 主人入站 Bearer token；应与服务器 `OWNER_API_TOKEN`（或兼容的 `API_TOKEN`）一致，只给 `owner_qq` 使用，不能填 `QQ_API_TOKEN` |
-| `identity_secret` | 与服务器 `QQ_IDENTITY_SECRET` 一致；仅用于访客签名 QQ 号、时间戳和 `request_id`，主人 token 不依赖此签名 |
-| `onebot_http` | NapCat onebot HTTP 地址，图片/文件会话下载用，默认 `http://127.0.0.1:3100` |
-| `onebot_token` | NapCat onebot HTTP token |
-| `vision_timeout` | 图片取回、下载和 `/api/chat/vision` 的独立超时，默认 90 秒 |
-| `vision_max_image_bytes` | 插件侧图片上限，默认 10485760（10MB）；下载和上传前均限制 |
-| `download_proxy` | QQ CDN 直连 502 时的代理兜底；当前插件未填写时回落本机 clash `http://127.0.0.1:7890`，如环境不同请显式填写可用代理 |
-| `container_path_map` | NapCat 容器路径 → 宿主路径映射；`容器前缀=宿主前缀`，多对用分号分隔 |
+| `QQ_PUSH_URL` / `QQ_PUSH_TOKEN` | NapCat OneBot HTTP action 地址和 token；提醒推送与网关发送共用 action 出口 |
+| `QQ_API_TOKEN` | 访客/群请求的 Bearer token |
+| `OWNER_API_TOKEN` 或 `API_TOKEN` | 主人私聊 Bearer token |
+| `QQ_IDENTITY_SECRET` | 访客/群请求 QQ 号、时间戳、request_id 的 HMAC 密钥 |
+| `QQ_ADMIN_ID` | 主人 QQ 号；群请求即使发送者相同也仍使用访客角色 |
+| `QQ_GATEWAY_HOST` / `QQ_GATEWAY_PORT` | 网关监听地址，默认 `127.0.0.1:3101` |
+| `QQ_GATEWAY_INBOUND_TOKEN` | NapCat reverse HTTP 事件推送 token；非回环监听必填 |
+| `QQ_GATEWAY_SELF_ID` | 可选的本账号 ID；不匹配事件 self_id 时拒绝唤醒 |
+| `QQ_GATEWAY_GROUP_ALLOWED_IDS` | 群白名单；空值拒绝所有群，`*` 才全开 |
+| `QQ_GATEWAY_GROUP_REQUIRE_MENTION` | 是否要求真实 At/Reply/前缀，默认 `true` |
+| `QQ_GATEWAY_GROUP_TRIGGER_PREFIX` | 可选群触发前缀 |
+| `QQ_GATEWAY_GROUP_INTERJECT_ENABLED` | 是否允许非直达消息进入服务端主动插话，默认 `false` |
+| `QQ_GATEWAY_GROUP_MAX_REPLIES_PER_HOUR` | 每群成功发送上限，默认 30 |
+| `QQ_GATEWAY_FOLLOWUP_WINDOW_SECONDS` / `QQ_GATEWAY_FOLLOWUP_MAX_MESSAGES` | 短时续话窗口，默认 90 秒/1 条 |
+| `QQ_GATEWAY_API_BASE` | FastAPI 地址，默认 `http://127.0.0.1:8000` |
 
-### 服务器 `.env`（脱敏示例）
+`.env.example` 已包含全部无密钥配置键。网关启动入口为：
 
-```dotenv
-# 入站：AstrBot → /api/chat 或 /api/chat/vision
-QQ_API_TOKEN=<qq-api-token>
-QQ_IDENTITY_SECRET=<shared-hmac-secret>
-QQ_IDENTITY_MAX_AGE_SECONDS=300
-
-# 出站：定时提醒 → NapCat
-QQ_PUSH_URL=http://127.0.0.1:3100
-QQ_PUSH_TOKEN=<napcat-onebot-token>
-QQ_ADMIN_ID=<owner-qq-id>
+```bash
+/opt/personal-ai-assistant/server/.venv/bin/python -m qq.onebot_gateway
 ```
 
-QQ 插件为访客请求构造 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`、`X-QQ-Signature`；签名载荷是 QQ 号、时间戳、`request_id` 逐行拼接后做 HMAC-SHA256。主人请求只使用主人 Bearer token，不依赖 QQ 身份签名。服务端还会检查时间窗口、表单 `request_id` 与签名 request_id 一致，以及 body `user_id` 与签名 QQ 号一致。
+## 四、systemd 与 NapCat 配置
 
-## 四、图片专项排障速查
+仓库模板为 [`scripts/personal-qq-gateway.service`](../scripts/personal-qq-gateway.service)。部署机同步 GitHub 后，确认 `.env` 已配置，再执行：
 
-| 现象 | 排查顺序 |
-|---|---|
-| 主人私聊图片无回复 | ① `/api/health` ② 插件 `api_base` ③ `api_token` ↔ `QQ_API_TOKEN` ④ `identity_secret` ↔ `QQ_IDENTITY_SECRET` ⑤ AstrBot `[xy]` 日志 |
-| 访客私聊图片无回复 | ① `enable_id_white_list=false` ② 插件版本 ≥v1.4.1 ③ `identity_secret` 已配置 ④ 确认只发送图片问答，不是主人专属命令 |
-| `personal` 模式群聊图片有响应 | 严重隐私问题：检查插件是否 ≥v1.4.1、xy 是否先于其他 handler；群聊必须在任何上传前 `stop_event()`，不应访问 `/api/chat/vision` |
-| `group` 模式群聊图片无响应 | 先确认群号在 `group_allowed_ids`，消息已 @机器人或命中前缀，且未触发按群冷却/小时上限；通过门禁后才会访问 `/api/chat/vision` |
-| 图片提示“未能读取图片” | 检查 Image 组件是否只有 `file_id`；确认 `onebot_http`、`onebot_token` 和 NapCat `get_file` 可用，再看容器路径映射 |
-| CDN 下载 502/超时 | 优先走 NapCat `get_file` 会话通道；仍失败时配置 `download_proxy`，确认本机 clash/代理可访问 QQ CDN |
-| 格式或 MIME 不支持 | 只接受 JPEG/PNG/WebP；同时检查文件头和声明 MIME，SVG、改后缀文件、MIME 不匹配都会拒绝 |
-| 图片超过大小上限 | 插件和服务端默认都是 10MB；先检查 `vision_max_image_bytes` 与 `VISION_MAX_IMAGE_BYTES`，下载阶段和上传阶段都可能返回超限 |
-| 返回 401/403 | 401 通常是 Bearer token；403 通常是 QQ HMAC 缺失、过期、签名不匹配、QQ 号冒充主人或 request_id 不一致 |
-| 重试返回 409 | 同一用户的同一 `request_id` 只能对应同一 caption 和同一图片；沿用原 request_id 重试同一请求，换内容要生成新 ID |
-| 处理后 `/tmp` 有临时图片 | 检查插件 `[xy] 图片处理失败` 后的 finally 清理路径；组件提供的原始本地文件不由插件删除，插件自己创建的 `xy_vision_*` 应被清掉 |
-| 文本正常、图片不通 | 两者路由不同：文本是 `/api/chat` JSON，图片是 `/api/chat/vision` multipart；不要只检查普通聊天接口 |
+```bash
+sudo install -m 0644 scripts/personal-qq-gateway.service /etc/systemd/system/personal-qq-gateway.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now personal-qq-gateway
+systemctl status personal-qq-gateway --no-pager
+curl -s http://127.0.0.1:3101/health
+```
 
-## 五、文本/图片回归证据
+NapCat reverse HTTP server 的事件目标应指向网关监听地址，并配置与 `QQ_GATEWAY_INBOUND_TOKEN` 相同的 access token；OneBot action 地址仍由 `QQ_PUSH_URL` 指向 NapCat HTTP server。NapCat 使用 host 网络时，容器内外的本机端口可直接互通；不要把网关端口或 FastAPI 端口公开到公网。
 
-- QQ 图片专项：**5 passed**（`pytest qq/astrbot_plugin_xy/test_main.py -q`，使用 AstrBot/HTTP 桩，不发送真实 QQ 消息）。
-- 服务端视觉用例包含在隔离回归：**1004 passed / 2 skipped**。
+服务日志：
 
-以上数字只记录已完成证据；日常排障不重复调用外部视觉服务。
+```bash
+journalctl -u personal-qq-gateway -n 50 --no-pager
+journalctl -u personal-assistant -n 50 --no-pager
+```
 
-## 六、升级注意
+本次实现不自动改 NapCat 配置、不自动启用 systemd、不重启现网服务。启用前先备份 NapCat 本地配置，并确认登录态不会因容器重启丢失。
 
-- 原 AstrBot 插件目录 `qq/astrbot_plugin_xy` 已于 2026-09-15 删除，该链路不可执行（见文首失效提示）。
-- 小月服务端视觉/QQ 配置变更后重启 `personal-assistant.service`（`systemctl restart personal-assistant`），日志用 `journalctl -u personal-assistant`。
-- NapCat 容器升级后重新扫码，检查 `onebot_http`、`onebot_token`、`container_path_map` 与新镜像路径约定。
-- 任何 token、HMAC secret、QQ 号和公网地址只写本地配置，不写入仓库文档。
+## 五、服务端 HTTP 契约
 
-## 七、人格路由：宿主默认人格切到「小月」（v1.4.2 起适用）
+网关调用现有 `POST /api/chat`，透传：
 
-插件以小月独立名义注册，QQ 端回复全部来自小月服务；宿主 AstrBot 的默认 LLM
-在插件所有处理分支均被屏蔽（`should_call_llm(True)` = 禁止默认 LLM，v1.1 起语义已对齐）。
-宿主默认人格只在两种场景露出来：插件被禁用/未加载，或 AstrBot 内建指令（如 /reset）的回显。
-为保持兜底身份一致，把宿主默认人格切到「小月」：
+- `message`、`user_id`、`request_id`
+- 群消息额外透传 `group_id`、`group_directed`
+- 访客/群请求使用 `Authorization: Bearer QQ_API_TOKEN` 和 `X-QQ-User-ID`、`X-QQ-Timestamp`、`X-QQ-Request-ID`、`X-QQ-Signature`
+- 主人私聊只使用 `OWNER_API_TOKEN`/兼容 `API_TOKEN`，不使用访客 HMAC
 
-1. AstrBot WebUI → 人格情景（Personas）：新建或编辑名为「小月」的人格，系统提示词
-   写一句身份声明即可（如「你是小月，用户的个人 AI 助手，具体能力由小月服务提供」）。
-   注意：QQ 私聊的正常回复由小月服务端生成，宿主人格提示词不参与聊天，只影响兜底场景。
-2. WebUI → 配置管理：把默认对话人格选为「小月」（不同 AstrBot 版本入口名称略有差异，
-   对应配置一般为 provider 设置下的默认人格项）。
-3. 验证：QQ 私聊发送 `/persona` 查看当前人格；或临时停用 xy 插件再私聊，
-   回复应自称小月而不是小白；验证完重新启用插件。
-4. 回滚：把默认人格改回原值即可，插件逻辑不依赖宿主人格。
+服务端仍执行时间窗口、签名一致性、主人冒充拒绝、群作用域拒绝、同一用户同一 `request_id` 幂等和群数据隔离。网关在发送成功后记录有界 request cache，防止 NapCat 重试同一事件造成重复发送。
 
-历史说明：v1.4.1 及之前文档中的「借壳小白」指本插件部署在原小白 AstrBot 实例内；
-v1.4.2 起插件以小月独立名义注册，该表述不再使用。
+## 六、当前限制与排障
+
+- 本轮网关只处理 OneBot 文本消息；图片、语音、视频和文件事件安全忽略，不会把媒体占位符误当作普通文本。媒体入口需另立有限任务。
+- 群无回复：依次检查 `QQ_GATEWAY_GROUP_ALLOWED_IDS`、事件 self_id、At/Reply 的 OneBot 消息段、Reply 的 `get_msg` action、服务端 `/api/health` 和两套 token/HMAC 配置。
+- 返回 401/403：检查访客 Bearer、HMAC 的 user/timestamp/request_id 是否一致；群请求不能使用主人 token。
+- 重复消息：网关按 OneBot message_id 生成稳定 request_id；服务端幂等和网关成功投递缓存都命中时不会重复发送。
+- 服务端有回复但 QQ 无消息：检查 `QQ_PUSH_URL`、`QQ_PUSH_TOKEN`、NapCat `send_group_msg/send_private_msg` action 和容器日志。
+- 任何排障日志都不得记录消息正文、QQ 号、token、HMAC secret 或完整请求体。
+
+旧 AstrBot/MaiBot 配置、插件测试和图片处理步骤只可从 Git 历史回看，不能照本文执行。

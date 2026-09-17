@@ -102,12 +102,12 @@ QQ/NapCat 登录（保留）
 ### 未完成/明确限制
 
 - QQ 会话于 2026-09-16 09:57 被 QQ 服务端踢下线，需手机扫码重新登录后才能做真实消息验收；真实 At/Reply/续话链路尚未实测。
-- 登录恢复前网关不会收到事件；验收还受上游 LLM 429 影响（04:30 日志显示月度额度约 2 天后重置）。
+- 登录恢复前网关不会收到事件；QQ 真机验收仍需手机扫码。
 - `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复提醒推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
 - 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
-- 此前上游 LLM 曾出现 HTTP 429（月度额度耗尽）；新链路接入后仍需重新确认可用额度。
+- 原 opencode 聊天通道于 2026-09-17 达到月度额度上限；当前聊天已切换至受信任 HTTPS New API 的 `gemini-3.8-flash-high`，如需切回需使用仓外旧配置备份。
 - 2026-09-16 `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503（同一库的新连接与副本均 `ok`），重启 `personal-assistant` 后恢复；若复现需排查该连接状态的根因。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
 - 模块化单体尚未完成 fitness/novel/group application 门面迁移。
@@ -411,3 +411,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`e08c75a`；已推送 GitHub `origin/main`，部署仓已 fast-forward 同步。
 - 运行状态：部署仓健身目录属主已修正；`personal-assistant` 重启后 active，`/api/health`、`/api/ready` 均正常；`personal-qq-gateway` 未重启但 active，网关 `/health` 正常；旧 `fitness/service.py` 自由文本台账/知识卡保留兼容路径。
 - 未完成：Novel/Group repository 迁移及 `database.py` 拆分未实施；部署仓保留一个同步前的已核验 stash；QQ 登录与链路验收按用户要求暂缓。
+
+### 2026-09-17 — 切换聊天 LLM 到 HTTPS New API
+
+- 代码/配置：部署机 `.env`（不入 Git）切换聊天基地址至受信任 HTTPS OpenAI 兼容网关、模型 `gemini-3.8-flash-high`，令牌来自本机 `NEW_API_TOKEN`；旧 `.env` 以 600 权限备份在仓外。
+- 验证：模型列表 HTTPS 严格证书校验 HTTP 200，目标模型可用；`personal-assistant` 重启后 active；`/api/ready` ready，database/scheduler/llm/vector 全 ok；真实最小聊天调用返回预期文本；QQ 网关未改动。
+- 提交：见本次提交号（下方报告）；已推送 GitHub。
+- 运行状态：聊天已恢复；QQ 登录与真实链路验收仍暂缓。
+- 未完成：QQ 扫码验收、Novel/Group repository 迁移和 `database.py` 拆分未实施；原 opencode 配置保留在仓外备份。

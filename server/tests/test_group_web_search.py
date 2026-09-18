@@ -91,11 +91,11 @@ def test_reference_lookup_stays_conservative_without_a_title():
 
 def test_reference_queries_start_with_exact_title_then_expand():
     primary, alternate = web_provider.reference_search_queries("《没钱修什么仙》这本小说的剧情")
-    assert primary == "没钱修什么仙？"
+    assert primary == "没钱修什么仙？ 作品简介 剧情 设定"
     assert alternate == "没钱修什么仙？ 小说 作者 简介 剧情 设定"
 
     primary, alternate = web_provider.reference_search_queries("书名是：没钱修什么仙的简介")
-    assert primary == "没钱修什么仙？"
+    assert primary == "没钱修什么仙？ 作品简介 剧情 设定"
     assert alternate == "没钱修什么仙？ 小说 作者 简介 剧情 设定"
 
 

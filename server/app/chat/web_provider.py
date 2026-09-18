@@ -183,26 +183,38 @@ def looks_like_external_reference_lookup(text: str) -> bool:
     return has_title and (has_intent or bool(re.search(r"书名\s*(?:是|叫|为|[:：])", value)))
 
 
-def reference_search_queries(text: str) -> tuple[str, str | None]:
-    """为作品查询生成精确书名和一条有限扩展词，不扩展成调查。"""
+def _reference_title_text(text: str) -> str:
     value = (text or "").strip()
     titles = re.findall(r"[《「]([^》」]{2,40})[》」]", value)
-    title = titles[0].strip() if titles else ""
-    if not title:
-        match = _REFERENCE_TITLE_DECL_RE.search(value)
-        title = match.group("title").strip() if match else ""
+    if titles:
+        return titles[0].strip()
+    match = _REFERENCE_TITLE_DECL_RE.search(value)
+    if match:
+        return match.group("title").strip()
+    suffix = re.search(r"\s+(?:作品简介|作者|简介|剧情|设定|小说)(?:\s|$)", value)
+    if suffix:
+        value = value[:suffix.start()]
+    return value.strip(" 《》「」?？!！。")
+
+
+def reference_search_queries(text: str) -> tuple[str, str | None]:
+    """为作品查询生成资料导向词和一条有限扩展词，不扩展成调查。"""
+    value = (text or "").strip()
+    title = _reference_title_text(value)
     if not title:
         return value[:400], None
-    primary = title[:200]
-    if not re.search(r"[？?!！。]$", primary):
-        primary = (primary + "？")[:200]
-    expanded = f"{primary} 小说 作者 简介 剧情 设定"
+    title_query = title[:200]
+    if not re.search(r"[？?!！。]$", title_query):
+        title_query = (title_query + "？")[:200]
+    primary = f"{title_query} 作品简介 剧情 设定"[:200]
+    expanded = f"{title_query} 小说 作者 简介 剧情 设定"
     return primary, expanded[:200]
 
 
 def filter_reference_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """只保留可见文本明确提到作品标题的结果，避免把泛搜索噪声当成来源。"""
-    needle = re.sub(r"[\W_]+", "", unquote(str(query or "")), flags=re.UNICODE)
+    title = _reference_title_text(query)
+    needle = re.sub(r"[\W_]+", "", unquote(title), flags=re.UNICODE)
     if len(needle) < 2:
         return list(results or [])
     relevant: list[dict[str, Any]] = []

@@ -115,6 +115,15 @@ def test_normalize_result_falls_back_to_host_as_source():
     assert item["source"] == "news.example.com"
 
 
+@pytest.mark.parametrize("url", [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "http://127.0.0.1:8000/private",
+])
+def test_normalize_result_rejects_non_http_or_private_sources(url):
+    assert web_provider.normalize_result({"title": "T", "url": url, "source": "恶意来源"}) is None
+
+
 # ── 抓页 SSRF 护栏 ──────────────────────────────────────────
 
 @pytest.mark.parametrize("url", [
@@ -278,10 +287,13 @@ def test_cluster_orders_by_first_report():
 
 def test_format_sources_skips_incomplete():
     text = web_provider.format_sources([
-        {"title": "T", "source": "媒体", "published_at": "2026-09-10", "summary": "摘要"},
-        {"title": "缺来源", "source": "", "published_at": "2026-09-10"},
+        {
+            "title": "T", "url": "https://example.com/t", "source": "媒体",
+            "published_at": "2026-09-10", "summary": "摘要",
+        },
+        {"title": "缺来源", "url": "https://example.com/missing", "source": "", "published_at": "2026-09-10"},
     ])
-    assert "T" in text and "媒体" in text
+    assert "T" in text and "媒体" in text and "https://example.com/t" in text
     assert "缺来源" not in text
 
 
@@ -336,9 +348,18 @@ def test_search_and_cluster_reports_no_sources(fake_http):
 
 def test_format_sources_marks_unknown_and_inferred_time():
     text = web_provider.format_sources([
-        {"title": "有时间", "source": "媒体A", "published_at": "2026-09-10", "time_known": True},
-        {"title": "推断时间", "source": "媒体B", "published_at": "2026-09-09", "time_known": False},
-        {"title": "无时间", "source": "媒体C", "published_at": "", "time_known": False},
+        {
+            "title": "有时间", "url": "https://example.com/a", "source": "媒体A",
+            "published_at": "2026-09-10", "time_known": True,
+        },
+        {
+            "title": "推断时间", "url": "https://example.com/b", "source": "媒体B",
+            "published_at": "2026-09-09", "time_known": False,
+        },
+        {
+            "title": "无时间", "url": "https://example.com/c", "source": "媒体C",
+            "published_at": "", "time_known": False,
+        },
     ])
     assert "（媒体A，2026-09-10）" in text
     assert "2026-09-09（据链接推断）" in text

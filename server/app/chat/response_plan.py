@@ -340,6 +340,19 @@ def build_rule_plan(
             investigation_required=True, constraints=list(MORAL_CONSTRAINTS) + [NO_SOURCE_RULE],
             source="rule",
         )
+    if web_provider.looks_like_external_reference_lookup(text):
+        _, expanded_query = web_provider.reference_search_queries(text)
+        return ResponsePlan(
+            mode="retrieve_then_answer", intent="external_reference_lookup", confidence=0.92,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=(expanded_query or text[:400]),
+            constraints=[
+                NO_SOURCE_RULE,
+                "只能依据本轮检索来源概括，来源不足时明确说明无法核实",
+                "主观评价必须和来源支持的事实分开，不得凭模型记忆补写剧情或口碑",
+            ],
+            source="rule",
+        )
     if web_provider.looks_like_hot_browsing(text):
         # 浏览型："最近有什么大事" → 热榜（当下热议话题清单），非关键词检索
         return ResponsePlan(

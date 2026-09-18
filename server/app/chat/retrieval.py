@@ -433,6 +433,113 @@ def _collect_injections(ctx: ChatContext, runtime: ChatRuntime, msg: str) -> dic
     }
 
 
+async def _retrieve_group_web(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    message: str,
+    trace: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """群聊专用联网检索：只处理直达请求，不触达个人知识与调查链路。"""
+    from app.chat import investigation, web_provider
+    from app.chat.prompting import _untrusted_reference
+    from app.group.web_search import limiter
+
+    settings = runtime.settings
+    plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
+    provider = str(plan.get("provider") or "").strip()
+    if not provider and (
+        web_provider.looks_like_external_reference_lookup(message)
+        or web_provider.needs_web_search(message)
+    ):
+        provider = "web_search"
+        plan["provider"] = provider
+    plan["group_web_search"] = "disabled"
+
+    if not getattr(settings, "group_web_search_enabled", False):
+        plan["group_web_search"] = "disabled"
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+    if not ctx.group_directed:
+        plan["group_web_search"] = "not_directed"
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+    if provider != "web_search":
+        plan["group_web_search"] = "not_requested"
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+    if not web_provider.configured():
+        plan["group_web_search"] = "unavailable"
+        plan["web_unavailable"] = True
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+
+    decision = limiter.reserve(
+        ctx.group_id,
+        hourly_limit=getattr(settings, "group_web_search_hourly_limit", 3),
+        cooldown_seconds=getattr(settings, "group_web_search_cooldown_seconds", 15.0),
+    )
+    if not decision.allowed or decision.reservation is None:
+        plan["group_web_search"] = decision.reason
+        plan["group_web_search_remaining"] = decision.remaining
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+
+    reservation = decision.reservation
+    query, expanded = web_provider.reference_search_queries(message)
+    alternate = expanded or str(plan.get("query") or "").strip() or None
+    try:
+        with ctx.trace.stage("group_web_search"):
+            data = await web_provider.search_and_cluster(
+                query,
+                time_range=web_provider.time_range_default(),
+                limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
+                alt_query=alternate if alternate and alternate != query else None,
+                deep_dive=False,
+                max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
+                budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 8.0))),
+            )
+        results = list(data.get("results") or [])
+        evidence = investigation.build_evidence(query, results)
+        sources = list(evidence.get("sources") or [])
+        plan["web_query"] = query[:200]
+        plan["web_report_count"] = len(results)
+        plan["web_observed_at"] = data.get("observed_at", "")
+        if not sources:
+            reservation.release()
+            plan["group_web_search"] = "no_sources"
+            plan["web_no_sources"] = True
+            ctx.trace.response_plan = plan
+            return "", evidence, plan
+
+        reservation.commit()
+        plan["group_web_search"] = "ok"
+        plan["group_web_search_remaining"] = decision.remaining
+        plan["web_has_sources"] = True
+        plan["web_report_count"] = len(sources)
+        source_text = web_provider.format_sources(
+            results,
+            limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
+        )
+        event_text = web_provider.format_events(data.get("events") or [], limit=3)
+        block = "【群聊实时检索资料（本轮新获取）】\n"
+        if event_text:
+            block += event_text + "\n\n"
+        block += source_text
+        trace["retrieval"]["web_sources"] = len(sources)
+        ctx.trace.response_plan = plan
+        return _untrusted_reference("群聊实时检索", block), evidence, plan
+    except asyncio.CancelledError:
+        reservation.release()
+        raise
+    except (OpenAIError, TimeoutError, RuntimeError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
+        reservation.release()
+        runtime.logger.warning("群聊联网检索失败: %s", type(exc).__name__)
+        plan["group_web_search"] = "failed"
+        plan["web_no_sources"] = True
+        ctx.trace.response_plan = plan
+        return "", {}, plan
+
+
 async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPreparation) -> RetrievalBundle:
     """完成记忆、知识库、自愈与 prompt 动态数据收集。
 
@@ -445,8 +552,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
     services = runtime.services
     msg = ctx.message
     if ctx.is_group:
-        # 群模式：检索限定在本群作用域内（group_id），既能查历史又不会碰到
-        # 私聊记忆或别的群；不注入个人画像以外的私人数据、不联网、不做调查。
+        # 群模式始终只读当前 group_id 的历史；联网是额外的、默认关闭的直达能力，
+        # 不得因此进入主人知识库、实体卡、调查摘要或个人画像路径。
         from app.group import context as group_context
 
         group_mems: list[dict[str, Any]] = []
@@ -458,31 +565,37 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             # 检索失败只是少了历史参考，不能让群回复整体失败。
             runtime.logger.warning("群历史检索失败（不影响回复）: %s", exc)
 
+        trace = {
+            "routing": {}, "path": "group", "degraded": 0,
+            "healer_words": [], "search_ms": 0,
+            "original_query": msg, "search_query": msg,
+            "anchors": [], "expanded": False,
+            "retrieval": {
+                "memory_candidates": len(group_mems), "memory_selected": len(group_mems),
+                "knowledge_candidates": 0, "knowledge_selected": 0,
+                "entity_hits": 0, "healed_chunks": 0,
+            },
+        }
+        web_text, evidence, plan = await _retrieve_group_web(ctx, runtime, msg, trace)
+        trace["group_web_search"] = plan.get("group_web_search", "disabled")
+        trace["retrieval"]["web_sources"] = len(evidence.get("sources") or [])
+        # 上下文优先用进程内存（最新、零查询）；重启或过期后回落到库里
+        # 本群的最近记录，这样"隔天再聊"也能接上。
+        history = (
+            group_context.recent_messages(ctx.group_id)
+            or memory.get_recent_history(
+                settings.history_limit, user_id=ctx.uid, group_id=ctx.group_id
+            )
+        )
         return RetrievalBundle(
             mems=group_mems,
             injections=(
                 memory.format_injection(group_mems) if group_mems else ""
             ),
-            trace={
-                "routing": {}, "path": "group", "degraded": 0,
-                "healer_words": [], "search_ms": 0,
-                "original_query": msg, "search_query": msg,
-                "anchors": [], "expanded": False,
-                "retrieval": {
-                    "memory_candidates": 0, "memory_selected": 0,
-                    "knowledge_candidates": 0, "knowledge_selected": 0,
-                    "entity_hits": 0, "healed_chunks": 0,
-                },
-            },
-            # 上下文优先用进程内存（最新、零查询）；重启或过期后回落到库里
-            # 本群的最近记录，这样"隔天再聊"也能接上。
-            history=(
-                group_context.recent_messages(ctx.group_id)
-                or memory.get_recent_history(
-                    settings.history_limit, user_id=ctx.uid, group_id=ctx.group_id
-                )
-            ),
-            evidence={},
+            knowledge_text=web_text,
+            trace=trace,
+            history=history,
+            evidence=evidence,
         )
     evidence: dict[str, Any] = {}
     history = memory.get_recent_history(settings.history_limit, user_id=ctx.uid)
@@ -676,6 +789,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 # 改写只作备用：改写可能收窄成生僻词，原话反而更全。
                 query = str(msg or "").strip()
                 alt = str(plan.get("query") or "").strip()
+                if web_provider.looks_like_external_reference_lookup(query):
+                    query, reference_alt = web_provider.reference_search_queries(query)
+                    if reference_alt and reference_alt != query:
+                        alt = alt or reference_alt
                 # 指代式追问（"现在呢"）本身没有检索价值，拿它当主检索词只会
                 # 白跑一轮。规则层已把上一轮的话题词放进 plan.query，改用它。
                 from app.chat.response_plan import is_investigation_followup

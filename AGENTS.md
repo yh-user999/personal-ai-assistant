@@ -100,6 +100,7 @@ QQ/NapCat 登录（保留）
 - QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
 - QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效；OneBot action 使用 `/{action}` 专用路径并要求发送返回有效 `message_id`，`.env` 密钥与配置仅存本机。
 - 每日 AI 资讯日报已部署：每天 08:00（Asia/Shanghai）复用现有 SearXNG 与聊天 LLM 搜索并生成来源约束摘要，独立表按主体/日期幂等归档；`/api/ai-news` 仅 `owner`/`internal`，聊天快捷读取仅主人私聊，QQ 推送未配置时非阻塞跳过。
+- 受控私聊/群聊联网检索代码已实现：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留和默认关闭均已纳入；当前尚未部署到生产。
 
 ### 未完成/明确限制
 
@@ -107,7 +108,7 @@ QQ/NapCat 登录（保留）
 - `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒与 AI 日报 QQ 推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
 - 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
-- 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；真机验收确认资料不足时会请求书名、简介或正文。要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
+- 群聊实时公网搜索的生产开关仍保持关闭：本轮已补齐公共 HTTP(S) 来源、来源审校、按群限额、单次预算和失败释放等受控策略；开启 `GROUP_WEB_SEARCH_ENABLED` 前仍需用户确认，并在部署机做真实 At 查询《没钱修什么仙》的来源/降级验收。
 - QQ 网关本身处理稳定，但上游 LLM 偶有 30–56 秒延迟；近期 12 个已完成 OneBot 请求中 3 个超过 30 秒，网关/服务端日志未见发送、鉴权或 5xx 错误。
 - 原 opencode 聊天通道于 2026-09-17 达到月度额度上限；当前聊天已切换至受信任 HTTPS New API 的 `gemini-3.8-flash-high`，如需切回需使用仓外旧配置备份。
 - `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503；本次再次出现 `memories_fts` malformed inverted index 后，已在仓外在线备份副本验证并重建生产 `memories_fts`/`knowledge_fts`，完整性检查恢复正常。
@@ -445,3 +446,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：本次状态记录待提交；无业务代码提交。
 - 运行状态：短暂停止并恢复 `personal-assistant` 与 `personal-qq-gateway`；两项服务 active，QQ 事件恢复 200。
 - 未完成：无新增；外部配置与 QQ 推送/主人数字身份待决事项不变。
+
+### 2026-09-18 — 受控私聊/群聊联网检索实现
+
+- 代码/配置：新增默认关闭的群联网配置与进程内按群限额；补充书名/作品确定性检索规则、精确书名→有限扩展查询、HTTP(S) 来源过滤与链接/时间注入；群路径仅在真实直达消息下联网，不进入主人知识库、画像或调查链路。
+- 验证：定向回归 132 passed；服务端全量 1752 passed；服务端与 QQ 网关 Ruff、compileall、git diff --check 均通过；尚未提交。
+- 提交：待本阶段提交。
+- 运行状态：未同步部署仓库，未重启服务；生产 `GROUP_WEB_SEARCH_ENABLED` 仍未开启。
+- 未完成：staged 脱敏扫描、提交推送、部署仓默认关闭健康验收，以及用户确认后开启群联网并真机验收《没钱修什么仙》。

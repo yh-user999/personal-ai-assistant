@@ -178,6 +178,14 @@ class Settings(BaseSettings):
     # 声明抽取专用模型：留空则回退到主模型。独立于 reflection_review_model
     # （那个被审校/planner 共用），改这个只影响声明抽取。
     claim_analysis_model: str = ""
+    # 群聊联网检索：默认关闭；即使打开，也只允许真实直达群消息触发，
+    # 由群级冷却/小时限额/单次预算共同约束。
+    group_web_search_enabled: bool = False
+    group_web_search_hourly_limit: int = 3
+    group_web_search_cooldown_seconds: float = 15.0
+    group_web_search_budget_seconds: float = 8.0
+    group_web_search_max_results: int = 5
+    group_web_search_max_attempts: int = 2
     # GDELT 全球新闻事件库（第二检索源，走代理，与国内直连隔离）
     # 默认关闭：实测本机代理到 GDELT 的往返需 8 秒以上，与"不拖慢聊天"冲突——
     # 给足超时能命中但拖到 40~60 秒，压到 4 秒则连接建不起来。等有更快/专用
@@ -320,6 +328,16 @@ def _validate_llm_config(s: Settings) -> None:
     keys = s.llm_api_key_values
     if s.llm_key_cooldown_seconds < 0:
         raise ValueError("LLM_KEY_COOLDOWN_SECONDS 不能小于 0")
+    if s.group_web_search_hourly_limit <= 0:
+        raise ValueError("GROUP_WEB_SEARCH_HOURLY_LIMIT 必须大于 0")
+    if s.group_web_search_cooldown_seconds < 0:
+        raise ValueError("GROUP_WEB_SEARCH_COOLDOWN_SECONDS 不能小于 0")
+    if s.group_web_search_budget_seconds <= 0:
+        raise ValueError("GROUP_WEB_SEARCH_BUDGET_SECONDS 必须大于 0")
+    if s.group_web_search_max_results <= 0:
+        raise ValueError("GROUP_WEB_SEARCH_MAX_RESULTS 必须大于 0")
+    if s.group_web_search_max_attempts <= 0:
+        raise ValueError("GROUP_WEB_SEARCH_MAX_ATTEMPTS 必须大于 0")
     if s.llm_retry_backoff_seconds < 0:
         raise ValueError("LLM_RETRY_BACKOFF_SECONDS 不能小于 0")
     if s.llm_max_concurrency <= 0:

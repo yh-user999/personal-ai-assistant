@@ -157,6 +157,47 @@ def needs_web_search(text: str) -> bool:
     )
 
 
+_REFERENCE_QUERY_TERMS = (
+    "小说|作品|作者|作家|剧情|简介|设定|人设|口碑|文笔|评价|原作|主要内容|"
+    "金手指|资料|详细|怎么样|如何|值得|推荐|分析|书名|搜一下|查一下|查查|检索"
+)
+_REFERENCE_TITLE_RE = re.compile(
+    r"(?:《[^》]{2,40}》|「[^」]{2,40}」|书名\s*(?:(?:是|叫|为)\s*[:：]?\s*|[:：]\s*)"
+    r"[\u4e00-龥A-Za-z0-9][^，。！？!?；;\n]{1,38})"
+)
+_REFERENCE_INTENT_RE = re.compile(rf"{_REFERENCE_QUERY_TERMS}")
+_REFERENCE_TITLE_DECL_RE = re.compile(
+    rf"书名\s*(?:(?:是|叫|为)\s*[:：]?\s*|[:：]\s*)"
+    rf"(?P<title>[^，。！？!?；;\n]{{2,40}}?)(?=(?:的)?(?:{_REFERENCE_QUERY_TERMS})|[，。！？!?；;\n]|$)"
+)
+
+
+def looks_like_external_reference_lookup(text: str) -> bool:
+    """识别明确的外部作品/书名资料查询，不把普通闲聊泛化成联网。"""
+    value = (text or "").strip()
+    if not value or len(value) > 800:
+        return False
+    has_title = bool(_REFERENCE_TITLE_RE.search(value))
+    has_intent = bool(_REFERENCE_INTENT_RE.search(value))
+    # 书名号本身已是强信号；裸书名必须同时带资料意图，避免把项目名当书搜。
+    return has_title and (has_intent or bool(re.search(r"书名\s*(?:是|叫|为|[:：])", value)))
+
+
+def reference_search_queries(text: str) -> tuple[str, str | None]:
+    """为作品查询生成精确书名和一条有限扩展词，不扩展成调查。"""
+    value = (text or "").strip()
+    titles = re.findall(r"[《「]([^》」]{2,40})[》」]", value)
+    title = titles[0].strip() if titles else ""
+    if not title:
+        match = _REFERENCE_TITLE_DECL_RE.search(value)
+        title = match.group("title").strip() if match else ""
+    if not title:
+        return value[:400], None
+    primary = title[:200]
+    expanded = f"{title} 小说 作者 简介 剧情 设定"
+    return primary, expanded[:200]
+
+
 def looks_like_followup(text: str) -> bool:
     """是否指代式追问（"现在呢""后来呢"）——自身无主体，靠上一轮语境。"""
     value = (text or "").strip()
@@ -334,7 +375,7 @@ def normalize_result(raw: dict[str, Any]) -> dict[str, Any] | None:
         return None
     url = str(raw.get("url") or "").strip()
     title = str(raw.get("title") or "").strip()
-    if not url or not title:
+    if not url or not title or not _is_safe_url(url):
         return None
     source = str(raw.get("source") or "").strip()
     if not source:
@@ -619,8 +660,9 @@ def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
     for item in (results or [])[:limit]:
         title = str(item.get("title") or "").strip()
         source = str(item.get("source") or "").strip()
+        url = str(item.get("url") or "").strip()
         published = str(item.get("published_at") or "").strip()
-        if not title or not source:
+        if not title or not source or not _is_safe_url(url):
             continue
         time_known = item.get("time_known", True)
         if not published:
@@ -631,6 +673,7 @@ def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
             stamp = f"{published}（据链接推断）"
         summary = str(item.get("summary") or "").strip()[:200]
         line = f"- {title}（{source}，{stamp}）"
+        line += f"\n  来源链接：{url}"
         if summary:
             line += f"\n  {summary}"
         lines.append(line)

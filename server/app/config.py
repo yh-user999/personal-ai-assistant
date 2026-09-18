@@ -183,7 +183,7 @@ class Settings(BaseSettings):
     group_web_search_enabled: bool = False
     group_web_search_hourly_limit: int = 3
     group_web_search_cooldown_seconds: float = 15.0
-    group_web_search_budget_seconds: float = 8.0
+    group_web_search_budget_seconds: float = 12.0
     group_web_search_max_results: int = 5
     group_web_search_max_attempts: int = 2
     # GDELT 全球新闻事件库（第二检索源，走代理，与国内直连隔离）

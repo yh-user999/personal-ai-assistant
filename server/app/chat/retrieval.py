@@ -498,7 +498,7 @@ async def _retrieve_group_web(
                 **({"category": "general"} if is_reference_lookup else {}),
                 deep_dive=False,
                 max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
-                budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 8.0))),
+                budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 12.0))),
             )
         raw_results = list(data.get("results") or [])
         results = (

@@ -196,6 +196,7 @@ def reference_search_queries(text: str) -> tuple[str, str | None]:
     primary = title[:200]
     if not re.search(r"[？?!！。]$", primary):
         primary = (primary + "？")[:200]
+    primary = f"《{primary}》"[:200]
     expanded = f"{primary} 小说 作者 简介 剧情 设定"
     return primary, expanded[:200]
 

@@ -404,6 +404,36 @@ def test_insufficient_results_widen_progressively(fake_http):
     assert data["attempts"] == 3
 
 
+def test_reference_category_starts_with_general_web_search(fake_http):
+    calls = []
+
+    def handler(url, kwargs):
+        params = kwargs.get("params", {})
+        calls.append(params)
+        if len(calls) == 1:
+            return _FakeResponse(payload={"results": []})
+        return _FakeResponse(payload={"results": [
+            {
+                "title": "《没钱修什么仙?》起点中文网",
+                "url": "https://www.qidian.com/book/1042256511/",
+                "source": "起点中文网",
+            }
+        ]})
+
+    fake_http(handler)
+    data = asyncio.run(web_provider.search_and_cluster(
+        "《没钱修什么仙？》",
+        category="general",
+        max_attempts=2,
+    ))
+
+    assert calls[0].get("categories") is None
+    assert calls[0]["time_range"] == "week"
+    assert calls[1].get("categories") is None
+    assert "time_range" not in calls[1]
+    assert data["results"][0]["source"] == "起点中文网"
+
+
 def test_sufficient_results_stop_after_first_attempt(fake_http):
     """首次就达标 → 只发一次请求，正常路径无额外开销。"""
     calls = []

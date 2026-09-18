@@ -746,6 +746,7 @@ async def search_and_cluster(
     time_range: str = "week",
     limit: int = 10,
     alt_query: str | None = None,
+    category: str = "news",
     deep_dive: bool = False,
     max_attempts: int | None = None,
     budget_seconds: float | None = None,
@@ -768,22 +769,24 @@ async def search_and_cluster(
     cleaned = clean_query(query)
     alt = clean_query(alt_query) if alt_query else ""
     candidates = [cleaned] + ([alt] if alt and alt != cleaned else [])
+    search_category = category if category in {"news", "general"} else "news"
 
     # 阶梯式放宽：命中不足就逐级松绑，而不是只在"零结果"时兜底一次。
     # 实测教训：整句问法只回 2 条，2 > 0 所以旧逻辑一次都没放宽，
     # 用户看到的是"只有一条转载稿"——而同一事件实际有 52 条。
     attempts: list[tuple[str, str, str]] = []
     for q in candidates:
-        attempts.append((q, "news", time_range))
-    attempts.append((cleaned, "news", ""))          # 去掉时间窗
-    attempts.append((cleaned, "general", ""))       # 通用网页类
+        attempts.append((q, search_category, time_range))
+    attempts.append((cleaned, search_category, ""))       # 去掉时间窗
+    if search_category != "general":
+        attempts.append((cleaned, "general", ""))          # 通用网页类
     for q in candidates[1:]:
-        attempts.append((q, "general", ""))
+        attempts.append((q, "general" if search_category != "general" else search_category, ""))
 
     threshold = _min_results()
     results: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    first = (candidates[0], "news", time_range)
+    first = (candidates[0], search_category, time_range)
     used: tuple[str, str, str] | None = None
     last_attempt: tuple[str, str, str] | None = None
     tried: set[tuple[str, str, str]] = set()

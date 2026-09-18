@@ -495,6 +495,7 @@ async def _retrieve_group_web(
                 time_range=web_provider.time_range_default(),
                 limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
                 alt_query=alternate if alternate and alternate != query else None,
+                **({"category": "general"} if is_reference_lookup else {}),
                 deep_dive=False,
                 max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
                 budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 8.0))),
@@ -836,6 +837,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                         query,
                         time_range=web_provider.time_range_default(),
                         alt_query=alt if alt and alt != query else None,
+                        **({"category": "general"} if is_reference_lookup else {}),
                         # 有界调查替代固定角度，避免先重复搜一遍再叠加深挖预算。
                             # 有界调查关闭时也不偷偷退回旧的固定深挖；普通事件请求只做一次主检索。
                             deep_dive=False,

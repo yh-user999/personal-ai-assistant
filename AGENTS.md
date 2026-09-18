@@ -110,7 +110,7 @@ QQ/NapCat 登录（保留）
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；真机验收确认资料不足时会请求书名、简介或正文。要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
 - QQ 网关本身处理稳定，但上游 LLM 偶有 30–56 秒延迟；近期 12 个已完成 OneBot 请求中 3 个超过 30 秒，网关/服务端日志未见发送、鉴权或 5xx 错误。
 - 原 opencode 聊天通道于 2026-09-17 达到月度额度上限；当前聊天已切换至受信任 HTTPS New API 的 `gemini-3.8-flash-high`，如需切回需使用仓外旧配置备份。
-- 2026-09-16 `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503（同一库的新连接与副本均 `ok`），重启 `personal-assistant` 后恢复；若复现需排查该连接状态的根因。
+- `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503；本次再次出现 `memories_fts` malformed inverted index 后，已在仓外在线备份副本验证并重建生产 `memories_fts`/`knowledge_fts`，完整性检查恢复正常。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
 - 模块化单体尚未完成 fitness/novel/group application 门面迁移。
 - 2026-09-16 架构审计待办（按优先级）：① 数据访问未收口——66 个文件直接写 SQL、63 个文件各自 `connect()`，建议与 fitness/novel/group 门面迁移合并，按包建 repository；② `models/database.py`（1631 行）混了 schema/迁移/连接/完整性检查，建议拆分。包级循环棘轮基线与 `/api/ready` 完整性缓存已完成（见 2026-09-16 变更记录）。
@@ -437,3 +437,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 代码提交：`96c8d05`；本次状态记录随补记提交推送 GitHub，并同步部署仓。
 - 运行状态：仅重启 NapCat（恢复登录）与 `personal-qq-gateway`（加载配置和发送修复）；`personal-assistant` 未重启且持续 ready，网关 `/health` 正常。
 - 未完成：`QQ_PUSH_*`/`QQ_ADMIN_ID` 与主人历史数据迁移仍待用户决定；群聊公网检索仍按安全策略关闭。近期 LLM 偶有 30–56 秒延迟，但网关未见故障。
+
+### 2026-09-18 — 生产 FTS 索引完整性修复
+
+- 代码/配置：未改仓库业务代码；为生产 SQLite 创建仓外在线备份，在维护窗口重建 `memories_fts` 与 `knowledge_fts` 索引，修复 `/api/ready` 报告的 FTS5 inverted index 异常。
+- 验证：重建后 `PRAGMA integrity_check` 返回 `ok`、`foreign_key_check` 为 0；记忆 4107 条与 FTS 行数一致、知识块 272 条与 FTS 行数一致；`/api/health`、`/api/ready`、QQ 网关 `/health` 均正常。
+- 提交：本次状态记录待提交；无业务代码提交。
+- 运行状态：短暂停止并恢复 `personal-assistant` 与 `personal-qq-gateway`；两项服务 active，QQ 事件恢复 200。
+- 未完成：无新增；外部配置与 QQ 推送/主人数字身份待决事项不变。

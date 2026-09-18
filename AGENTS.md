@@ -100,7 +100,7 @@ QQ/NapCat 登录（保留）
 - QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
 - QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效；OneBot action 使用 `/{action}` 专用路径并要求发送返回有效 `message_id`，`.env` 密钥与配置仅存本机。
 - 每日 AI 资讯日报已部署：每天 08:00（Asia/Shanghai）复用现有 SearXNG 与聊天 LLM 搜索并生成来源约束摘要，独立表按主体/日期幂等归档；`/api/ai-news` 仅 `owner`/`internal`，聊天快捷读取仅主人私聊，QQ 推送未配置时非阻塞跳过。
-- 受控私聊/群聊联网检索代码已实现：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留和默认关闭均已纳入；当前尚未部署到生产。
+- 受控私聊/群聊联网检索已实现并部署：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留和默认关闭均已纳入；生产 `GROUP_WEB_SEARCH_ENABLED` 仍为关闭。
 
 ### 未完成/明确限制
 
@@ -450,7 +450,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ### 2026-09-18 — 受控私聊/群聊联网检索实现
 
 - 代码/配置：新增默认关闭的群联网配置与进程内按群限额；补充书名/作品确定性检索规则、精确书名→有限扩展查询、HTTP(S) 来源过滤与链接/时间注入；群路径仅在真实直达消息下联网，不进入主人知识库、画像或调查链路。
-- 验证：定向回归 132 passed；服务端全量 1752 passed；服务端与 QQ 网关 Ruff、compileall、git diff --check 均通过；尚未提交。
-- 提交：待本阶段提交。
-- 运行状态：未同步部署仓库，未重启服务；生产 `GROUP_WEB_SEARCH_ENABLED` 仍未开启。
-- 未完成：staged 脱敏扫描、提交推送、部署仓默认关闭健康验收，以及用户确认后开启群联网并真机验收《没钱修什么仙》。
+- 验证：定向回归 132 passed；服务端全量 1752 passed；服务端与 QQ 网关 Ruff、compileall、git diff --check 通过；staged 高置信脱敏扫描 0 命中；部署后 `/api/health`、`/api/ready` 和 QQ 网关服务状态正常。
+- 提交：`5dab307`；已推送 GitHub，部署仓已 fast-forward 同步。
+- 运行状态：仅重启 `personal-assistant`；未重启 QQ 网关，生产 `GROUP_WEB_SEARCH_ENABLED` 保持关闭。
+- 未完成：用户确认后开启群联网并真机验收《没钱修什么仙》来源、无来源降级与限额行为；QQ 推送/主人数字身份仍按既有决策项阻塞。

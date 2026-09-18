@@ -426,6 +426,7 @@ def test_reference_category_starts_with_general_web_search(fake_http):
     ))
 
     assert len(calls) == 1
+    assert calls[0]["q"] == "《没钱修什么仙？》"
     assert calls[0].get("categories") is None
     assert "time_range" not in calls[0]
     assert data["results"][0]["source"] == "起点中文网"

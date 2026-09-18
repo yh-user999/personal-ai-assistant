@@ -766,10 +766,15 @@ async def search_and_cluster(
     实测整句问法只回 2 条、2 > 0 因而从不放宽，用户看到"只有一条转载稿"，
     而同一事件实际有 52 条。
     """
-    cleaned = clean_query(query)
-    alt = clean_query(alt_query) if alt_query else ""
-    candidates = [cleaned] + ([alt] if alt and alt != cleaned else [])
     search_category = category if category in {"news", "general"} else "news"
+    # general 网页查询可能依赖书名问号等标点；新闻查询仍剥掉口语包装。
+    if search_category == "general":
+        cleaned = str(query or "").strip()[:400]
+        alt = str(alt_query or "").strip()[:400] if alt_query else ""
+    else:
+        cleaned = clean_query(query)
+        alt = clean_query(alt_query) if alt_query else ""
+    candidates = [cleaned] + ([alt] if alt and alt != cleaned else [])
     initial_window = time_range if search_category == "news" else ""
 
     # 阶梯式放宽：命中不足就逐级松绑，而不是只在"零结果"时兜底一次。

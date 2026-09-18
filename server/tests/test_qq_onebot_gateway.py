@@ -18,7 +18,7 @@ from qq.onebot_gateway.gate import (
     GroupReplyLimiter,
     is_group_directed,
 )
-from qq.onebot_gateway.onebot import OneBotClient
+from qq.onebot_gateway.onebot import OneBotClient, OneBotError
 
 
 def _event(
@@ -328,28 +328,46 @@ async def test_chat_client_uses_owner_token_without_guest_hmac():
 
 
 @pytest.mark.asyncio
-async def test_onebot_client_calls_get_msg_and_send_group():
+async def test_onebot_client_uses_action_paths_and_requires_send_receipt():
     calls = []
 
     async def handler(request: httpx.Request):
         payload = json.loads(request.content)
-        calls.append(payload)
-        if payload["action"] == "get_msg":
-            return httpx.Response(200, json={"status": "ok", "retcode": 0, "data": {"sender": {"user_id": 100}}})
-        return httpx.Response(200, json={"status": "ok", "retcode": 0, "data": {}})
+        calls.append((request.url.path, payload, request.headers.get("authorization")))
+        if request.url.path == "/get_msg":
+            data = {"sender": {"user_id": 100}}
+        else:
+            data = {"message_id": 123}
+        return httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         onebot = OneBotClient("http://napcat.test", "onebot-token", client=client)
         assert await onebot.get_message_sender("8") == "100"
         await onebot.send_group("99", "回复")
+        await onebot.send_private("42", "私聊回复")
     finally:
         await client.aclose()
 
     assert calls == [
-        {"action": "get_msg", "params": {"message_id": 8}},
-        {"action": "send_group_msg", "params": {"group_id": 99, "message": "回复"}},
+        ("/get_msg", {"message_id": 8}, "Bearer onebot-token"),
+        ("/send_group_msg", {"group_id": 99, "message": "回复"}, "Bearer onebot-token"),
+        ("/send_private_msg", {"user_id": 42, "message": "私聊回复"}, "Bearer onebot-token"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_onebot_client_rejects_false_success_without_message_id():
+    async def handler(request: httpx.Request):
+        return httpx.Response(200, json={"status": "ok", "retcode": 0, "data": {"message_id": 0}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        onebot = OneBotClient("http://napcat.test", client=client)
+        with pytest.raises(OneBotError, match="消息 ID"):
+            await onebot.send_private("42", "不会实际送达")
+    finally:
+        await client.aclose()
 
 
 def test_gateway_http_endpoint_checks_inbound_token():

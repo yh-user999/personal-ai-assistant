@@ -48,9 +48,9 @@ FastAPI personal-assistant.service（默认 127.0.0.1:8000）
 | `QQ_IDENTITY_SECRET` | 访客/群请求 QQ 号、时间戳、request_id 的 HMAC 密钥 |
 | `QQ_ADMIN_ID` | 主人 QQ 号；群请求即使发送者相同也仍使用访客角色 |
 | `QQ_GATEWAY_HOST` / `QQ_GATEWAY_PORT` | 网关监听地址，默认 `127.0.0.1:3101` |
-| `QQ_GATEWAY_INBOUND_TOKEN` | NapCat reverse HTTP 事件推送 token；非回环监听必填 |
+| `QQ_GATEWAY_INBOUND_TOKEN` | 非回环监听必填；NapCat 4.18.19 reverse HTTP 客户端实测不附带该 token，本机 `127.0.0.1` 回环部署应留空 |
 | `QQ_GATEWAY_SELF_ID` | 可选的本账号 ID；不匹配事件 self_id 时拒绝唤醒 |
-| `QQ_GATEWAY_ONEBOT_URL` / `QQ_GATEWAY_ONEBOT_TOKEN` | 网关调用 NapCat action（`get_msg`/`send_*`）的出口与鉴权；留空回退 `QQ_PUSH_URL` / `QQ_PUSH_TOKEN` |
+| `QQ_GATEWAY_ONEBOT_URL` / `QQ_GATEWAY_ONEBOT_TOKEN` | 网关调用 NapCat action 的基础地址与鉴权；客户端会追加 `/{action}`（如 `/get_msg`、`/send_private_msg`），留空回退 `QQ_PUSH_URL` / `QQ_PUSH_TOKEN` |
 | `QQ_GATEWAY_OWNER_ID` | 网关识别主人私聊的 QQ 号；留空回退 `QQ_ADMIN_ID`；群聊始终使用访客身份 |
 | `QQ_GATEWAY_GROUP_ALLOWED_IDS` | 群白名单；空值拒绝所有群，`*` 才全开 |
 | `QQ_GATEWAY_GROUP_REQUIRE_MENTION` | 是否要求真实 At/Reply/前缀，默认 `true` |
@@ -78,7 +78,7 @@ systemctl status personal-qq-gateway --no-pager
 curl -s http://127.0.0.1:3101/health
 ```
 
-NapCat reverse HTTP server 的事件目标应指向网关监听地址，并配置与 `QQ_GATEWAY_INBOUND_TOKEN` 相同的 access token；OneBot action 地址仍由 `QQ_PUSH_URL` 指向 NapCat HTTP server。NapCat 使用 host 网络时，容器内外的本机端口可直接互通；不要把网关端口或 FastAPI 端口公开到公网。
+NapCat reverse HTTP client 的事件目标应指向网关监听地址。2026-09-19 现场抓包确认 NapCat 4.18.19 不发送其 `httpClients[].token`，因此网关仅监听 `127.0.0.1` 时应把 `QQ_GATEWAY_INBOUND_TOKEN` 留空；若必须非回环监听，应通过受控前置代理补 `Authorization` 或 `X-OneBot-Token`，且不得直接公开端口。OneBot action 基础地址由 `QQ_GATEWAY_ONEBOT_URL`（或兼容 `QQ_PUSH_URL`）指向 NapCat HTTP server，客户端按标准追加 `/{action}`。
 
 服务日志：
 
@@ -107,9 +107,10 @@ journalctl -u personal-assistant -n 50 --no-pager
 - 本轮网关只处理 OneBot 文本消息；图片、语音、视频和文件事件安全忽略，不会把媒体占位符误当作普通文本。媒体入口需另立有限任务。
 - 上游失败分两类：鉴权/配置错误（401/403、缺 token）**静默丢弃并记 error 日志**，不向群里发提示（重试无用，且不应把服务器配置故障播报给群成员）；网络/超时/5xx 等临时故障才按 `QQ_GATEWAY_SEND_ERROR_REPLY` 回一句不可达提示。群里持续无回复且日志出现「鉴权/配置错误」时，核对 `QQ_API_TOKEN` 与 `QQ_IDENTITY_SECRET` 两端是否一致。
 - 群无回复：依次检查 `QQ_GATEWAY_GROUP_ALLOWED_IDS`、事件 self_id、At/Reply 的 OneBot 消息段、Reply 的 `get_msg` action、服务端 `/api/health` 和两套 token/HMAC 配置。
+- reverse HTTP 上报持续 401：先抓取回环请求确认是否真的包含鉴权头；NapCat 4.18.19 实测不发送 `httpClients[].token`，仅回环部署应留空 `QQ_GATEWAY_INBOUND_TOKEN`，不要误以为配置文件里有 token 就一定会上报。
 - 返回 401/403：检查访客 Bearer、HMAC 的 user/timestamp/request_id 是否一致；群请求不能使用主人 token。
 - 重复消息：网关按 OneBot message_id 生成稳定 request_id；服务端幂等和网关成功投递缓存都命中时不会重复发送。
-- 服务端有回复但 QQ 无消息：检查 `QQ_PUSH_URL`、`QQ_PUSH_TOKEN`、NapCat `send_group_msg/send_private_msg` action 和容器日志。
+- 服务端有回复但 QQ 无消息：检查 OneBot action 是否请求 `/{action}` 专用路径，以及 `send_group_msg`/`send_private_msg` 是否返回大于 0 的 `message_id`；只有 HTTP 200 + `status=ok` 不代表真实送达。
 - 任何排障日志都不得记录消息正文、QQ 号、token、HMAC secret 或完整请求体。
 
 旧 AstrBot/MaiBot 配置、插件测试和图片处理步骤只可从 Git 历史回看，不能照本文执行。

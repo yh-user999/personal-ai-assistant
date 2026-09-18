@@ -9,6 +9,7 @@
 ## 2. 代码地图
 
 - `server/`：FastAPI 服务端、SQLite、聊天流水线、LLM/Embedding、记忆、知识库、提醒、小说工作台。
+- `server/app/ai_news/`：每日 AI 资讯搜索、来源约束、结构化摘要、SQLite 归档和 `/api/ai-news` 路由。
 - `server/app/chat/`：聊天上下文、响应规划、检索、提示词、审校和零 LLM 快捷命令路由。
 - `server/app/chat/pipeline.py`：一轮聊天的编排骨架（私聊全链路 + 群聊分派）。
 - `server/app/chat/retrieval.py`：记忆/知识库/群作用域检索和实时检索分流。
@@ -36,7 +37,7 @@ QQ/NapCat 登录（保留）
   → OneBot HTTP action 回 NapCat
 ```
 
-网关已在仓库实现，但尚未应用到部署机或 NapCat 运行配置：
+网关已在仓库实现并应用到部署机与 NapCat 运行配置：
 
 - `qq/onebot_gateway/event.py` 只接受可确认的 OneBot 文本、真实 At 和 Reply 目标；无法确认时 fail-closed。
 - `qq/onebot_gateway/gate.py` 负责群白名单、`group_directed`、成功回复限流和有限 follow-up。
@@ -61,7 +62,7 @@ QQ/NapCat 登录（保留）
 - 模块化单体目标分层为 `transport → application → domain → ports → adapters`；保留单进程、单 SQLite 和现有领域代码，先用兼容包装迁移，不拆微服务。
 - 迁移顺序：冻结 HTTP/MCP/聊天契约并补回归基线 → 建依赖约束 → 抽取 identity/scope 与基础端口 → 收敛 ChatApplication → 统一 fitness/novel/group 应用门面 → 接入薄 OneBot 网关 → 清理兼容层。
 
-## 3. 已核对运行事实（2026-09-15）
+## 3. 已核对运行事实（2026-09-18）
 
 ### 服务器
 
@@ -70,7 +71,7 @@ QQ/NapCat 登录（保留）
 - FastAPI 实际运行目录：`/opt/personal-ai-assistant/server`，端口 8000；当前由 systemd 单元 `personal-assistant.service` 管理（`User=paa`、`EnvironmentFile` 提供 `PORT=8000`、enabled 开机自启），手工 `setsid nohup` 方式已停用。
 - 服务日志：`journalctl -u personal-assistant`（旧 `/tmp/assistant.log` 已停止写入）；检查优先使用 `/api/health` 和 `/api/ready`。
 - 部署仓库同步：`paa` 直接对 `/opt/personal-ai-assistant` 执行 `git pull --ff-only`（SSH 凭据在该仓库 `.ssh/`，权限 600、直连 GitHub、不进入 Git）；命令见第 6 节。
-- 最近已部署功能提交：`e954cf4`（QQ 薄网关专用 OneBot 出口变量）；部署仓库已同步。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
+- 最近已部署业务功能提交：`83d740a`（每日 AI 资讯日报）；部署仓库已同步。权威状态始终以 `git rev-parse HEAD` 和 `git ls-remote origin refs/heads/main` 为准，不要只相信本段文字。
 
 ### QQ / NapCat（与服务器同机，2026-09-15 核对）
 
@@ -98,12 +99,13 @@ QQ/NapCat 登录（保留）
 - 服务端只读架构审计、模块化单体分阶段方案、契约回归基线、依赖方向检查、identity/scope 基础抽取、ChatApplication HTTP 入口收敛和 MCP 记忆/知识工具接入 application ports 已完成。
 - QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
 - QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效，入站鉴权与安全忽略冒烟验证通过；`.env` 密钥与配置仅存本机。
+- 每日 AI 资讯日报已部署：每天 08:00（Asia/Shanghai）复用现有 SearXNG 与聊天 LLM 搜索并生成来源约束摘要，独立表按主体/日期幂等归档；`/api/ai-news` 仅 `owner`/`internal`，聊天快捷读取仅主人私聊，QQ 推送未配置时非阻塞跳过。
 
 ### 未完成/明确限制
 
 - QQ 会话于 2026-09-16 09:57 被 QQ 服务端踢下线，需手机扫码重新登录后才能做真实消息验收；真实 At/Reply/续话链路尚未实测。
 - 登录恢复前网关不会收到事件；QQ 真机验收仍需手机扫码。
-- `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复提醒推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
+- `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒与 AI 日报 QQ 推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
 - 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
 - 群聊实时公网搜索当前被策略禁用：搜索后端本身可配置，但群检索路径不联网，只允许作用域内历史/记忆；要开放群联网，必须新增“公共来源、来源审校、群/用户限额、Token 熔断”的受控策略，不能只改一个开关。
@@ -419,3 +421,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：见本次提交号（下方报告）；已推送 GitHub。
 - 运行状态：聊天已恢复；QQ 登录与真实链路验收仍暂缓。
 - 未完成：QQ 扫码验收、Novel/Group repository 迁移和 `database.py` 拆分未实施；原 opencode 配置保留在仓外备份。
+
+### 2026-09-18 — 每日 AI 资讯日报部署验收
+
+- 代码/配置：新增 `server/app/ai_news/` 领域包、schema 18 的 `ai_news_digests` 表、每天 08:00（Asia/Shanghai）调度、`/api/ai-news` 查询/生成接口和主人私聊快捷读取；复用现有 SearXNG 与主 LLM，不新增外部 API Key；QQ 配置可用时私聊推送，未配置时非阻塞跳过。
+- 验证：服务端全量 1737 passed，`ruff check app tests`、架构棘轮、迁移/权限/幂等/失败回归与 staged 脱敏扫描通过；部署后真实生成 2026-09-18 日报（8 条、32 个来源），重复生成幂等跳过，latest/history API 与聊天快捷读取均通过。
+- 提交：`83d740a`；已推送 GitHub `origin/main`，部署仓已 fast-forward 同步。
+- 运行状态：仅重启 `personal-assistant`；`/api/health`、`/api/ready` 与 QQ 网关 `/health` 正常，数据库 schema 18，下一次自动任务为 2026-09-19 08:00；QQ 网关未重启、QQ 配置未修改。
+- 未完成：AI 日报 QQ 推送随既有 `QQ_PUSH_*`/`QQ_ADMIN_ID` 待决事项保持未启用；QQ 扫码与真机链路验收继续按用户要求暂缓。

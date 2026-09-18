@@ -485,6 +485,7 @@ async def _retrieve_group_web(
         return "", {}, plan
 
     reservation = decision.reservation
+    is_reference_lookup = web_provider.looks_like_external_reference_lookup(message)
     query, expanded = web_provider.reference_search_queries(message)
     alternate = expanded or str(plan.get("query") or "").strip() or None
     try:
@@ -498,10 +499,17 @@ async def _retrieve_group_web(
                 max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
                 budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 8.0))),
             )
-        results = list(data.get("results") or [])
+        raw_results = list(data.get("results") or [])
+        results = (
+            web_provider.filter_reference_results(query, raw_results)
+            if is_reference_lookup
+            else raw_results
+        )
+        events = web_provider.cluster_events(results) if results else []
         evidence = investigation.build_evidence(query, results)
         sources = list(evidence.get("sources") or [])
         plan["web_query"] = query[:200]
+        plan["web_raw_report_count"] = len(raw_results)
         plan["web_report_count"] = len(results)
         plan["web_observed_at"] = data.get("observed_at", "")
         if not sources:
@@ -520,7 +528,7 @@ async def _retrieve_group_web(
             results,
             limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
         )
-        event_text = web_provider.format_events(data.get("events") or [], limit=3)
+        event_text = web_provider.format_events(events, limit=3)
         block = "【群聊实时检索资料（本轮新获取）】\n"
         if event_text:
             block += event_text + "\n\n"
@@ -789,7 +797,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 # 改写只作备用：改写可能收窄成生僻词，原话反而更全。
                 query = str(msg or "").strip()
                 alt = str(plan.get("query") or "").strip()
-                if web_provider.looks_like_external_reference_lookup(query):
+                is_reference_lookup = web_provider.looks_like_external_reference_lookup(query)
+                if is_reference_lookup:
                     query, reference_alt = web_provider.reference_search_queries(query)
                     if reference_alt and reference_alt != query:
                         alt = alt or reference_alt
@@ -834,6 +843,11 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                     )
                 from app.chat import investigation
 
+                if is_reference_lookup:
+                    data["results"] = web_provider.filter_reference_results(query, data["results"])
+                    data["events"] = web_provider.cluster_events(data["results"]) if data["results"] else []
+                    data["has_sources"] = bool(data["results"])
+                    data["result_count"] = len(data["results"])
                 evidence = investigation.build_evidence(query, data["results"])
                 if deep:
                     plan["web_deep_dive"] = True

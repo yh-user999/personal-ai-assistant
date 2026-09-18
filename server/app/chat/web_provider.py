@@ -23,7 +23,7 @@ import re
 import socket
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
@@ -196,6 +196,25 @@ def reference_search_queries(text: str) -> tuple[str, str | None]:
     primary = title[:200]
     expanded = f"{title} 小说 作者 简介 剧情 设定"
     return primary, expanded[:200]
+
+
+def filter_reference_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只保留可见文本明确提到作品标题的结果，避免把泛搜索噪声当成来源。"""
+    needle = re.sub(r"[\W_]+", "", unquote(str(query or "")), flags=re.UNICODE)
+    if len(needle) < 2:
+        return list(results or [])
+    relevant: list[dict[str, Any]] = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("title", "summary", "content", "url")
+        )
+        compact = re.sub(r"[\W_]+", "", unquote(haystack), flags=re.UNICODE)
+        if needle in compact:
+            relevant.append(item)
+    return relevant
 
 
 def looks_like_followup(text: str) -> bool:

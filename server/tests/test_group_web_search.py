@@ -99,6 +99,23 @@ def test_reference_queries_start_with_exact_title_then_expand():
     assert alternate == "没钱修什么仙 小说 作者 简介 剧情 设定"
 
 
+def test_reference_results_drop_safe_but_irrelevant_noise():
+    results = [
+        {
+            "title": "泛修仙流派观察",
+            "url": "https://example.com/noise",
+            "summary": "修仙题材趋势与网文市场",
+        },
+        {
+            "title": "没钱修什么仙简介",
+            "url": "https://example.com/book",
+            "summary": "公开资料摘要",
+        },
+    ]
+    filtered = web_provider.filter_reference_results("没钱修什么仙", results)
+    assert [item["url"] for item in filtered] == ["https://example.com/book"]
+
+
 def test_limiter_release_does_not_consume_hourly_quota():
     limiter_instance = GroupWebSearchLimiter()
     first = limiter_instance.reserve("123", hourly_limit=1, cooldown_seconds=0, now=10)
@@ -210,16 +227,45 @@ def test_group_web_search_injects_only_current_sources(monkeypatch):
     assert bundle.trace["retrieval"]["web_sources"] == 1
 
 
+def test_group_web_search_treats_unrelated_results_as_no_sources(monkeypatch):
+    async def noisy_search(*args, **kwargs):
+        return {
+            "results": [
+                {
+                    "title": "2026 网文流派观察",
+                    "url": "https://example.com/noise",
+                    "source": "example",
+                    "published_at": "2026-09-18T00:00:00Z",
+                    "summary": "泛修仙题材与市场趋势",
+                }
+            ],
+            "events": [],
+            "observed_at": "2026-09-18T00:00:00Z",
+        }
+
+    monkeypatch.setattr(web_provider, "configured", lambda: True)
+    monkeypatch.setattr(web_provider, "search_and_cluster", noisy_search)
+    ctx = _ctx("《没钱修什么仙》简介")
+    ctx.trace.response_plan = {"provider": "web_search"}
+    bundle = asyncio.run(
+        retrieve(ctx, _runtime(_settings(group_web_search_enabled=True)), None)
+    )
+
+    assert bundle.evidence["sources"] == []
+    assert bundle.knowledge_text == ""
+    assert bundle.trace["group_web_search"] == "no_sources"
+
+
 def test_group_web_search_hourly_limit_is_enforced(monkeypatch):
     async def fake_search(*args, **kwargs):
         return {
             "results": [
                 {
-                    "title": "公开资料",
+                    "title": "没钱修什么仙公开资料",
                     "url": "https://example.com/book",
                     "source": "example",
                     "published_at": "2026-09-18T00:00:00Z",
-                    "summary": "摘要",
+                    "summary": "没钱修什么仙摘要",
                 }
             ],
             "events": [],

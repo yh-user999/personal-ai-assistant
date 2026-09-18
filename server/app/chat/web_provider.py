@@ -196,7 +196,6 @@ def reference_search_queries(text: str) -> tuple[str, str | None]:
     primary = title[:200]
     if not re.search(r"[？?!！。]$", primary):
         primary = (primary + "？")[:200]
-    primary = f"《{primary}》"[:200]
     expanded = f"{primary} 小说 作者 简介 剧情 设定"
     return primary, expanded[:200]
 
@@ -753,10 +752,11 @@ async def search_and_cluster(
 ) -> dict[str, Any]:
     """检索并按事件聚合；命中不足时逐级放宽。
 
-    三级放宽（按累计URL去重数量达标即停，不把条数当关键事实完整性）：
+    默认新闻检索三级放宽（按累计URL去重数量达标即停，不把条数当关键事实完整性）：
       1. 清洗后的检索词 + news 类 + 配置时间窗
       2. 同上但去掉时间窗   ← 事件报道常年躺在索引里，硬限"最近一周"会整批排除
       3. 通用网页类 + 无时间窗 ← 覆盖非新闻站的报道
+    ``category="general"`` 时首轮即使用通用网页且不带时间窗，适合书名/作品资料查询。
     另可传 ``alt_query``（如 planner 给出的规范化查询）作为备用检索词。
     ``max_attempts`` 限制本函数发起的检索调用总数（含阶梯、角度和 GDELT）；
     调查器集成可设 1，避免在调查预算开始前重复放宽。默认保持现有策略。

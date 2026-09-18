@@ -191,6 +191,13 @@ class Settings(BaseSettings):
     hotboard_timeout: float = 6.0
     hotboard_max_items: int = 15
 
+    # ── 每日 AI 资讯日报 ─────────────────────────────────────
+    ai_news_digest_enabled: bool = True
+    ai_news_digest_hour: int = 8
+    ai_news_digest_minute: int = 0
+    ai_news_digest_max_items: int = 8
+    ai_news_digest_budget_seconds: float = 30.0
+
     # ── 价值基线与抗噪音（默认关闭，先观察再启用）────────────
     values_enabled: bool = True
     values_strict_stance: bool = True

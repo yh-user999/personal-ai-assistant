@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from datetime import datetime
@@ -38,10 +39,17 @@ _SELF_IDENTITY_QUERY = re.compile(
     re.IGNORECASE,
 )
 TZ = ZoneInfo("Asia/Shanghai")
+_AI_NEWS_QUERY_RE = re.compile(
+    r"^(?:(?:今天|今日|最新|最近|每日)(?:的)?\s*)?"
+    r"(?:AI|ai|人工智能)\s*"
+    r"(?:(?:今天|今日|最新|最近)(?:的)?\s*)?"
+    r"(?:资讯(?:日报)?|新闻(?:日报)?|日报|动态)(?:呢|吗|？|\?)?$"
+)
 
 GUEST_BLOCKED_HANDLERS = frozenset(
     {
         "identity",
+        "ai_news",
         "confirm",
         "worklog",
         "reminders",
@@ -532,6 +540,15 @@ async def _search(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None
     )
 
 
+async def _ai_news(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse | None:
+    if ctx.is_group or not ctx.is_owner or not _AI_NEWS_QUERY_RE.fullmatch(ctx.message.strip()):
+        return None
+    digest = await asyncio.to_thread(runtime.services.ai_news.latest_digest, ctx.uid)
+    if not digest:
+        return ChatResponse(reply="今天的 AI 资讯日报还没生成，请稍后再查。", memories_used=0)
+    return ChatResponse(reply=str(digest.get("content") or "日报内容为空"), memories_used=0)
+
+
 def is_admin_identity_query(message: str) -> bool:
     """识别询问管理员/主人身份的问法，不解析用户自称或授予权限。"""
     return bool(_ADMIN_IDENTITY_QUERY.search((message or "").strip()))
@@ -777,6 +794,8 @@ _handle_novel = _make_handler(_novel)
 
 _handle_search = _make_handler(_search)
 
+_handle_ai_news = _make_handler(_ai_news)
+
 _handle_identity = _make_handler(_identity)
 
 _handle_confirm = _make_handler(_confirm)
@@ -804,6 +823,7 @@ _COMMAND_HANDLERS: list[tuple[str, object]] = [
     ("goals", _handle_goals),
     ("fitness", _handle_fitness),
     ("novel", _handle_novel),
+    ("ai_news", _handle_ai_news),
     ("search", _handle_search),
     ("slang", _handle_slang),
     ("entity_candidates", _handle_entity_candidates),

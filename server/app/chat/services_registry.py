@@ -16,6 +16,8 @@ from app.novel import NovelApplicationService
 
 # 具备独立领域包的模块：显式登记完整路径（其余仍从 app/services 加载）。
 DOMAIN_MODULE_PATHS = {
+    # AI 资讯日报
+    "ai_news": "app.ai_news.service",
     # 健身
     "fitness": "app.fitness.service",
     "fitness_catalog": "app.fitness.catalog",
@@ -35,6 +37,7 @@ DOMAIN_MODULE_PATHS = {
 
 # 新增 service：模块放进 app/services/ 后在此登记一行即可。
 SERVICE_MODULES = (
+    "ai_news",
     "behavior_context",
     "chapter_analysis",
     "cooccurrence",

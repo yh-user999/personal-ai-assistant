@@ -32,6 +32,40 @@ def test_schema_version_is_recorded_and_idempotent(tmp_path, monkeypatch):
         database.reset_connections()
 
 
+def test_schema_17_upgrade_adds_ai_news_digests(tmp_path, monkeypatch):
+    db_file = tmp_path / "schema-17.db"
+    raw = sqlite3.connect(str(db_file))
+    try:
+        raw.execute(
+            "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        raw.execute(
+            "INSERT INTO schema_version(id, version, applied_at) VALUES (1, 17, '2026-09-17T00:00:00+00:00')"
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    monkeypatch.setattr("app.config.settings.db_path", str(db_file))
+    database.reset_connections()
+    database.init_db()
+    conn = sqlite3.connect(str(db_file))
+    try:
+        assert conn.execute("SELECT version FROM schema_version WHERE id=1").fetchone() == (18,)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_news_digests)")}
+        assert {"user_id", "digest_date", "status", "content", "sources_json", "stats_json", "error"} <= columns
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.executemany(
+                "INSERT INTO ai_news_digests "
+                "(user_id, digest_date, status, content, created_at, updated_at) "
+                "VALUES ('owner', '2026-09-18', 'ready', '', '', '')",
+                [(), ()],
+            )
+    finally:
+        conn.close()
+        database.reset_connections()
+
+
 def test_closed_cached_connection_is_reused_intact(tmp_path, monkeypatch):
     """close() 归还缓存：同线程重连复用同一连接且 Pragma 状态完好。
 

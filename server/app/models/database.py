@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("assistant.db")
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -128,7 +128,24 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
   UNIQUE(user_id, date)
 );
 
--- ⑨ 关切话题（用户最近在意的主题，mention_count 追踪活跃度，按用户隔离）
+-- ⑨ 每日 AI 资讯日报（来源与摘要按主体/日期幂等）
+CREATE TABLE IF NOT EXISTS ai_news_digests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT '',
+  digest_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready',
+  content TEXT NOT NULL DEFAULT '',
+  sources_json TEXT NOT NULL DEFAULT '[]',
+  stats_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, digest_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_news_digest_user_date
+  ON ai_news_digests(user_id, digest_date DESC, id DESC);
+
+-- ⑩ 关切话题（用户最近在意的主题，mention_count 追踪活跃度，按用户隔离）
 CREATE TABLE IF NOT EXISTS concerns (
   user_id TEXT NOT NULL DEFAULT '',
   topic TEXT NOT NULL,

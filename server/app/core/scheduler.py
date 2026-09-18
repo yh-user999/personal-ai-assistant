@@ -77,8 +77,9 @@ def _wrap_job(func, job_id: str):
 class SchedulerManager:
     _active_manager = None
 
-    def __init__(self) -> None:
+    def __init__(self, *, ai_news_job=None) -> None:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        self.ai_news_job = ai_news_job
         self._started = False
         self._stopped = False
         self._owns_scheduler = False
@@ -182,6 +183,15 @@ class SchedulerManager:
                 "request_id": logical_request_id("daily_summary", owner, schedule_key),
             },
         )
+        if settings.ai_news_digest_enabled and self.ai_news_job is not None:
+            self._add(
+                "ai_news_digest",
+                self.ai_news_job,
+                "cron",
+                hour=settings.ai_news_digest_hour,
+                minute=settings.ai_news_digest_minute,
+                kwargs={"user_id": owner},
+            )
         # 淘汰：noise 30 天 / 低 importance chat 365 天（同步清 FTS 索引）
         self._add("eviction", evict_stale, "interval", hours=6)
         # 清理聊天幂等表的过期租约与旧响应，避免 request_id 表无限增长。

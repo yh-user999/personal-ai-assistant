@@ -29,6 +29,8 @@ from app.api import (
     reports,
     stats,
 )
+from app.ai_news import api as ai_news
+from app.ai_news.service import run_daily_ai_news_digest
 from app.auth import authenticate_token, verify_qq_identity
 from app.config import settings
 from app.core import llm
@@ -93,7 +95,7 @@ async def lifespan(app: FastAPI):
     if settings.deployment_env.casefold() not in {"test", "testing"}:
         await llm.validate_novel_model()
     app.state.collector_heartbeat = None
-    app.state.scheduler = SchedulerManager()
+    app.state.scheduler = SchedulerManager(ai_news_job=run_daily_ai_news_digest)
     await app.state.scheduler.start()
     yield
     # 关闭：停止定时任务
@@ -129,6 +131,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ("/api/reminders", {"owner", "internal"}),
         ("/api/messages", {"owner", "internal"}),
         ("/api/novel", {"owner", "internal"}),
+        ("/api/ai-news", {"owner", "internal"}),
         ("/api/fitness", {"owner", "internal"}),
         ("/api/mood", {"owner", "internal"}),
         ("/api/observability", {"owner", "internal"}),
@@ -223,6 +226,7 @@ app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
 app.include_router(documents.router, prefix="/api", tags=["documents"])
 app.include_router(executor.router, prefix="/api", tags=["executor"])
 app.include_router(reminders.router, prefix="/api", tags=["reminders"])
+app.include_router(ai_news.router, prefix="/api", tags=["ai-news"])
 app.include_router(novel.router, prefix="/api", tags=["novel"])
 app.include_router(observability.router, prefix="/api", tags=["observability"])
 
@@ -254,7 +258,7 @@ async def ready(request: Request):
                 "chat_request_dedup", "llm_usage", "novel_projects",
                 "work_log", "reminders", "mood_log", "lessons",
                 "writing_log", "fitness_log", "initiative_log",
-                "daily_summaries", "weekly_reports",
+                "daily_summaries", "ai_news_digests", "weekly_reports",
                 "fitness_profile", "fitness_exercises", "fitness_plans",
                 "fitness_plan_days", "fitness_plan_exercises", "fitness_sessions",
                 "fitness_sets", "fitness_measurements", "fitness_imports", "reply_reviews",

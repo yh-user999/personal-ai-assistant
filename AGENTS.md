@@ -506,7 +506,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 
 ### 2026-09-19 — @ 后上下文分析窗口与自然续问
 - 代码/配置：新增 QQ 网关 90 秒上下文窗口，最多分析 10 条后续消息，连续 5 条非续聊关闭；窗口内不占普通群发送配额，真实 @/Reply/前缀及失败降级路径均可开窗。服务端新增通用 context_relation/context_continue/reply_decision 语义字段、自然续问提示和紧凑来源尾注；来源内部质量字段不展示。
-- 验证：窗口与失败路径定向回归 59 passed；服务端全量 1793 passed；Ruff、compileall、git diff --check 全通过；暂存区脱敏扫描待提交前完成。
-- 提交：待提交。
-- 运行状态：尚未同步部署仓或重启服务。
-- 未完成：部署健康验收待提交后执行；生产小说只读验收继续受搜索后端阻塞。
+- 验证：窗口与失败路径定向回归 59 passed；服务端全量 1793 passed；Ruff、compileall、git diff --check 全通过；暂存区新增内容 737 行，高置信脱敏扫描 0 命中。
+- 提交：代码 `003bd34`；已推送 GitHub。
+- 运行状态：部署仓已同步 `003bd34`；`personal-assistant`、`personal-qq-gateway` 均 active；`/api/health`、`/api/ready`、网关 `/health` 均正常。
+- 未完成：生产小说只读验收继续受搜索后端阻塞；恢复后重跑来源顺序与正文证据验收。

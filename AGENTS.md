@@ -475,14 +475,14 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 
 - 代码/配置：生产只读验收发现中文项目查询原样发送给 GitHub API 会返回空结果；新增项目名/技术词重写，明确 Release/版本请求时读取匹配仓库的 README 与 Release 来源。
 - 验证：服务端全量 1770 passed；项目查询与 GitHub Provider 定向回归 10 passed；生产直接查询 `Crawl4AI` 返回 3 个公开仓库，中文自然语言回归通过。
-- 提交：待 staged 脱敏扫描后提交。
-- 运行状态：修正尚未部署；当前生产仍运行上一提交，QQ 配置、群联网开关和主人数字身份未改。
-- 未完成：提交、部署与健康检查待本阶段完成；复杂 JavaScript 页面暂不引入浏览器抓取；QQ 推送/主人数字身份继续 blocked。
+- 提交：`6ae27e8`；已推送 GitHub。
+- 运行状态：部署仓已 fast-forward 至 `6ae27e8`，随后随下一阶段更新至 `088fced`；`personal-assistant` ready，QQ 网关 active；QQ 配置、群联网开关和主人数字身份未改。
+- 未完成：后续快速首轮优化已在下一条记录完成；复杂 JavaScript 页面暂不引入浏览器抓取；QQ 推送/主人数字身份继续 blocked。
 
 ### 2026-09-19 — 作品研究快速首轮优化
 
 - 代码/配置：通用小说研究首轮改为“纯书名+问号”，命中后再扩展作品简介/剧情/设定，避免 SearXNG 首轮附加词偶发超时；保留旧群聊查询链路不变。
 - 验证：生产只读研究返回 6 个来源，首轮查询为“没钱修什么仙？”，耗时约 10.6 秒；3 个正文页面失败但来源摘要保留；服务端全量 1770 passed。
-- 提交：待 staged 脱敏扫描后提交。
-- 运行状态：修正尚未部署；QQ 配置、群联网开关和主人数字身份未改。
-- 未完成：提交、部署与健康检查待本阶段完成；复杂 JavaScript 页面暂不引入浏览器抓取；QQ 推送/主人数字身份继续 blocked。
+- 提交：`088fced`；已推送 GitHub，部署仓已 fast-forward 同步。
+- 运行状态：仅重启 `personal-assistant`；`/api/ready` ready，`personal-qq-gateway` active；QQ 配置、群联网开关和主人数字身份未改。
+- 未完成：复杂 JavaScript 页面正文提取备用方案进入后续 todo；QQ 推送/主人数字身份继续 blocked。

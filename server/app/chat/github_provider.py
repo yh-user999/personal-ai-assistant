@@ -27,6 +27,27 @@ def looks_like_project_lookup(text: str) -> bool:
     return bool(_PROJECT_RE.search(text or ""))
 
 
+def rewrite_project_query(text: str) -> str:
+    """去掉中文操作词，只把项目名/技术词交给 GitHub 搜索。"""
+    value = (text or "").strip()
+    if not value:
+        return ""
+    if _repo_from_url(value):
+        return value
+    stopwords = {
+        "搜索", "搜一下", "搜搜", "查一下", "查找", "找一下", "帮我找", "看看",
+        "GitHub", "github", "项目", "仓库", "开源", "最近", "最新", "有什么",
+        "的", "一下", "资料", "信息", "介绍", "发布", "版本", "更新", "release",
+        "releases", "Issue", "issue", "issues", "pull", "request", "PR", "pr",
+    }
+    normalized = value
+    for stopword in sorted(stopwords, key=len, reverse=True):
+        normalized = re.sub(re.escape(stopword), " ", normalized, flags=re.IGNORECASE)
+    tokens = re.findall(r"[A-Za-z0-9_.-]{2,}|[\u4e00-\u9fff]{2,}", normalized)
+    kept = [token for token in tokens if token not in stopwords]
+    return " ".join(kept)[:200] or value[:200]
+
+
 def _settings() -> Any:
     from app.config import settings
 

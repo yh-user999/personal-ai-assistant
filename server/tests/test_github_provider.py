@@ -18,6 +18,7 @@ def test_github_query_detection():
     assert github_provider.looks_like_project_lookup("搜索某个 GitHub 项目")
     assert github_provider.looks_like_project_lookup("这个仓库最近的 release")
     assert not github_provider.looks_like_project_lookup("你好")
+    assert github_provider.rewrite_project_query("搜索 Crawl4AI GitHub 项目最近的 release") == "Crawl4AI"
 
 
 def test_github_repo_url_returns_repository_readme_and_releases(monkeypatch):

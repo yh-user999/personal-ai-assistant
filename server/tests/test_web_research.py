@@ -73,6 +73,49 @@ def test_research_reads_pages_and_builds_evidence(monkeypatch):
     assert result.evidence["sources"][0]["id"].startswith("web_")
 
 
+def test_project_release_query_rewrites_and_reads_repository_details(monkeypatch):
+    async def fake_search(query, *, limit=None):
+        if query == "Crawl4AI":
+            return [{
+                "title": "GitHub 仓库：acme/crawl4ai",
+                "url": "https://github.com/acme/crawl4ai",
+                "source": "github.com",
+                "summary": "网页抓取项目",
+                "kind": "repository",
+            }]
+        if query == "https://github.com/acme/crawl4ai":
+            return [{
+                "title": "GitHub 仓库：acme/crawl4ai",
+                "url": "https://github.com/acme/crawl4ai",
+                "source": "github.com",
+                "summary": "网页抓取项目",
+                "kind": "repository",
+            }, {
+                "title": "acme/crawl4ai Release：v1.0.0",
+                "url": "https://github.com/acme/crawl4ai/releases/tag/v1.0.0",
+                "source": "github.com",
+                "summary": "首个版本",
+                "kind": "release",
+            }]
+        raise AssertionError(query)
+
+    async def fake_fetch(url):
+        return {"url": url, "text": "GitHub 项目正文"}
+
+    monkeypatch.setattr(web_research.github_provider, "search", fake_search)
+    monkeypatch.setattr(web_provider, "fetch_page", fake_fetch)
+    result = asyncio.run(
+        web_research.run_research(
+            "搜索 Crawl4AI GitHub 项目最近的 release",
+            settings=_settings(),
+        )
+    )
+
+    assert result.provider == "github"
+    assert any(item["kind"] == "release" for item in result.sources)
+    assert any("releases/tag/v1.0.0" in item["url"] for item in result.sources)
+
+
 def test_research_failure_returns_no_sources_without_raising(monkeypatch):
     async def empty_search(*args, **kwargs):
         return {"results": [], "events": [], "has_sources": False}

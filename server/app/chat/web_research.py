@@ -283,10 +283,17 @@ async def run_research(question: str, *, settings: Any, kind: ResearchKind | Non
     deadline = asyncio.get_running_loop().time() + plan.budget_seconds
 
     if plan.kind == "project":
-        if re.search(r"\b(?:issue|pr|pull\s+request)\b|Issue|PR", question, re.IGNORECASE):
-            result.results = await github_provider.search_issues(question, limit=plan.max_results)
+        project_query = github_provider.rewrite_project_query(question)
+        issue_requested = bool(re.search(r"\b(?:issue|issues|pr|pull\s+request)\b|Issue|PR", question, re.IGNORECASE))
+        release_requested = bool(re.search(r"release|版本|发布|更新", question, re.IGNORECASE))
+        if issue_requested:
+            result.results = await github_provider.search_issues(project_query, limit=plan.max_results)
         else:
-            result.results = await github_provider.search(question, limit=plan.max_results)
+            result.results = await github_provider.search(project_query, limit=plan.max_results)
+            if release_requested and result.results:
+                details = await github_provider.search(str(result.results[0].get("url") or ""), limit=plan.max_results)
+                seen = {str(item.get("url") or "") for item in result.results}
+                result.results.extend(item for item in details if str(item.get("url") or "") not in seen)
         result.provider = "github"
     elif plan.kind == "url":
         url = plan.queries[0]

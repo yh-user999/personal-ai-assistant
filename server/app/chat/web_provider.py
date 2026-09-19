@@ -159,7 +159,7 @@ def needs_web_search(text: str) -> bool:
 
 _REFERENCE_QUERY_TERMS = (
     "小说|作品|作者|作家|剧情|简介|设定|人设|口碑|文笔|评价|原作|主要内容|"
-    "金手指|资料|详细|怎么样|如何|值得|推荐|分析|书名|搜一下|查一下|查查|检索"
+    "金手指|资料|详细|怎么样|如何|值得|推荐|分析|书名|搜一下|查一下|查查|检索|吗"
 )
 _REFERENCE_TITLE_RE = re.compile(
     r"(?:《[^》]{2,40}》|「[^」]{2,40}」|书名\s*(?:(?:是|叫|为)\s*[:：]?\s*|[:：]\s*)"
@@ -170,6 +170,138 @@ _REFERENCE_TITLE_DECL_RE = re.compile(
     rf"书名\s*(?:(?:是|叫|为)\s*[:：]?\s*|[:：]\s*)"
     rf"(?P<title>[^，。！？!?；;\n]{{2,40}}?)(?=(?:的)?(?:{_REFERENCE_QUERY_TERMS})|[，。！？!?；;\n]|$)"
 )
+
+# 小说来源质量只用于后台排序、证据门禁和审校；不要把这些等级直接展示给用户。
+# 一手作品页优先，结构化资料页次之；明确的章节聚合/转载站不进入事实来源集合。
+_NOVEL_OFFICIAL_DOMAINS = (
+    "qidian.com",
+    "zongheng.com",
+    "jjwxc.net",
+    "fanqienovel.com",
+    "17k.com",
+)
+_NOVEL_STRUCTURED_DOMAINS = (
+    "baike.baidu.com",
+    "book.douban.com",
+    "douban.com",
+    "zh.wikipedia.org",
+)
+_NOVEL_LOW_QUALITY_DOMAINS = (
+    "bookszw.com",
+    "kudushu.org",
+    "uukan.org",
+    "uukanshu.com",
+    "biquge.com",
+)
+_NOVEL_LOW_QUALITY_TEXT_RE = re.compile(
+    r"全文免费|最新章节|无错字|TXT下载|EPUB下载|加入书架|推荐本书|免费提供|章节目录",
+    re.IGNORECASE,
+)
+
+
+def _host_matches(host: str, suffixes: tuple[str, ...]) -> bool:
+    value = (host or "").strip().lower().rstrip(".")
+    return any(value == suffix or value.endswith("." + suffix) for suffix in suffixes)
+
+
+def novel_source_quality(item: dict[str, Any], *, title: str = "") -> dict[str, Any]:
+    """返回小说来源的后台质量元数据，不改变前台来源文本。"""
+    url = str(item.get("url") or "").strip()
+    try:
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        host = ""
+    text = " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "summary", "content", "source")
+    )
+    compact_title = re.sub(r"[\W_]+", "", title or "", flags=re.UNICODE)
+    compact_text = re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+    exact_title = bool(compact_title and compact_title in compact_text)
+    if _host_matches(host, _NOVEL_LOW_QUALITY_DOMAINS):
+        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title}
+    if _host_matches(host, _NOVEL_OFFICIAL_DOMAINS):
+        return {"tier": 3, "role": "official", "host": host, "exact_title": exact_title}
+    if _host_matches(host, _NOVEL_STRUCTURED_DOMAINS):
+        return {"tier": 2, "role": "structured", "host": host, "exact_title": exact_title}
+    if _NOVEL_LOW_QUALITY_TEXT_RE.search(text):
+        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title}
+    return {"tier": 1, "role": "neutral", "host": host, "exact_title": exact_title}
+
+
+def rank_novel_results(
+    query: str,
+    results: list[dict[str, Any]],
+    *,
+    source_preference: Any = (),
+) -> list[dict[str, Any]]:
+    """过滤低质小说来源并按后台质量排序；等级不进入格式化文本。"""
+    title = _reference_title_text(query)
+    preferences = tuple(
+        str(value).strip().lower().removeprefix("https://").removeprefix("http://").rstrip("/")
+        for value in (source_preference if isinstance(source_preference, (list, tuple, set)) else [source_preference])
+        if str(value).strip()
+    )
+    ranked: list[dict[str, Any]] = []
+    for item in filter_reference_results(query, results):
+        if not isinstance(item, dict):
+            continue
+        quality = novel_source_quality(item, title=title)
+        host = str(quality.get("host") or "").lower()
+        quality["preferred"] = any(
+            host == preference or host.endswith("." + preference)
+            for preference in preferences
+        )
+        if quality["tier"] <= 0:
+            continue
+        enriched = dict(item)
+        enriched["_novel_quality"] = quality
+        ranked.append(enriched)
+    ranked.sort(
+        key=lambda item: (
+            int(item.get("_novel_quality", {}).get("tier", 0)),
+            bool(item.get("_novel_quality", {}).get("preferred")),
+            bool(item.get("_novel_quality", {}).get("exact_title")),
+            bool(str(item.get("content") or item.get("summary") or "").strip()),
+        ),
+        reverse=True,
+    )
+    # 同一域名只保留最有代表性的一页，避免同源页面制造虚假的多来源感。
+    deduped: list[dict[str, Any]] = []
+    seen_hosts: set[str] = set()
+    for item in ranked:
+        host = str(item.get("_novel_quality", {}).get("host") or "")
+        key = host or str(item.get("url") or "")
+        if key in seen_hosts:
+            continue
+        seen_hosts.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def select_novel_evidence_results(
+    query: str,
+    results: list[dict[str, Any]],
+    *,
+    source_preference: Any = (),
+) -> list[dict[str, Any]]:
+    """只保留可作为小说事实依据的一手或结构化来源。"""
+    ranked = rank_novel_results(query, results, source_preference=source_preference)
+    return [
+        item for item in ranked
+        if int(item.get("_novel_quality", {}).get("tier", 0)) >= 2
+        and bool(str(item.get("content") or item.get("summary") or "").strip())
+    ]
+
+
+def novel_has_reliable_sources(results: list[dict[str, Any]]) -> bool:
+    """后台判断是否至少有一条一手或结构化小说资料来源。"""
+    return any(
+        int(item.get("_novel_quality", {}).get("tier", 0)) >= 2
+        and bool(str(item.get("content") or item.get("summary") or "").strip())
+        for item in (results or [])
+        if isinstance(item, dict)
+    )
 
 
 def looks_like_external_reference_lookup(text: str) -> bool:

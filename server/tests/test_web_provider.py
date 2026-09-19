@@ -432,6 +432,37 @@ def test_reference_category_starts_with_general_web_search(fake_http):
     assert data["results"][0]["source"] == "起点中文网"
 
 
+def test_novel_source_quality_prefers_official_and_excludes_low_quality():
+    results = [
+        {
+            "title": "没钱修什么仙？百度百科",
+            "url": "https://baike.baidu.com/item/novel",
+            "source": "百度百科",
+            "summary": "作者与作品简介",
+        },
+        {
+            "title": "没钱修什么仙？起点中文网",
+            "url": "https://www.qidian.com/book/1042256511/",
+            "source": "起点中文网",
+            "summary": "熊狼狗作品简介",
+        },
+        {
+            "title": "没钱修什么仙最新章节",
+            "url": "https://example.com/chapters",
+            "source": "转载站",
+            "summary": "全文免费，最新章节目录",
+        },
+    ]
+
+    selected = web_provider.select_novel_evidence_results("《没钱修什么仙》", results)
+
+    assert [item["url"] for item in selected] == [
+        "https://www.qidian.com/book/1042256511/",
+        "https://baike.baidu.com/item/novel",
+    ]
+    assert all("_novel_quality" not in web_provider.format_sources([item]) for item in selected)
+
+
 def test_sufficient_results_stop_after_first_attempt(fake_http):
     """首次就达标 → 只发一次请求，正常路径无额外开销。"""
     calls = []

@@ -101,6 +101,7 @@ QQ/NapCat 登录（保留）
 - QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效；OneBot action 使用 `/{action}` 专用路径并要求发送返回有效 `message_id`，`.env` 密钥与配置仅存本机。
 - 每日 AI 资讯日报已部署：每天 08:00（Asia/Shanghai）复用现有 SearXNG 与聊天 LLM 搜索并生成来源约束摘要，独立表按主体/日期幂等归档；`/api/ai-news` 仅 `owner`/`internal`，聊天快捷读取仅主人私聊，QQ 推送未配置时非阻塞跳过。
 - 受控私聊/群聊联网检索已实现并部署：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留、作品资料来源过滤与 LLM 故障来源兜底均已纳入；生产 `GROUP_WEB_SEARCH_ENABLED` 已按用户确认开启，当前真机验收受上游生成接口 503 阻塞。
+- 小说研究来源质量门禁已完成：起点等一手作品页优先，百科/结构化资料补充，章节聚合/转载站不进入事实资料块；回答只能据本轮摘录，来源正文不足或仅有低质来源时固定降级。
 - 语义 planner 主导联网路由改造已完成：结构化计划携带 route/research_kind/subject/question/queries/source_preference，研究执行消费语义查询，规则仅作安全合并与失败 fallback；来源门禁、群作用域、社交动作和有限续话均消费结构化计划。
 
 ### 未完成/明确限制
@@ -494,3 +495,10 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`9e707e7`；已推送 GitHub，部署仓已 fast-forward 同步。
 - 运行状态：`personal-assistant` 已重启并 active；QQ 网关未重启且保持 active；QQ 配置、群联网生产开关和推送配置未改。
 - 未完成：复杂 JavaScript 页面正文提取与 QQ 推送/主人数字身份继续 blocked；无本阶段新增阻塞。
+
+### 2026-09-19 — 小说检索来源质量与证据边界
+- 代码/配置：新增小说来源后台分层与排序，优先一手作品页和结构化资料，过滤章节聚合/转载站；私聊、群聊和旧兼容检索路径统一只注入可靠来源；要求来源正文/摘要存在，缺可靠来源时固定降级；小说提示词明确只能依据本轮摘录，内部等级不展示；补充起点优先、百度百科补充、转载过滤、正文回归、低质来源降级、提示词和群限额测试。
+- 验证：定向回归 186 passed；服务端全量回归 1782 passed；Ruff、compileall、git diff --check 通过；脱敏扫描待暂存后完成。
+- 提交：未提交。
+- 运行状态：尚未部署或重启生产服务；现网服务保持不变。
+- 未完成：暂存脱敏、提交推送、部署仓同步、服务重启与 `/api/health`、`/api/ready` 生产验收；复杂 JavaScript 页面提取和 QQ 推送/主人数字身份继续暂缓。

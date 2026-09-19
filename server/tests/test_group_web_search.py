@@ -108,12 +108,12 @@ def test_reference_results_drop_safe_but_irrelevant_noise():
         },
         {
             "title": "没钱修什么仙简介",
-            "url": "https://example.com/book",
+            "url": "https://www.qidian.com/book/1042256511/",
             "summary": "公开资料摘要",
         },
     ]
     filtered = web_provider.filter_reference_results("没钱修什么仙", results)
-    assert [item["url"] for item in filtered] == ["https://example.com/book"]
+    assert [item["url"] for item in filtered] == ["https://www.qidian.com/book/1042256511/"]
 
 
 def test_limiter_release_does_not_consume_hourly_quota():
@@ -202,9 +202,9 @@ def test_group_web_search_injects_only_current_sources(monkeypatch):
         return {
             "results": [
                 {
-                    "title": "没钱修什么仙简介",
-                    "url": "https://example.com/book",
-                    "source": "example",
+                    "title": "没钱修什么仙？起点中文网",
+                    "url": "https://www.qidian.com/book/1042256511/",
+                    "source": "起点中文网",
                     "published_at": "2026-09-18T00:00:00Z",
                     "summary": "公开检索摘要",
                 }
@@ -221,7 +221,7 @@ def test_group_web_search_injects_only_current_sources(monkeypatch):
         retrieve(ctx, _runtime(_settings(group_web_search_enabled=True)), None)
     )
 
-    assert bundle.evidence["sources"][0]["url"] == "https://example.com/book"
+    assert bundle.evidence["sources"][0]["url"] == "https://www.qidian.com/book/1042256511/"
     assert "公开检索摘要" in bundle.knowledge_text
     assert bundle.trace["group_web_search"] == "ok"
     assert bundle.trace["retrieval"]["web_sources"] == 1
@@ -261,9 +261,9 @@ def test_group_web_search_hourly_limit_is_enforced(monkeypatch):
         return {
             "results": [
                 {
-                    "title": "没钱修什么仙公开资料",
-                    "url": "https://example.com/book",
-                    "source": "example",
+                    "title": "没钱修什么仙？起点中文网",
+                    "url": "https://www.qidian.com/book/1042256511/",
+                    "source": "起点中文网",
                     "published_at": "2026-09-18T00:00:00Z",
                     "summary": "没钱修什么仙摘要",
                 }
@@ -284,6 +284,41 @@ def test_group_web_search_hourly_limit_is_enforced(monkeypatch):
     second.trace.response_plan = {"provider": "web_search"}
     bundle = asyncio.run(retrieve(second, _runtime(settings), None))
     assert bundle.trace["group_web_search"] == "hourly_limit"
+
+
+def test_group_web_search_rejects_only_low_quality_sources_and_releases_reservation(monkeypatch):
+    async def low_quality_search(*args, **kwargs):
+        return {
+            "results": [{
+                "title": "没钱修什么仙最新章节",
+                "url": "https://example.com/chapters",
+                "source": "转载站",
+                "published_at": "",
+                "summary": "全文免费，最新章节目录",
+            }],
+            "events": [],
+            "observed_at": "2026-09-18T00:00:00Z",
+        }
+
+    monkeypatch.setattr(web_provider, "configured", lambda: True)
+    monkeypatch.setattr(web_provider, "search_and_cluster", low_quality_search)
+    settings = _settings(
+        group_web_search_enabled=True,
+        group_web_search_hourly_limit=1,
+        group_web_search_cooldown_seconds=15,
+    )
+
+    first = _ctx("《没钱修什么仙》简介")
+    first.trace.response_plan = {"provider": "web_search"}
+    first_bundle = asyncio.run(retrieve(first, _runtime(settings), None))
+    assert first_bundle.trace["group_web_search"] == "no_sources"
+    assert first_bundle.evidence["sources"] == []
+
+    second = _ctx("《没钱修什么仙》作者")
+    second.trace.response_plan = {"provider": "web_search"}
+    second_bundle = asyncio.run(retrieve(second, _runtime(settings), None))
+    assert second_bundle.trace["group_web_search"] == "no_sources"
+    assert second_bundle.evidence["sources"] == []
 
 
 def test_group_web_search_releases_reservation_when_no_sources(monkeypatch):

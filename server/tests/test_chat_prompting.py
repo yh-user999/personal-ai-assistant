@@ -210,6 +210,20 @@ def test_prompt_requires_source_citation_when_results_present():
     assert "标注来源" in system
 
 
+def test_novel_prompt_requires_excerpt_support_without_exposing_quality_labels():
+    ctx = make_ctx("你知道《没钱修什么仙》吗？")
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "provider": "web_search",
+        "web_has_sources": True,
+        "web_research_kind": "novel",
+    }
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "摘录明确支持" in system
+    assert "凭记忆补写" in system
+    assert "不要展示内部来源分级" in system
+
+
 def test_prompt_without_plan_has_no_search_wording():
     ctx = make_ctx("你好")
     system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())

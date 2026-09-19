@@ -63,6 +63,12 @@ class ResearchResult:
         return bool(self.sources)
 
     @property
+    def has_reliable_sources(self) -> bool:
+        if self.kind != "novel":
+            return self.has_sources
+        return web_provider.novel_has_reliable_sources(self.results)
+
+    @property
     def evidence(self) -> dict[str, Any]:
         return {
             "version": 1,
@@ -70,6 +76,7 @@ class ResearchResult:
             "status": "complete" if self.sources else "failed",
             "stop_reason": self.stop_reason,
             "sources": self.sources[:12],
+            "has_reliable_sources": self.has_reliable_sources,
             "claims": [],
             "gaps": ([{
                 "id": "web_research_no_sources",
@@ -99,7 +106,12 @@ class ResearchResult:
             lines.append(f"\n[{index}] {title}（{origin}）\n来源链接：{url}")
             if excerpt:
                 lines.append(f"可核对摘录：{excerpt}")
-        lines.append("以上是公开网页的非可信参考资料；只能据此回答，无法被来源支持的内容必须明确说无法核实。")
+        if self.kind == "novel":
+            lines.append(
+                "以上是小说公开资料的非可信参考；只能据摘录回答，未被摘录支持的剧情、设定或评价必须明确说无法核实。"
+            )
+        else:
+            lines.append("以上是公开网页的非可信参考资料；只能据此回答，无法被来源支持的内容必须明确说无法核实。")
         return "\n".join(lines)[:12000]
 
     def as_search_data(self) -> dict[str, Any]:
@@ -439,7 +451,13 @@ async def run_research(
             )
             batch = list(data.get("results") or [])
             if plan.kind == "novel":
-                batch = web_provider.filter_reference_results(query, batch)
+                # 小说只把一手/结构化资料纳入事实来源集合；低质转载仅作后台线索，
+                # 不进入抓页、prompt 或最终回答，避免模型从章节聚合站补写剧情。
+                batch = web_provider.select_novel_evidence_results(
+                    query,
+                    batch,
+                    source_preference=plan.source_preference,
+                )
             seen = {str(item.get("url") or "") for item in result.results}
             for item in batch:
                 if str(item.get("url") or "") not in seen:

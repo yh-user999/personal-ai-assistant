@@ -82,9 +82,9 @@ def test_research_reads_pages_and_builds_evidence(monkeypatch):
         return {
             "results": [
                 {
-                    "title": "没钱修什么仙？公开资料",
-                    "url": "https://example.com/book",
-                    "source": "example.com",
+                    "title": "没钱修什么仙？起点中文网",
+                    "url": "https://www.qidian.com/book/1042256511/",
+                    "source": "起点中文网",
                     "summary": "作者为熊狼狗，主角为张羽。",
                     "published_at": "",
                 }
@@ -111,10 +111,86 @@ def test_research_reads_pages_and_builds_evidence(monkeypatch):
 
     assert result.kind == "novel"
     assert result.pages_read == 1
-    assert result.sources[0]["url"] == "https://example.com/book"
+    assert result.sources[0]["url"] == "https://www.qidian.com/book/1042256511/"
     assert "张羽" in result.sources[0]["text"]
-    assert "来源链接：https://example.com/book" in result.prompt_block()
+    assert "来源链接：https://www.qidian.com/book/1042256511/" in result.prompt_block()
     assert result.evidence["sources"][0]["id"].startswith("web_")
+    assert result.evidence["has_reliable_sources"] is True
+    assert result.has_reliable_sources is True
+
+
+def test_novel_research_drops_low_quality_sources_and_keeps_page_body(monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return {
+            "results": [
+                {
+                    "title": "没钱修什么仙最新章节",
+                    "url": "https://example.com/chapters",
+                    "source": "转载站",
+                    "summary": "全文免费，最新章节目录",
+                },
+                {
+                    "title": "没钱修什么仙？起点中文网",
+                    "url": "https://www.qidian.com/book/1042256511/",
+                    "source": "起点中文网",
+                    "summary": "熊狼狗作品简介",
+                },
+            ],
+            "events": [],
+            "has_sources": True,
+        }
+
+    async def fake_fetch(url):
+        return {
+            "url": url,
+            "text": "作品页正文：作者为熊狼狗，公开简介说明修仙需要持续投入。",
+        }
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", fake_search)
+    monkeypatch.setattr(web_provider, "fetch_page", fake_fetch)
+
+    result = asyncio.run(
+        web_research.run_research(
+            "你知道《没钱修什么仙》吗？",
+            settings=_settings(),
+        )
+    )
+
+    assert result.has_reliable_sources is True
+    assert [source["url"] for source in result.sources] == [
+        "https://www.qidian.com/book/1042256511/",
+    ]
+    assert "作品页正文" in result.sources[0]["text"]
+    assert "作品页正文" in result.prompt_block()
+    assert "最新章节" not in result.prompt_block()
+
+
+def test_novel_research_with_only_low_quality_sources_degrades_safely(monkeypatch):
+    async def low_quality_search(*args, **kwargs):
+        return {
+            "results": [{
+                "title": "没钱修什么仙最新章节",
+                "url": "https://example.com/chapters",
+                "source": "转载站",
+                "summary": "全文免费，最新章节目录",
+            }],
+            "events": [],
+            "has_sources": True,
+        }
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", low_quality_search)
+
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我查《没钱修什么仙》的剧情",
+            settings=_settings(),
+        )
+    )
+
+    assert result.has_sources is False
+    assert result.has_reliable_sources is False
+    assert result.stop_reason == "no_sources"
+    assert result.prompt_block() == ""
 
 
 def test_project_release_query_rewrites_and_reads_repository_details(monkeypatch):

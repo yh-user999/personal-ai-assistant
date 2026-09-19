@@ -183,7 +183,7 @@ def test_source_only_fallback_returns_links_without_sources_no_answer():
     source_bundle = SimpleNamespace(evidence={"sources": [
         {
             "title": "作品资料",
-            "url": "https://example.com/book",
+            "url": "https://www.qidian.com/book/1042256511/",
             "source": "公开来源",
             "published_at": "",
             "summary": "公开摘要",
@@ -192,7 +192,7 @@ def test_source_only_fallback_returns_links_without_sources_no_answer():
     reply = _source_only_fallback_reply(source_bundle)
     assert "生成服务暂时不可用" in reply
     assert "公开摘要" in reply
-    assert "https://example.com/book" in reply
+    assert "https://www.qidian.com/book/1042256511/" in reply
 
     assert _source_only_fallback_reply(SimpleNamespace(evidence={})) == ""
 
@@ -205,7 +205,7 @@ def test_group_web_sources_replace_false_no_source_claim():
     bundle = SimpleNamespace(evidence={"sources": [
         {
             "title": "作品资料",
-            "url": "https://example.com/book",
+            "url": "https://www.qidian.com/book/1042256511/",
             "source": "公开来源",
             "published_at": "",
             "summary": "作者与简介摘要",
@@ -214,7 +214,7 @@ def test_group_web_sources_replace_false_no_source_claim():
     reply = _enforce_group_web_sources(ctx, bundle, "目前没有可靠来源，请发一下链接或简介。")
     assert "目前没有可靠来源" not in reply
     assert "作者与简介摘要" in reply
-    assert "https://example.com/book" in reply
+    assert "https://www.qidian.com/book/1042256511/" in reply
     assert ctx.trace.response_plan["group_web_source_postprocess"] == "replaced_refusal"
 
 
@@ -226,7 +226,7 @@ def test_group_web_sources_append_links_to_normal_answer():
     bundle = SimpleNamespace(evidence={"sources": [
         {
             "title": "作品资料",
-            "url": "https://example.com/book",
+            "url": "https://www.qidian.com/book/1042256511/",
             "source": "公开来源",
             "published_at": "",
             "summary": "公开摘要",
@@ -234,7 +234,7 @@ def test_group_web_sources_append_links_to_normal_answer():
     ]})
     reply = _enforce_group_web_sources(ctx, bundle, "作者是熊狼狗，题材是修真文明。")
     assert reply.startswith("作者是熊狼狗")
-    assert "https://example.com/book" in reply
+    assert "https://www.qidian.com/book/1042256511/" in reply
     assert ctx.trace.response_plan["group_web_source_postprocess"] == "appended_sources"
 
 

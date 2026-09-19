@@ -415,7 +415,17 @@ def _web_retrieval_env(monkeypatch, *, configured=True, results=None, unavailabl
 
     calls = {"search": 0}
 
-    async def fake_search_and_cluster(query, *, time_range="week", limit=10, alt_query=None, deep_dive=False, max_attempts=None, budget_seconds=None):
+    async def fake_search_and_cluster(
+        query,
+        *,
+        time_range="week",
+        limit=10,
+        alt_query=None,
+        category="news",
+        deep_dive=False,
+        max_attempts=None,
+        budget_seconds=None,
+    ):
         calls["search"] += 1
         return {
             "query": query,
@@ -475,6 +485,7 @@ def test_web_no_sources_marks_plan_for_no_source_answer(db_env, monkeypatch):
     _patch_memory_scoped(monkeypatch)
 
     ctx = make_ctx("最近有什么新闻")
+
     ctx.trace.response_plan = {"mode": "retrieve_then_answer", "provider": "web_search",
                                "query": "最近有什么新闻"}
     preparation = retrieval.prepare_turn(ctx, runtime)
@@ -482,6 +493,34 @@ def test_web_no_sources_marks_plan_for_no_source_answer(db_env, monkeypatch):
 
     assert calls["search"] == 1
     assert "实时检索资料" not in bundle.knowledge_text
+    assert ctx.trace.response_plan["web_no_sources"] is True
+
+
+def test_private_novel_compat_path_rejects_only_low_quality_sources(db_env, monkeypatch):
+    low_quality = [{
+        "title": "没钱修什么仙最新章节",
+        "url": "https://example.com/chapters",
+        "source": "转载站",
+        "published_at": "",
+        "summary": "全文免费，最新章节目录",
+    }]
+    calls, runtime = _web_retrieval_env(monkeypatch, results=low_quality)
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx("帮我查《没钱修什么仙》的剧情")
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "provider": "web_search",
+        "query": "帮我查《没钱修什么仙》的剧情",
+        "source_preference": ["qidian.com"],
+    }
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 1
+    assert bundle.evidence["sources"] == []
+    assert "实时检索资料" not in bundle.knowledge_text
+    assert ctx.trace.response_plan["web_reliable_sources"] is False
     assert ctx.trace.response_plan["web_no_sources"] is True
 
 

@@ -526,7 +526,8 @@ async def _retrieve_group_web(
             plan["web_research_elapsed_ms"] = research.elapsed_ms
             plan["web_research_stop_reason"] = research.stop_reason
             plan["web_report_count"] = len(sources)
-            if not sources:
+            plan["web_reliable_sources"] = research.has_reliable_sources
+            if not sources or not research.has_reliable_sources:
                 reservation.release()
                 plan["group_web_search"] = "no_sources"
                 plan["web_no_sources"] = True
@@ -559,7 +560,11 @@ async def _retrieve_group_web(
             )
         raw_results = list(data.get("results") or [])
         results = (
-            web_provider.filter_reference_results(query, raw_results)
+            web_provider.select_novel_evidence_results(
+                query,
+                raw_results,
+                source_preference=plan.get("source_preference", ()),
+            )
             if is_reference_lookup
             else raw_results
         )
@@ -569,6 +574,7 @@ async def _retrieve_group_web(
         plan["web_query"] = query[:200]
         plan["web_raw_report_count"] = len(raw_results)
         plan["web_report_count"] = len(results)
+        plan["web_reliable_sources"] = bool(sources) if is_reference_lookup else None
         plan["web_observed_at"] = data.get("observed_at", "")
         if not sources:
             reservation.release()
@@ -847,7 +853,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             plan["web_page_failures"] = research.page_failures
             plan["web_research_elapsed_ms"] = research.elapsed_ms
             plan["web_research_stop_reason"] = research.stop_reason
-            if research.has_sources:
+            plan["web_reliable_sources"] = research.has_reliable_sources
+            if research.has_reliable_sources:
                 plan["web_has_sources"] = True
                 plan["web_report_count"] = len(research.sources)
                 plan["web_observed_at"] = ""
@@ -941,10 +948,15 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 from app.chat import investigation
 
                 if is_reference_lookup:
-                    data["results"] = web_provider.filter_reference_results(query, data["results"])
+                    data["results"] = web_provider.select_novel_evidence_results(
+                        query,
+                        data["results"],
+                        source_preference=plan.get("source_preference", ()),
+                    )
                     data["events"] = web_provider.cluster_events(data["results"]) if data["results"] else []
                     data["has_sources"] = bool(data["results"])
                     data["result_count"] = len(data["results"])
+                    plan["web_reliable_sources"] = web_provider.novel_has_reliable_sources(data["results"])
                 evidence = investigation.build_evidence(query, data["results"])
                 if deep:
                     plan["web_deep_dive"] = True
@@ -1007,8 +1019,10 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                         plan["web_claim_conflicts"] = sum(c.get("status") == "disputed" for c in claims)
                         plan["web_claim_singles"] = sum(len(c.get("support", [])) <= 1 for c in claims)
                         plan["web_claim_extracted"] = bool(claims)
-                    elif getattr(runtime.settings, "claim_analysis_enabled", True) and (
-                        len(data["results"])
+                    elif (
+                        not is_reference_lookup
+                        and getattr(runtime.settings, "claim_analysis_enabled", True)
+                        and len(data["results"])
                         >= int(getattr(runtime.settings, "claim_analysis_min_reports", 2))
                     ):
                         from app.chat import claim_analysis
@@ -1024,7 +1038,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
 
                     block = "【实时检索资料（本轮新获取）】\n"
                     # 先给独立性核查：它决定"多条报道"能不能当作多方印证
-                    analysis_text = analysis.render()
+                    # 小说来源分级与独立性只供后台审校；不把内部来源判断写进给模型的资料块。
+                    analysis_text = "" if is_reference_lookup else analysis.render()
                     if analysis_text:
                         block += analysis_text + "\n\n"
                     # 再给声明级比对：具体哪个事实点对不上、是谁说的

@@ -54,12 +54,18 @@ def build_interaction_hint(ctx: Any, plan: Any, reply: str) -> dict[str, Any]:
     if not bool(getattr(ctx, "is_group", False)):
         return {}
     text = str(reply or "").strip()
-    if not text or not (_QUESTION_RE.search(text) or _MATERIAL_REQUEST_RE.search(text)):
+    if not text:
+        return {}
+    planned_required = bool(_plan_value(plan, "followup_required", False))
+    if not planned_required and not (_QUESTION_RE.search(text) or _MATERIAL_REQUEST_RE.search(text)):
         return {}
 
-    kind = _kind_for_reply(text, getattr(ctx, "message", ""))
+    planned_kind = str(_plan_value(plan, "followup_kind", "") or "").strip()
+    kind = planned_kind if planned_required and planned_kind in FOLLOWUP_KINDS else _kind_for_reply(
+        text, getattr(ctx, "message", "")
+    )
     if not kind:
-        if bool(_plan_value(plan, "needs_clarification", False)):
+        if bool(_plan_value(plan, "needs_clarification", False)) or planned_required:
             kind = "free_text"
         else:
             return {}
@@ -67,7 +73,7 @@ def build_interaction_hint(ctx: Any, plan: Any, reply: str) -> dict[str, Any]:
     # 直接回答型内容即使带问号，也不自动打开追问窗口；只接受明确澄清语境。
     action = str(_plan_value(plan, "social_action", "") or "").strip()
     needs_clarification = bool(_plan_value(plan, "needs_clarification", False))
-    if not needs_clarification and action not in {"ask_back", "answer"}:
+    if not planned_required and not needs_clarification and action not in {"ask_back", "answer"}:
         return {}
 
     return {

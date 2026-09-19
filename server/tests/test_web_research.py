@@ -34,6 +34,49 @@ def test_research_plan_rewrites_novel_and_bounds_budget():
     assert plan.max_pages == 3
 
 
+def test_semantic_plan_queries_override_rule_classification(monkeypatch):
+    searched = []
+
+    async def fake_search(query, **kwargs):
+        searched.append(query)
+        return {
+            "results": [{
+                "title": "TCP 资料",
+                "url": "https://example.com/tcp",
+                "source": "example.com",
+                "summary": "三次握手摘要",
+                "published_at": "",
+            }],
+            "events": [],
+            "has_sources": True,
+        }
+
+    async def fake_fetch(url):
+        return {"url": url, "text": "TCP 三次握手资料正文"}
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", fake_search)
+    monkeypatch.setattr(web_provider, "fetch_page", fake_fetch)
+    result = asyncio.run(
+        web_research.run_research(
+            "你知道这个吗？",
+            settings=_settings(),
+            semantic_plan={
+                "route": "web_research",
+                "research_kind": "knowledge",
+                "subject": "TCP 三次握手",
+                "research_question": "请核实原理",
+                "research_queries": ["TCP 三次握手 RFC"],
+                "source_preference": ["ietf.org"],
+            },
+        )
+    )
+
+    assert result.kind == "knowledge"
+    assert searched == ["TCP 三次握手 RFC"]
+    assert result.source_preference == ("ietf.org",)
+    assert result.evidence["checks"]["source_preference"] == ["ietf.org"]
+
+
 def test_research_reads_pages_and_builds_evidence(monkeypatch):
     async def fake_search(*args, **kwargs):
         return {

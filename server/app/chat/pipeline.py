@@ -19,7 +19,6 @@ from app.chat import (
     providers,
     response_plan,
     retrieval,
-    web_research,
     routing,
     review,
 )
@@ -573,23 +572,34 @@ def _group_source_text(bundle: retrieval.RetrievalBundle) -> str:
     return web_provider.format_sources(sources, limit=5)
 
 
-def _enforce_group_web_sources(
+def _enforce_web_sources(
     ctx: ChatContext,
     bundle: retrieval.RetrievalBundle,
     reply: str,
 ) -> str:
-    """群联网成功后确定性保证回复不否认来源且带可核验链接。"""
-    if not ctx.is_group:
-        return reply
+    """对所有语义联网计划执行确定性来源门禁。"""
     plan = getattr(ctx.trace, "response_plan", {}) or {}
-    if plan.get("group_web_search") != "ok":
+    is_research = (
+        plan.get("provider") == "web_search"
+        or plan.get("route") in {"web_research", "hybrid"}
+        or plan.get("group_web_search") == "ok"
+    )
+    if not is_research:
         return reply
+    def mark(status: str) -> None:
+        plan["web_source_postprocess"] = status
+        if ctx.is_group:
+            plan["group_web_source_postprocess"] = status
+
     source_text = _group_source_text(bundle)
     if not source_text:
+        if plan.get("web_no_sources") or plan.get("web_unavailable"):
+            mark("no_sources_fixed_reply")
+            return "未查到可靠的公开来源，暂时无法核实。"
         return reply
     draft = str(reply or "").strip()
     if _GROUP_SOURCE_REFUSAL_RE.search(draft):
-        ctx.trace.response_plan["group_web_source_postprocess"] = "replaced_refusal"
+        mark("replaced_refusal")
         return "查到的公开资料如下（以来源为准）：\n" + source_text
     source_urls = [
         str(item.get("url") or "").strip()
@@ -597,9 +607,22 @@ def _enforce_group_web_sources(
         if isinstance(item, dict) and str(item.get("url") or "").strip()
     ]
     if source_urls and not any(url in draft for url in source_urls):
-        ctx.trace.response_plan["group_web_source_postprocess"] = "appended_sources"
+        mark("appended_sources")
         return f"{draft}\n\n【本轮检索来源】\n{source_text}"
+    plan.setdefault("web_source_postprocess", "accepted")
+    if ctx.is_group:
+        plan.setdefault("group_web_source_postprocess", plan["web_source_postprocess"])
+
     return draft
+
+
+def _enforce_group_web_sources(
+    ctx: ChatContext,
+    bundle: retrieval.RetrievalBundle,
+    reply: str,
+) -> str:
+    """兼容旧调用名；来源门禁现已覆盖私聊和群聊。"""
+    return _enforce_web_sources(ctx, bundle, reply)
 
 
 def _generation_failure_reply(ctx: ChatContext, generation_failed: bool) -> ChatResponse:
@@ -746,14 +769,28 @@ async def _run_chat(
             min_confidence=getattr(settings, "group_social_min_confidence", 0.6),
             scene=social_scene,
         )
+    # plan_response() 已做过一次合并；这里再过一遍是应用层边界，
+    # 兼容测试替身/旧调用方，并确保非 LLM 计划不能绕过规则安全要求。
+    planned = response_plan.apply_rule_requirements(
+        planned, hint, is_owner=ctx.is_owner,
+    )
+    if ctx.is_group:
+        planned = response_plan.apply_group_social_requirements(
+            planned,
+            message=msg,
+            history=planner_history,
+            addressed=ctx.group_directed,
+            enabled=getattr(settings, "group_social_enabled", True),
+            interject_enabled=getattr(settings, "group_social_interject_enabled", False),
+            min_confidence=getattr(settings, "group_social_min_confidence", 0.6),
+            scene=social_scene,
+        )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
-    plan = hint if shadow_only else planned
-    # 明确外部资料查询是确定性联网意图，不能被语义规划器改成闲聊。
-    research_kind = web_research.classify_query(msg)
-    if research_kind in {"novel", "document", "project", "url", "knowledge"}:
-        plan = hint
-        plan.source = f"rule_{research_kind}_override"
-    if group_state is not None:
+    # shadow 模式只观察 planner；生产启用时，仅有效的 LLM 计划生效，
+    # 超时/非法 JSON/低置信或其他非 LLM 结果统一回落到规则安全计划。
+    plan = hint if shadow_only or planned.source != "llm" else planned
+    plan = response_plan.validate_plan(plan, is_owner=ctx.is_owner)
+    if group_state is not None and (ctx.group_directed or group_state.score is None):
         group_turn.apply_group_plan_fields(plan, group_state)
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
         plan.fact_result = providers.current_datetime(msg)
@@ -767,6 +804,19 @@ async def _run_chat(
         "planned_source": planned.source,
         "fact_result": plan.fact_result,
     }
+    if (
+        ctx.is_group
+        and group_state is not None
+        and not ctx.group_directed
+        and group_state.score is not None
+    ):
+        early_social = await group_turn.finalize_group_social_gate(
+            ctx, runtime, plan, group_state, interject_config,
+        )
+        if early_social is not None:
+            return early_social
+        group_turn.apply_group_plan_fields(plan, group_state)
+        ctx.trace.response_plan.update(plan.summary())
     if ctx.is_group and plan.social_action:
         group_turn.record_group_social_trace(ctx, plan, group_state, runtime)
 
@@ -827,6 +877,13 @@ async def _run_chat(
     if reply is None:
         if group_state is not None:
             group_turn.release_group_reservation(group_state)
+        active_plan = getattr(ctx.trace, "response_plan", {}) or {}
+        research_requested = active_plan.get("provider") == "web_search" or active_plan.get("route") in {"web_research", "hybrid"}
+        if research_requested and not bundle.evidence.get("sources"):
+            ctx.trace.status = "degraded"
+            ctx.trace.error_code = "web_no_sources"
+            active_plan["web_source_postprocess"] = "no_sources_fixed_reply"
+            return ChatResponse(reply="未查到可靠的公开来源，暂时无法核实。", memories_used=0)
         source_fallback = _source_only_fallback_reply(bundle)
         if source_fallback:
             ctx.trace.status = "degraded"
@@ -842,7 +899,7 @@ async def _run_chat(
         buffered_investigation=buffered_investigation,
         group_reflection_enabled=group_reflection_enabled,
     )
-    reply = _enforce_group_web_sources(ctx, bundle, reply)
+    reply = _enforce_web_sources(ctx, bundle, reply)
     if on_delta is not None and buffered_reply:
         await on_delta(reply)
 

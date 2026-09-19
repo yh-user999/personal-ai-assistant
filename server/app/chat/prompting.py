@@ -190,10 +190,21 @@ def group_tone_hint(ctx: ChatContext) -> str:
     message = str(getattr(ctx, "message", "") or "")
     plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
     mode = str(plan.get("mode") or "")
+    atmosphere = str(plan.get("social_atmosphere") or "").strip().lower()
+    semantic_tone = {
+        "emotional": ("先承接情绪，再给一两个可执行建议", "不要说教，不要把单条情绪表达推断成长期心理或健康结论。"),
+        "questioning": ("准确、清楚、少寒暄", "先回答当前问题；需要补充信息时只问最关键的一点。"),
+        "technical": ("准确、清楚、少寒暄", "先给结论，再给必要解释；不确定处明确说不确定。"),
+        "celebratory": ("适度积极、自然庆祝", "可以表达高兴，但不要夸张吹捧或凭空增加成果。"),
+        "action": ("直接、短句、先给行动步骤", "减少铺垫；涉及危险或不可逆操作时先指出前提和风险。"),
+        "casual": ("自然、轻松、简短", "闲聊和简单确认控制在一到三句，不强行套格式。"),
+    }
 
     if _GROUP_IDENTITY_RE.search(message):
         tone = "中性克制"
         detail = "涉及身份、权限或隐私时只按保密口径回答，不解释内部机制。"
+    elif atmosphere in semantic_tone:
+        tone, detail = semantic_tone[atmosphere]
     elif _GROUP_EMOTION_RE.search(message) or mode == "emotional_support":
         tone = "先承接情绪，再给一两个可执行建议"
         detail = "不要说教，不要把单条情绪表达推断成长期心理或健康结论。"

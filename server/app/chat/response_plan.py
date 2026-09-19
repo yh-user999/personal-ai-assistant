@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.chat import values as values_module
-from app.chat import web_research
 from app.common.timeutil import now_local
 
 _ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
+_ALLOWED_ROUTES = frozenset({"direct", "local_memory", "web_research", "hybrid", "domain"})
+_RESEARCH_KINDS = frozenset({"novel", "knowledge", "document", "project", "news", "url"})
 SOCIAL_ACTIONS = frozenset({"ignore", "interject", "banter", "answer", "tease", "ask_back"})
 _HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
 _SOCIAL_SWITCH_RE = re.compile(r"换个话题|另外|顺便(?:问|说)|对了|再问一个|先不说|不聊这个了")
@@ -87,6 +88,14 @@ class ResponsePlan:
     fact_result: dict[str, Any] | None = None
     provider: str | None = None
     query: str | None = None
+    route: str = "direct"
+    research_kind: str | None = None
+    subject: str = ""
+    research_question: str = ""
+    research_queries: list[str] = field(default_factory=list)
+    source_preference: list[str] = field(default_factory=list)
+    followup_kind: str = ""
+    followup_required: bool = False
     action: str | None = None
     risk: str = "low"
     needs_clarification: bool = False
@@ -123,6 +132,17 @@ class ResponsePlan:
             "confirmation_required": self.confirmation_required,
             "needs_clarification": self.needs_clarification,
             "provider": self.provider,
+            "route": self.route,
+            "research_kind": self.research_kind,
+            "subject": self.subject[:160],
+            "research_question": self.research_question[:400],
+            "research_queries": list(self.research_queries)[:3],
+            # 兼容 planner/观测端使用的简短字段名；执行层使用上面的有界字段。
+            "question": self.research_question[:400],
+            "queries": list(self.research_queries)[:3],
+            "source_preference": list(self.source_preference)[:5],
+            "followup_kind": self.followup_kind[:32],
+            "followup_required": bool(self.followup_required),
             "action": self.action,
             "risk": self.risk,
             "tone": self.tone,
@@ -255,10 +275,16 @@ def apply_group_social_requirements(
         interject_enabled=interject_enabled,
         scene=scene,
     )
+    planner_social = plan.social_action in SOCIAL_ACTIONS and plan.source == "llm"
     action = plan.social_action if plan.social_action in SOCIAL_ACTIONS else hint["action"]
     confidence = plan.social_confidence if plan.social_action in SOCIAL_ACTIONS else hint["confidence"]
     reasons = list(plan.social_reasons) if plan.social_action in SOCIAL_ACTIONS else []
     reasons.extend(hint["reasons"])
+    atmosphere = (
+        str(plan.social_atmosphere or "").strip()[:32]
+        if planner_social and plan.social_confidence >= min_confidence
+        else str(hint.get("atmosphere") or "casual")[:32]
+    ) or "casual"
 
     # 直接唤醒是现有插件的用户契约：不能被模型的社交判断静默掉。
     if addressed and action in {"ignore", "interject"}:
@@ -283,7 +309,7 @@ def apply_group_social_requirements(
     plan.social_confidence = max(0.0, min(1.0, float(confidence)))
     plan.social_reasons = list(dict.fromkeys(str(item)[:80] for item in reasons if str(item).strip()))[:6]
     plan.social_addressed = bool(addressed)
-    plan.social_atmosphere = str(hint.get("atmosphere") or "casual")[:32]
+    plan.social_atmosphere = atmosphere
     plan.social_topic_shift = bool(
         (scene and scene.get("topic_shift")) or _SOCIAL_SWITCH_RE.search(str(message or ""))
     )
@@ -330,7 +356,7 @@ def build_rule_plan(
             evidence_required=True, tool_required=True, tone="brief",
             constraints=["必须使用当前时间 provider，不得凭模型记忆猜测"], source="rule",
         )
-    from app.chat import web_provider
+    from app.chat import web_provider, web_research
 
     prior = investigation_context or {}
     if is_owner and prior.get("question") and is_investigation_followup(text):
@@ -346,12 +372,26 @@ def build_rule_plan(
         return ResponsePlan(
             mode="retrieve_then_answer", intent="external_reference_lookup", confidence=0.92,
             evidence_required=True, retrieval_required=True, tool_required=True,
-            provider="web_search", query=(expanded_query or text[:400]),
+            provider="web_search", route="web_research", research_kind="novel",
+            subject=web_provider._reference_title_text(text)[:160],
+            research_question=text[:400], research_queries=[expanded_query or text[:400]],
+            query=(expanded_query or text[:400]),
             constraints=[
                 NO_SOURCE_RULE,
                 "只能依据本轮检索来源概括，来源不足时明确说明无法核实",
                 "主观评价必须和来源支持的事实分开，不得凭模型记忆补写剧情或口碑",
             ],
+            source="rule",
+        )
+    fallback_kind = web_research.classify_query(text)
+    if fallback_kind in {"project", "document", "url", "knowledge"}:
+        return ResponsePlan(
+            mode="retrieve_then_answer", intent=f"{fallback_kind}_lookup", confidence=0.9,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", route="web_research", research_kind=fallback_kind,
+            subject=text[:160], research_question=text[:400], research_queries=[text[:400]],
+            query=text[:400],
+            constraints=[NO_SOURCE_RULE, "只能依据本轮检索来源回答，并保留来源链接"],
             source="rule",
         )
     if web_provider.looks_like_hot_browsing(text):
@@ -375,8 +415,9 @@ def build_rule_plan(
             intent="event_lookup" if event else "latest_news",
             confidence=0.9,
             evidence_required=True, retrieval_required=True, tool_required=True,
-            provider="web_search", query=text[:400],
-            investigation_required=event,
+            provider="web_search", route="web_research", research_kind="news",
+            subject=text[:160], research_question=text[:400], research_queries=[text[:400]],
+            query=text[:400], investigation_required=event,
             constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
             source="rule",
         )
@@ -390,7 +431,9 @@ def build_rule_plan(
             intent="latest_news",
             confidence=0.8,
             evidence_required=True, retrieval_required=True, tool_required=True,
-            provider="web_search", query=previous[:400],
+            provider="web_search", route="web_research", research_kind="news",
+            subject=previous[:160], research_question=text[:400], research_queries=[previous[:400]],
+            query=previous[:400],
             constraints=[NO_SOURCE_RULE, "回答须标注来源与发布时间", "报道措辞不构成事实或道德依据"],
             source="rule",
         )
@@ -413,6 +456,11 @@ def build_rule_plan(
             evidence_required=True, retrieval_required=True,
             tool_required=about_event,
             provider="web_search" if about_event else None,
+            route="web_research" if about_event else "direct",
+            research_kind="news" if about_event else None,
+            subject=text[:160] if about_event else "",
+            research_question=text[:400] if about_event else "",
+            research_queries=[text[:400]] if about_event else [],
             investigation_required=about_event,
             query=text[:400] if about_event else "",
             needs_moral_judgment=True, sensitive_subject=sensitive,
@@ -481,10 +529,25 @@ def parse_llm_plan(
         intent = str(raw.get("intent") or "general_chat").strip()[:80]
         confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
         if mode not in MODES or confidence < min_confidence:
+            if fallback is not None:
+                return fallback
             return ResponsePlan(mode="clarify" if confidence > 0.3 else "casual_chat", intent="uncertain", confidence=confidence, source="fallback", needs_clarification=confidence > 0.3)
         provider = str(raw.get("provider") or "").strip() or None
         if provider not in _ALLOWED_PROVIDERS:
             provider = None
+        route = str(raw.get("route") or "direct").strip().lower()
+        if route not in _ALLOWED_ROUTES:
+            route = "direct"
+        research_kind = str(raw.get("research_kind") or "").strip().lower() or None
+        if research_kind not in _RESEARCH_KINDS:
+            research_kind = None
+        research_queries = _text_list(
+            raw.get("research_queries") if raw.get("research_queries") is not None else raw.get("queries"),
+            limit=3,
+        )
+        source_preference = _text_list(raw.get("source_preference"), limit=5)
+        followup_kind = str(raw.get("followup_kind") or "").strip()[:32]
+        followup_required = raw.get("followup_required") is True
         risk = str(raw.get("risk") or "low").strip().lower()
         if risk not in {"low", "medium", "high"}:
             risk = "low"
@@ -515,6 +578,17 @@ def parse_llm_plan(
             source="llm",
             provider=provider,
             query=str(raw.get("query") or "").strip()[:500] or None,
+            route=route,
+            research_kind=research_kind,
+            subject=str(raw.get("subject") or "").strip()[:160],
+            research_question=str(
+                raw.get("research_question") if raw.get("research_question") is not None
+                else raw.get("question") or ""
+            ).strip()[:400],
+            research_queries=research_queries,
+            source_preference=source_preference,
+            followup_kind=followup_kind,
+            followup_required=followup_required,
             action=action,
             risk=risk,
             reason=str(raw.get("reason") or "").strip()[:120],
@@ -548,11 +622,22 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
     只合并强制项，不把规则的全部约束无差别叠加，避免把 planner 的判断
     覆盖成规则模板。
     """
-    if hint.provider == "web_search":
+    hard_web_hint = hint.provider == "web_search" and (
+        hint.investigation_required
+        or hint.needs_moral_judgment
+        or hint.intent in {"latest_news", "event_lookup", "event_followup"}
+    )
+    # 语义 planner 成功后，旧的作品/资料关键词规则不再夺取联网决策；
+    # 只有时效事实、事件核查和道德判断这类安全要求可以强制取证。
+    # planner 失败时 plan.source 不是 llm，完整规则计划仍作为兼容 fallback。
+    if hint.provider == "web_search" and (hard_web_hint or plan.source != "llm"):
+        plan.route = "web_research"
         plan.provider = "web_search"
         plan.tool_required = True
         plan.evidence_required = True
         plan.retrieval_required = True
+        if not plan.research_kind:
+            plan.research_kind = hint.research_kind
         if plan.mode in {"casual_chat", "clarify"}:
             plan.mode = "retrieve_then_answer"
             plan.intent = hint.intent
@@ -561,9 +646,9 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
         for item in hint.constraints:
             if item not in plan.constraints:
                 plan.constraints.append(item)
-    if hint.provider == "hotboard":
-        # 热点浏览属规则强制项：planner 不认识 hotboard，会把 provider 清空，
-        # 导致热榜不被调用（生产实测 intent=hot_browsing 但 provider='' ）。
+    if hint.provider == "hotboard" and (plan.source != "llm" or plan.intent == "hot_browsing"):
+        # 旧 hotboard 规则仅作为 planner 不可用时的 fallback；
+        # planner 明确选择 hot_browsing 时只补齐 provider，不覆盖其它语义字段。
         plan.provider = "hotboard"
         plan.tool_required = True
         plan.retrieval_required = True
@@ -589,9 +674,45 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
 
 def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
     """代码强制安全边界：planner 不能授予权限或执行未知工具。"""
+    if plan.route not in _ALLOWED_ROUTES:
+        plan.route = "direct"
+    if plan.research_kind not in _RESEARCH_KINDS:
+        plan.research_kind = None
     if plan.provider and plan.provider not in _ALLOWED_PROVIDERS:
         plan.provider = None
         plan.tool_required = False
+    if plan.route in {"web_research", "hybrid"}:
+        plan.provider = "web_search"
+        plan.tool_required = True
+        plan.retrieval_required = True
+        plan.evidence_required = True
+        if not plan.research_kind:
+            plan.research_kind = "knowledge"
+        if plan.mode in {"casual_chat", "clarify"}:
+            plan.mode = "retrieve_then_answer"
+        if not plan.query:
+            plan.query = (
+                plan.research_queries[0]
+                if plan.research_queries else plan.research_question or plan.subject or None
+            )
+        if NO_SOURCE_RULE not in plan.constraints:
+            plan.constraints.append(NO_SOURCE_RULE)
+    elif plan.route == "local_memory":
+        plan.retrieval_required = True
+    elif plan.provider == "web_search":
+        plan.route = "web_research"
+        plan.tool_required = True
+        plan.retrieval_required = True
+        plan.evidence_required = True
+        if not plan.research_kind:
+            plan.research_kind = "knowledge"
+        if not plan.query:
+            plan.query = (
+                plan.research_queries[0]
+                if plan.research_queries else plan.research_question or plan.subject or None
+            )
+        if NO_SOURCE_RULE not in plan.constraints:
+            plan.constraints.append(NO_SOURCE_RULE)
     if plan.mode == "action":
         if not is_owner:
             return ResponsePlan(mode="refuse_or_confirm", intent=plan.intent, confidence=plan.confidence, source="fallback", risk="high", confirmation_required=True)
@@ -638,6 +759,14 @@ def build_planner_messages(
     import json
 
     schema = {
+        "route": "direct",
+        "research_kind": None,
+        "subject": "",
+        "research_question": "",
+        "research_queries": [],
+        "source_preference": [],
+        "followup_kind": "",
+        "followup_required": False,
         "intent": "general_chat",
         "mode": "casual_chat",
         "confidence": 0.0,
@@ -677,11 +806,16 @@ def build_planner_messages(
             "你是私人助手的响应策略规划器。不要回答用户，只返回 JSON。"
             "自主判断用户意图和最佳响应模式，但不能授予权限、执行动作或编造事实。"
             + social_rules
-            + "可选 mode: " + ", ".join(sorted(MODES)) + "。"
-            "确定性时间/计算问题可选择 provider=current_datetime/calculator。"
-            "只要问题涉及外部世界的时效信息——新闻、事件、公共人物/机构/地区/"
-            "公司的近况与进展、政策或数据的当前值——provider 就填 web_search，"
-            "query 填用户原话（原话比改写命中更多）。"
+            + "可选 route: direct/local_memory/web_research/hybrid/domain；可选 mode: "
+            + ", ".join(sorted(MODES)) + "。"
+            "route 表示本轮主要信息路径：direct 是普通对话，local_memory 是查本地记忆，"
+            "web_research 是查公开网页/GitHub/URL，hybrid 是本地记忆与公开资料结合，domain 是调用已有领域服务。"
+            "research_kind 只在 web_research/hybrid 时填写 novel/knowledge/document/project/news/url。"
+            "不要按固定关键词机械判断；根据用户真正想要的事实、资料、近况或作品信息理解语义。"
+            "例如‘你知道《没钱修什么仙》吗？’应理解为 novel web_research；"
+            "‘我最近状态怎么样’应理解为 local_memory；‘你好’应理解为 direct。"
+            "涉及外部世界的时效信息、新闻、事件、公共人物/机构/地区/公司的近况与进展、"
+            "政策或数据当前值时，provider 填 web_search，query 填用户原话或语义改写。"
             "用户想看当下热议话题而不是查具体事件时（如「最近有什么大事」），"
             "provider 填 hotboard。"
             "涉及具体事件核查、纠纷责任或对事件的道德评价时，选择 web_search 并置 "
@@ -733,27 +867,6 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
     if hint.intent == "current_datetime":
         hint.provider = "current_datetime"
         return hint
-    research_kind = web_research.classify_query(ctx.message)
-    if research_kind == "project":
-        return ResponsePlan(
-            mode="retrieve_then_answer", intent="project_lookup", confidence=0.96,
-            evidence_required=True, retrieval_required=True, tool_required=True,
-            provider="web_search", query=ctx.message[:400],
-            constraints=[
-                "优先使用 GitHub 仓库、README、Release、Issue 或 PR 来源",
-                "只能依据公开项目资料回答，无法确认的内容明确说明",
-            ], source="rule",
-        )
-    if research_kind in {"document", "url", "knowledge"}:
-        return ResponsePlan(
-            mode="retrieve_then_answer", intent=f"{research_kind}_lookup", confidence=0.9,
-            evidence_required=True, retrieval_required=True, tool_required=True,
-            provider="web_search", query=ctx.message[:400],
-            constraints=[
-                "只能依据本轮网页来源回答，并保留来源链接",
-                "来源不足时明确说明无法核实，不得凭模型记忆补写",
-            ], source="rule",
-        )
     if not getattr(runtime.settings, "semantic_planner_enabled", False):
         return hint
     model = str(getattr(runtime.settings, "response_plan_model", "") or "").strip() or runtime.settings.llm_model

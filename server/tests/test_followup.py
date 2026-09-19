@@ -60,6 +60,23 @@ def test_explicit_clarification_plan_can_open_free_text_window():
     assert hint["followup"]["kind"] == "free_text"
 
 
+def test_semantic_followup_plan_can_open_bounded_window_without_keyword():
+    hint = followup.build_interaction_hint(
+        _ctx(),
+        SimpleNamespace(
+            needs_clarification=False,
+            social_action="answer",
+            followup_required=True,
+            followup_kind="free_text",
+        ),
+        "请补充必要信息。",
+    )
+
+    assert hint == {
+        "followup": {"kind": "free_text", "expires_in": 90, "max_messages": 1}
+    }
+
+
 def test_chat_response_keeps_legacy_default_shape_compatible():
     response = ChatResponse(reply="ok", memories_used=0)
 

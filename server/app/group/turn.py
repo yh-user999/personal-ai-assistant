@@ -37,6 +37,44 @@ def prepare_interject_config(settings: Any) -> group_interjection.InterjectionCo
     return group_interjection.config_from_settings(settings)
 
 
+async def _short_circuit_group_social(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    state: GroupTurnState,
+    *,
+    gate: group_interjection.GateDecision | None,
+    action: str,
+) -> ChatResponse:
+    """在群社交硬闸门拒绝后只记录当前群事件，不进入主 LLM。"""
+    score = state.score
+    settings = runtime.settings
+    memory = runtime.memory
+    if score is not None:
+        ctx.trace.route_name = (
+            "group:social_shadow"
+            if gate is not None and gate.reason == "shadow_only"
+            else "group:social_ignore"
+        )
+        ctx.trace.social_judgment = {
+            **score.as_dict(),
+            "action": action,
+            "addressed": False,
+            "atmosphere": str(state.scene.get("atmosphere") or "casual"),
+            "gate": gate.as_dict() if gate is not None else {"reason": "planner_ignore"},
+            "interject_enabled": bool(getattr(settings, "group_social_interject_enabled", False)),
+            "care_allowed": bool(state.care and state.care.eligible),
+            "care_kind": str(getattr(state.care, "kind", "") or ""),
+            "care_reason": str(getattr(state.care, "reason", "") or ""),
+            "heartflow": state.scene.get("heartflow", {}),
+            "heartflow_decision": state.scene.get("heartflow_decision", {}),
+        }
+    with ctx.trace.stage("social_gate"):
+        group_context.remember(ctx.group_id, "user", ctx.message, user_id=ctx.uid)
+        await memory.write_message("user", ctx.message, user_id=ctx.uid, group_id=ctx.group_id)
+    heartflow.record_silence(ctx.group_id)
+    return ChatResponse(reply="", memories_used=0)
+
+
 async def prepare_group_scene(
     ctx: ChatContext,
     runtime: ChatRuntime,
@@ -47,7 +85,6 @@ async def prepare_group_scene(
     返回 ``(state, early)``；``early`` 非空表示本轮在生成前短路，调用方原样返回。
     """
     settings = runtime.settings
-    memory = runtime.memory
     services = runtime.services
     msg = ctx.message
 
@@ -153,41 +190,17 @@ async def prepare_group_scene(
                     list(score.reasons) + [heartflow_decision.reason]
                 ),
             )
-    gate, reservation = group_interjection.interject_gate.reserve(
-        ctx.group_id,
-        score,
-        config=interject_config,
-    )
-    if gate.allowed:
-        state.score = score
-        state.gate = gate
-        state.reservation = reservation
-        return state, None
+    state.score = score
 
-    # 评分、shadow、冷却和预算拒绝都在主 LLM 前短路；只保留群作用域事件。
-    ctx.trace.route_name = (
-        "group:social_shadow"
-        if gate.reason == "shadow_only"
-        else "group:social_ignore"
-    )
-    ctx.trace.social_judgment = {
-        **score.as_dict(),
-        "action": "interject" if gate.would_allow else "ignore",
-        "addressed": False,
-        "atmosphere": str(scene.get("atmosphere") or "casual"),
-        "gate": gate.as_dict(),
-        "interject_enabled": interject_config.enabled,
-        "care_allowed": bool(care_decision and care_decision.eligible),
-        "care_kind": str(getattr(care_decision, "kind", "") or ""),
-        "care_reason": str(getattr(care_decision, "reason", "") or ""),
-        "heartflow": scene.get("heartflow", {}),
-        "heartflow_decision": scene.get("heartflow_decision", {}),
-    }
-    with ctx.trace.stage("social_gate"):
-        group_context.remember(ctx.group_id, "user", msg, user_id=ctx.uid)
-        await memory.write_message("user", msg, user_id=ctx.uid, group_id=ctx.group_id)
-    heartflow.record_silence(ctx.group_id)
-    return state, ChatResponse(reply="", memories_used=0)
+    # 主动插话关闭时严格 fail-closed，不能为了语义判断调用 planner。
+    if not interject_config.enabled:
+        return state, await _short_circuit_group_social(
+            ctx, runtime, state, gate=None, action="ignore"
+        )
+
+    # 开启主动插话时先让 semantic planner 选择是否/如何接话，再由
+    # finalize_group_social_gate() 执行评分、心流、冷却和配额硬闸门。
+    return state, None
 
 
 def apply_group_plan_fields(plan: response_plan.ResponsePlan, state: GroupTurnState) -> None:
@@ -201,12 +214,17 @@ def apply_group_plan_fields(plan: response_plan.ResponsePlan, state: GroupTurnSt
     if score is None:
         return
     gate = state.gate
-    # 通过评分和闸门的非直达消息只能以 interject 进入生成链路，不能被 planner 改成普通回答。
-    plan.social_action = "interject"
-    plan.social_confidence = score.score
-    plan.social_reasons = list(score.reasons)
+    # 评分和闸门只能决定是否进入生成链路；planner 已选出的 banter/tease/ask_back
+    # 仍保留为表达动作，不能被旧的 interject 默认值覆盖。
+    if plan.source != "llm" or plan.social_action not in response_plan.SOCIAL_ACTIONS:
+        plan.social_action = "interject"
+    plan.social_confidence = max(plan.social_confidence, score.score)
+    plan.social_reasons = list(dict.fromkeys(
+        list(plan.social_reasons) + list(score.reasons)
+    ))[:8]
     plan.social_addressed = False
-    plan.social_atmosphere = str(state.scene.get("atmosphere") or "casual")[:32]
+    if plan.source != "llm" or not plan.social_atmosphere:
+        plan.social_atmosphere = str(state.scene.get("atmosphere") or "casual")[:32]
     plan.social_score = score.score
     plan.social_factors = dict(score.factors)
     plan.social_penalties = dict(score.penalties)
@@ -216,6 +234,55 @@ def apply_group_plan_fields(plan: response_plan.ResponsePlan, state: GroupTurnSt
     plan.social_cooldown_remaining = gate.cooldown_remaining if gate else 0.0
     plan.social_hourly_count = gate.hourly_count if gate else 0
     plan.social_message_gap = gate.message_gap if gate else 0
+
+
+async def finalize_group_social_gate(
+    ctx: ChatContext,
+    runtime: ChatRuntime,
+    plan: response_plan.ResponsePlan,
+    state: GroupTurnState,
+    interject_config: group_interjection.InterjectionConfig,
+) -> ChatResponse | None:
+    """在 semantic planner 之后执行非直达群消息的硬插话闸门。"""
+    if ctx.group_directed or state.score is None:
+        return None
+    score = state.score
+    requested = str(plan.social_action or "ignore").strip()
+    if requested == "ignore":
+        plan.social_gate_reason = "planner_ignore"
+        plan.social_gate_allowed = False
+        plan.social_gate_would_allow = bool(score.eligible)
+        ctx.trace.response_plan.update(plan.summary())
+        return await _short_circuit_group_social(
+            ctx, runtime, state, gate=None, action="ignore"
+        )
+
+    gate, reservation = group_interjection.interject_gate.reserve(
+        ctx.group_id,
+        score,
+        config=interject_config,
+    )
+    state.gate = gate
+    if not gate.allowed:
+        plan.social_gate_reason = gate.reason
+        plan.social_gate_allowed = False
+        plan.social_gate_would_allow = bool(gate.would_allow)
+        plan.social_cooldown_remaining = gate.cooldown_remaining
+        plan.social_hourly_count = gate.hourly_count
+        plan.social_message_gap = gate.message_gap
+        ctx.trace.response_plan.update(plan.summary())
+        return await _short_circuit_group_social(
+            ctx, runtime, state, gate=gate, action="ignore"
+        )
+
+    state.reservation = reservation
+    plan.social_gate_reason = gate.reason
+    plan.social_gate_allowed = True
+    plan.social_gate_would_allow = bool(gate.would_allow)
+    plan.social_cooldown_remaining = gate.cooldown_remaining
+    plan.social_hourly_count = gate.hourly_count
+    plan.social_message_gap = gate.message_gap
+    return None
 
 
 def record_group_social_trace(

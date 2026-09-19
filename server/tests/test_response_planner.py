@@ -15,6 +15,54 @@ def test_parse_llm_plan_accepts_autonomous_mode():
     assert plan.retrieval_required is True
 
 
+def test_semantic_web_plan_is_normalized_and_bounded():
+    plan = parse_llm_plan(
+        '{"route":"web_research","research_kind":"novel",'
+        '"subject":"没钱修什么仙？","research_question":"作者和核心设定是什么？",'
+        '"research_queries":["没钱修什么仙？","扩展查询","第三条","忽略"],'
+        '"source_preference":["qidian.com","baike.baidu.com","extra"],'
+        '"mode":"retrieve_then_answer","confidence":0.95}'
+    )
+    assert plan.source == "llm"
+    assert plan.route == "web_research"
+    assert plan.provider == "web_search"
+    assert plan.research_kind == "novel"
+    assert plan.research_queries == ["没钱修什么仙？", "扩展查询", "第三条"]
+    assert plan.query == "没钱修什么仙？"
+    assert plan.summary()["queries"] == plan.research_queries
+    assert "本轮没有任何检索来源" in plan.constraints[-1]
+
+
+def test_valid_llm_direct_plan_is_not_replaced_by_keyword_fallback():
+    ctx = SimpleNamespace(
+        message="帮我查一下《没钱修什么仙》的作者",
+        is_owner=True,
+        request_id="r-semantic",
+        uid="owner",
+    )
+
+    class FakeLLM:
+        async def chat(self, messages, **kwargs):
+            return '{"route":"direct","mode":"casual_chat","intent":"known_work",' \
+                   '"confidence":0.95,"provider":null}'
+
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(
+            semantic_planner_enabled=True,
+            response_plan_model="",
+            response_plan_timeout=12,
+            response_plan_max_tokens=400,
+            response_plan_min_confidence=0.6,
+            llm_model="test",
+        ),
+        llm=FakeLLM(),
+    )
+    plan = asyncio.run(plan_response(ctx, runtime, []))
+    assert plan.source == "llm"
+    assert plan.route == "direct"
+    assert plan.provider is None
+
+
 def test_low_confidence_falls_back_without_action():
     plan = parse_llm_plan(
         '{"intent":"unknown","mode":"action","confidence":0.2,"tool_required":true,"action":"delete"}'

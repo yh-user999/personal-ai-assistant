@@ -11,12 +11,13 @@ import inspect
 import re
 import time
 from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from app.chat import github_provider, web_provider
 
-ResearchKind = Literal["none", "novel", "document", "project", "url", "knowledge"]
+ResearchKind = Literal["none", "novel", "document", "project", "url", "knowledge", "news"]
 
 _URL_RE = re.compile(r"https?://[^\s<>{}\[\]\\]+", re.IGNORECASE)
 _DOCUMENT_RE = re.compile(r"官方文档|文档|API\s*reference|documentation|教程|手册|规范|reference", re.IGNORECASE)
@@ -41,6 +42,7 @@ class ResearchPlan:
     max_results: int = 6
     budget_seconds: float = 18.0
     domains: tuple[str, ...] = ()
+    source_preference: tuple[str, ...] = ()
 
 
 @dataclass
@@ -52,6 +54,7 @@ class ResearchResult:
     pages_read: int = 0
     page_failures: int = 0
     provider: str = "searxng"
+    source_preference: tuple[str, ...] = ()
     stop_reason: str = "completed"
     elapsed_ms: int = 0
 
@@ -75,7 +78,11 @@ class ResearchResult:
                 "query": self.query[:400],
                 "priority": 100,
             }] if not self.sources else []),
-            "checks": {"mode": "web_research", "pages_read": self.pages_read},
+            "checks": {
+                "mode": "web_research",
+                "pages_read": self.pages_read,
+                "source_preference": list(self.source_preference),
+            },
         }
 
     def prompt_block(self) -> str:
@@ -106,6 +113,7 @@ class ResearchResult:
             "observed_at": "",
             "provider": self.provider,
             "research_kind": self.kind,
+            "source_preference": list(self.source_preference),
             "pages_read": self.pages_read,
             "page_failures": self.page_failures,
             "stop_reason": self.stop_reason,
@@ -132,9 +140,28 @@ def _bounded_float(value: Any, default: float, upper: float) -> float:
     return max(1.0, min(parsed, upper))
 
 
+def _bounded_texts(values: Any, *, limit: int, item_limit: int = 200) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, Sequence) or isinstance(values, (bytes, bytearray)):
+        return ()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()[:item_limit]
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return tuple(result)
+
+
 def classify_query(text: str) -> ResearchKind:
     value = (text or "").strip()
     if not value:
+        return "none"
+    # “我的项目代号叫……”是个人记忆/闲聊，不是查询公开项目；
+    # 规则层只作 fallback 时也不能因“项目”二字误触 GitHub。
+    if re.search(r"(?:我|我的)?\s*项目代号\s*(?:叫|是|为|：|:)", value):
         return "none"
     if _URL_RE.search(value):
         return "url"
@@ -171,29 +198,74 @@ def _domains_for(text: str, kind: ResearchKind) -> tuple[str, ...]:
     return ()
 
 
-def build_plan(text: str, *, settings: Any) -> ResearchPlan:
-    value = (text or "").strip()
-    kind = classify_query(value)
+def build_plan(
+    text: str,
+    *,
+    settings: Any,
+    kind: ResearchKind | None = None,
+    subject: str = "",
+    research_question: str = "",
+    research_queries: Any = (),
+    source_preference: Any = (),
+    budget_seconds: float | None = None,
+) -> ResearchPlan:
+    value = (subject or research_question or text or "").strip()
+    detected_kind: ResearchKind = kind or classify_query(value)
     max_rounds = _bounded_int(_setting(settings, "web_research_max_rounds", 2), 2, 3)
     max_pages = _bounded_int(_setting(settings, "web_research_max_pages", 3), 3, 6)
     max_results = _bounded_int(_setting(settings, "web_research_max_results", 6), 6, 10)
-    budget = _bounded_float(_setting(settings, "web_research_budget_seconds", 18.0), 18.0, 40.0)
-    if kind == "novel":
-        primary, alternate = web_provider.reference_search_queries(value)
-        title = web_provider._reference_title_text(value).strip(" 《》「」?？!！。")
-        fast = f"{title}？" if title else ""
-        queries = tuple(dict.fromkeys(item for item in (fast, primary, alternate) if item))
-        return ResearchPlan(kind, queries, max_rounds=2, max_pages=max_pages, max_results=max_results, budget_seconds=budget)
-    if kind == "project":
-        return ResearchPlan(kind, (value,), max_rounds=1, max_pages=max_pages, max_results=max_results, budget_seconds=budget)
-    if kind == "url":
-        match = _URL_RE.search(value)
-        return ResearchPlan(kind, (match.group(0).rstrip(".,，。") if match else value,), max_rounds=1, max_pages=1, max_results=1, budget_seconds=budget)
-    if kind == "document":
-        query = value if _DOCUMENT_RE.search(value) else f"{value} 官方文档"
-        return ResearchPlan(kind, (query,), max_rounds=1, max_pages=max_pages, max_results=max_results, budget_seconds=budget, domains=_domains_for(value, kind))
-    if kind == "knowledge":
-        return ResearchPlan(kind, (value,), max_rounds=max_rounds, max_pages=max_pages, max_results=max_results, budget_seconds=budget)
+    budget = _bounded_float(
+        budget_seconds if budget_seconds is not None else _setting(settings, "web_research_budget_seconds", 18.0),
+        18.0,
+        40.0,
+    )
+    preferred = _bounded_texts(source_preference, limit=5, item_limit=120)
+    explicit = _bounded_texts(research_queries, limit=3, item_limit=200)
+    if detected_kind == "none":
+        return ResearchPlan("none", (), max_rounds=0, max_pages=0, max_results=0, budget_seconds=0.0)
+    if detected_kind == "novel":
+        if explicit:
+            queries = explicit
+        else:
+            primary, alternate = web_provider.reference_search_queries(value)
+            title = web_provider._reference_title_text(value).strip(" 《》「」?？!！。")
+            fast = f"{title}？" if title else ""
+            queries = tuple(dict.fromkeys(item for item in (fast, primary, alternate) if item))
+        return ResearchPlan(
+            detected_kind, queries, max_rounds=min(2, max(1, len(queries))),
+            max_pages=max_pages, max_results=max_results, budget_seconds=budget,
+            source_preference=preferred,
+        )
+    if detected_kind == "project":
+        queries = explicit or (value,)
+        return ResearchPlan(
+            detected_kind, queries[:3], max_rounds=1, max_pages=max_pages,
+            max_results=max_results, budget_seconds=budget, source_preference=preferred,
+        )
+    if detected_kind == "url":
+        candidates = explicit or (value,)
+        match = _URL_RE.search(candidates[0])
+        url = match.group(0).rstrip(".,，。") if match else candidates[0]
+        return ResearchPlan(
+            detected_kind, (url,), max_rounds=1, max_pages=1, max_results=1,
+            budget_seconds=budget, source_preference=preferred,
+        )
+    if detected_kind == "document":
+        query = (explicit[0] if explicit else value)
+        if not _DOCUMENT_RE.search(query):
+            query = f"{query} 官方文档"
+        return ResearchPlan(
+            detected_kind, (query,), max_rounds=1, max_pages=max_pages,
+            max_results=max_results, budget_seconds=budget,
+            domains=_domains_for(value, detected_kind), source_preference=preferred,
+        )
+    if detected_kind in {"knowledge", "news"}:
+        queries = explicit or (value,)
+        return ResearchPlan(
+            detected_kind, queries[:3], max_rounds=min(max_rounds, max(1, len(queries))),
+            max_pages=max_pages, max_results=max_results, budget_seconds=budget,
+            source_preference=preferred,
+        )
     return ResearchPlan("none", (), max_rounds=0, max_pages=0, max_results=0, budget_seconds=0.0)
 
 
@@ -250,11 +322,17 @@ async def _read_pages(result: ResearchResult, plan: ResearchPlan, deadline: floa
     await asyncio.gather(*(read(item) for item in candidates), return_exceptions=True)
 
 
-async def _search_cluster_compat(query: str, *, limit: int, budget_seconds: float) -> dict[str, Any]:
+async def _search_cluster_compat(
+    query: str,
+    *,
+    limit: int,
+    budget_seconds: float,
+    category: str = "general",
+) -> dict[str, Any]:
     """调用现有搜索聚合器，并兼容旧插件/测试替身的参数签名。"""
     operation = web_provider.search_and_cluster
     kwargs: dict[str, Any] = {
-        "time_range": "",
+        "time_range": "week" if category == "news" else "",
         "limit": limit,
         "alt_query": None,
         "deep_dive": False,
@@ -269,25 +347,58 @@ async def _search_cluster_compat(query: str, *, limit: int, budget_seconds: floa
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     ):
-        kwargs["category"] = "general"
+        kwargs["category"] = category if category in {"news", "general"} else "general"
     return await operation(query, **kwargs)
 
 
-async def run_research(question: str, *, settings: Any, kind: ResearchKind | None = None) -> ResearchResult:
+async def run_research(
+    question: str,
+    *,
+    settings: Any,
+    kind: ResearchKind | None = None,
+    semantic_plan: Mapping[str, Any] | None = None,
+    budget_seconds: float | None = None,
+) -> ResearchResult:
     started = time.monotonic()
-    plan = build_plan(question, settings=settings)
-    if kind and kind != "none":
-        plan = ResearchPlan(kind, plan.queries, plan.max_rounds, plan.max_pages, plan.max_results, plan.budget_seconds, plan.domains)
-    result = ResearchResult(kind=plan.kind, query=plan.queries[0] if plan.queries else question)
+    semantic = semantic_plan or {}
+    semantic_kind = kind or str(semantic.get("research_kind") or "").strip().lower() or None
+    plan = build_plan(
+        question,
+        settings=settings,
+        kind=semantic_kind,
+        subject=str(semantic.get("subject") or ""),
+        research_question=str(semantic.get("research_question") or semantic.get("question") or ""),
+        research_queries=(
+            semantic.get("research_queries")
+            if semantic.get("research_queries") is not None
+            else semantic.get("queries", ())
+        ),
+        source_preference=semantic.get("source_preference", ()),
+        budget_seconds=budget_seconds,
+    )
+    result = ResearchResult(
+        kind=plan.kind,
+        query=plan.queries[0] if plan.queries else question,
+        source_preference=plan.source_preference,
+    )
     if plan.kind == "none":
         result.stop_reason = "not_requested"
         return result
     deadline = asyncio.get_running_loop().time() + plan.budget_seconds
 
+    research_text = " ".join(
+        item for item in (
+            str(semantic.get("subject") or ""),
+            str(semantic.get("research_question") or semantic.get("question") or ""),
+            question,
+        ) if item.strip()
+    )[:1200]
     if plan.kind == "project":
-        project_query = github_provider.rewrite_project_query(question)
-        issue_requested = bool(re.search(r"\b(?:issue|issues|pr|pull\s+request)\b|Issue|PR", question, re.IGNORECASE))
-        release_requested = bool(re.search(r"release|版本|发布|更新", question, re.IGNORECASE))
+        project_query = github_provider.rewrite_project_query(
+            str(semantic.get("subject") or "").strip() or plan.queries[0] or question
+        )
+        issue_requested = bool(re.search(r"\b(?:issue|issues|pr|pull\s+request)\b|Issue|PR", research_text, re.IGNORECASE))
+        release_requested = bool(re.search(r"release|版本|发布|更新", research_text, re.IGNORECASE))
         if issue_requested:
             result.results = await github_provider.search_issues(project_query, limit=plan.max_results)
         else:
@@ -324,6 +435,7 @@ async def run_research(question: str, *, settings: Any, kind: ResearchKind | Non
                 query,
                 limit=plan.max_results,
                 budget_seconds=min(left, plan.budget_seconds),
+                category="news" if plan.kind == "news" else "general",
             )
             batch = list(data.get("results") or [])
             if plan.kind == "novel":

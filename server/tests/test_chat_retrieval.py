@@ -249,7 +249,7 @@ def make_runtime(services_map, knowledge=None):
     )
 
 
-def make_ctx(message, uid="", is_owner=True, group_id=""):
+def make_ctx(message, uid="", is_owner=True, group_id="", group_directed=True):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
         request_model=ChatRequest(message=message, group_id=group_id or None),
@@ -257,6 +257,7 @@ def make_ctx(message, uid="", is_owner=True, group_id=""):
         uid=uid,
         is_owner=is_owner,
         group_id=group_id,
+        group_directed=group_directed,
     )
 
 
@@ -519,6 +520,74 @@ def test_group_guest_does_not_enter_owner_web_research(db_env, monkeypatch):
     assert calls["search"] == 0
     assert "实时检索资料" not in bundle.knowledge_text
     assert ctx.trace.response_plan.get("web_has_sources") is not True
+
+
+def test_group_directed_semantic_plan_uses_group_scoped_research(db_env, monkeypatch):
+    """群真实直达时消费语义研究计划，但仍使用群访客作用域。"""
+    from app.chat import web_provider
+    from app.group.web_search import limiter
+
+    calls, runtime = _web_retrieval_env(monkeypatch, results=_sources())
+    _patch_memory_scoped(monkeypatch, expect_uid="guest-semantic")
+    monkeypatch.setattr(settings, "group_web_search_enabled", True)
+    monkeypatch.setattr(settings, "group_web_search_cooldown_seconds", 0)
+    monkeypatch.setattr(settings, "group_web_search_hourly_limit", 3)
+    limiter.reset()
+
+    async def fake_fetch(url):
+        return {"url": url, "text": "群作用域公开资料正文"}
+
+    monkeypatch.setattr(web_provider, "fetch_page", fake_fetch)
+    ctx = make_ctx(
+        "你知道这个作品吗？",
+        uid="guest-semantic",
+        is_owner=False,
+        group_id="semantic-group",
+        group_directed=True,
+    )
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "route": "web_research",
+        "research_kind": "knowledge",
+        "provider": "web_search",
+        "subject": "作品资料",
+        "research_question": "核实公开资料",
+        "research_queries": ["作品资料 公开来源"],
+    }
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 1
+    assert bundle.evidence["sources"]
+    assert "通用网页研究资料" in bundle.knowledge_text
+    assert ctx.trace.response_plan["web_research_kind"] == "knowledge"
+    assert ctx.trace.response_plan["group_web_search"] == "ok"
+    limiter.reset()
+
+
+def test_guest_private_semantic_web_plan_is_denied_without_sources(db_env, monkeypatch):
+    """访客私聊即使携带语义联网计划，也不得越过权限和来源门禁。"""
+    calls, runtime = _web_retrieval_env(monkeypatch, results=_sources())
+    _patch_memory_scoped(monkeypatch, expect_uid="guest-private")
+    ctx = make_ctx(
+        "帮我核实这个资料",
+        uid="guest-private",
+        is_owner=False,
+    )
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "route": "web_research",
+        "research_kind": "knowledge",
+        "provider": "web_search",
+        "research_queries": ["资料核实"],
+    }
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 0
+    assert bundle.evidence == {}
+    assert ctx.trace.response_plan["web_unavailable"] == "guest_scope"
+    assert ctx.trace.response_plan["web_no_sources"] is True
 
 
 def test_healer_failure_does_not_break_main_flow(db_env, monkeypatch):

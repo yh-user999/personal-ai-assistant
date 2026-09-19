@@ -448,12 +448,18 @@ async def _retrieve_group_web(
     settings = runtime.settings
     plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
     provider = str(plan.get("provider") or "").strip()
-    if not provider and (
+    route = str(plan.get("route") or "").strip().lower()
+    research_kind = str(plan.get("research_kind") or "").strip().lower()
+    semantic_research = route in {"web_research", "hybrid"} and research_kind in {
+        "novel", "knowledge", "document", "project", "url", "news"
+    }
+    if not provider and plan.get("source") != "llm" and (
         web_provider.looks_like_external_reference_lookup(message)
         or web_provider.needs_web_search(message)
     ):
         provider = "web_search"
         plan["provider"] = provider
+        plan["route"] = "web_research"
     plan["group_web_search"] = "disabled"
 
     if not getattr(settings, "group_web_search_enabled", False):
@@ -468,7 +474,7 @@ async def _retrieve_group_web(
         plan["group_web_search"] = "not_requested"
         ctx.trace.response_plan = plan
         return "", {}, plan
-    if not web_provider.configured():
+    if not web_provider.configured() and research_kind != "project":
         plan["group_web_search"] = "unavailable"
         plan["web_unavailable"] = True
         ctx.trace.response_plan = plan
@@ -488,8 +494,58 @@ async def _retrieve_group_web(
     reservation = decision.reservation
     is_reference_lookup = web_provider.looks_like_external_reference_lookup(message)
     query, expanded = web_provider.reference_search_queries(message)
+    semantic_queries = [
+        str(item).strip()[:200]
+        for item in (plan.get("research_queries") or [])
+        if str(item).strip()
+    ][:3]
     alternate = expanded or str(plan.get("query") or "").strip() or None
     try:
+        if semantic_research:
+            with ctx.trace.stage("group_web_search"):
+                research = await web_research.run_research(
+                    message,
+                    settings=settings,
+                    semantic_plan={
+                        **plan,
+                        "research_queries": semantic_queries,
+                    },
+                    budget_seconds=max(
+                        1.0,
+                        float(getattr(settings, "group_web_search_budget_seconds", 12.0)),
+                    ),
+                )
+            evidence = research.evidence
+            sources = list(evidence.get("sources") or [])
+            plan["web_research_kind"] = research.kind
+            plan["web_provider"] = research.provider
+            plan["web_query"] = research.query[:200]
+            plan["web_source_preference"] = list(research.source_preference)
+            plan["web_pages_read"] = research.pages_read
+            plan["web_page_failures"] = research.page_failures
+            plan["web_research_elapsed_ms"] = research.elapsed_ms
+            plan["web_research_stop_reason"] = research.stop_reason
+            plan["web_report_count"] = len(sources)
+            if not sources:
+                reservation.release()
+                plan["group_web_search"] = "no_sources"
+                plan["web_no_sources"] = True
+                ctx.trace.response_plan = plan
+                return "", evidence, plan
+            reservation.commit()
+            plan["group_web_search"] = "ok"
+            plan["group_web_search_remaining"] = decision.remaining
+            plan["web_has_sources"] = True
+            block = research.prompt_block()
+            if not block:
+                block = "【群聊实时检索资料（本轮新获取）】\n" + web_provider.format_sources(
+                    sources,
+                    limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
+                )
+            trace["retrieval"]["web_sources"] = len(sources)
+            ctx.trace.response_plan = plan
+            return _untrusted_reference("群聊实时检索", block), evidence, plan
+
         with ctx.trace.stage("group_web_search"):
             data = await web_provider.search_and_cluster(
                 query,
@@ -763,30 +819,43 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         # 无来源时不注入任何内容，并在计划里打标记，由提示词强制"未查到"口径。
         plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
         handled_web_research = False
-        if ctx.is_owner and plan.get("provider") == "web_search":
-            research_kind = web_research.classify_query(msg)
-            if research_kind in {"novel", "document", "project", "url", "knowledge"}:
-                with ctx.trace.stage("web_research"):
-                    research = await web_research.run_research(
-                        msg, settings=settings, kind=research_kind,
-                    )
-                data = research.as_search_data()
-                evidence = research.evidence
-                plan["web_research_kind"] = research.kind
-                plan["web_provider"] = research.provider
-                plan["web_query"] = research.query[:200]
-                plan["web_pages_read"] = research.pages_read
-                plan["web_page_failures"] = research.page_failures
-                plan["web_research_elapsed_ms"] = research.elapsed_ms
-                plan["web_research_stop_reason"] = research.stop_reason
-                if research.has_sources:
-                    plan["web_has_sources"] = True
-                    plan["web_report_count"] = len(research.sources)
-                    plan["web_observed_at"] = ""
-                    knowledge_text = research.prompt_block() + ("\n\n" + knowledge_text if knowledge_text else "")
-                else:
-                    plan["web_no_sources"] = True
-                handled_web_research = True
+        semantic_kind = str(plan.get("research_kind") or "").strip().lower()
+        semantic_route = str(plan.get("route") or "").strip().lower()
+        semantic_research = semantic_route in {"web_research", "hybrid"} and semantic_kind in {
+            "novel", "knowledge", "document", "project", "url", "news"
+        }
+        if not ctx.is_owner and plan.get("provider") == "web_search":
+            # 私聊访客没有公开研究权限；没有来源时必须走固定降级，不能让模型凭记忆回答。
+            plan["web_unavailable"] = "guest_scope"
+            plan["web_no_sources"] = True
+            ctx.trace.response_plan = plan
+        if ctx.is_owner and plan.get("provider") == "web_search" and semantic_research:
+            with ctx.trace.stage("web_research"):
+                research = await web_research.run_research(
+                    msg,
+                    settings=settings,
+                    semantic_plan=plan,
+                    budget_seconds=getattr(settings, "web_research_budget_seconds", None),
+                )
+            evidence = research.evidence
+            plan["web_research_kind"] = research.kind
+            plan["web_provider"] = research.provider
+            plan["web_query"] = research.query[:200]
+            plan["web_research_queries"] = list(plan.get("research_queries") or [])[:3]
+            plan["web_source_preference"] = list(research.source_preference)
+            plan["web_pages_read"] = research.pages_read
+            plan["web_page_failures"] = research.page_failures
+            plan["web_research_elapsed_ms"] = research.elapsed_ms
+            plan["web_research_stop_reason"] = research.stop_reason
+            if research.has_sources:
+                plan["web_has_sources"] = True
+                plan["web_report_count"] = len(research.sources)
+                plan["web_observed_at"] = ""
+                knowledge_text = research.prompt_block() + ("\n\n" + knowledge_text if knowledge_text else "")
+            else:
+                plan["web_no_sources"] = True
+            ctx.trace.response_plan = plan
+            handled_web_research = True
         if ctx.is_owner and plan.get("provider") == "hotboard":
             # 热点浏览：拉热榜（直连），注入为"当下热议话题清单"
             from app.chat import hotboard_provider

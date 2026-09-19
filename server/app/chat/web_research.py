@@ -180,7 +180,9 @@ def build_plan(text: str, *, settings: Any) -> ResearchPlan:
     budget = _bounded_float(_setting(settings, "web_research_budget_seconds", 18.0), 18.0, 40.0)
     if kind == "novel":
         primary, alternate = web_provider.reference_search_queries(value)
-        queries = tuple(item for item in (primary, alternate) if item)
+        title = web_provider._reference_title_text(value).strip(" 《》「」?？!！。")
+        fast = f"{title}？" if title else ""
+        queries = tuple(dict.fromkeys(item for item in (fast, primary, alternate) if item))
         return ResearchPlan(kind, queries, max_rounds=2, max_pages=max_pages, max_results=max_results, budget_seconds=budget)
     if kind == "project":
         return ResearchPlan(kind, (value,), max_rounds=1, max_pages=max_pages, max_results=max_results, budget_seconds=budget)

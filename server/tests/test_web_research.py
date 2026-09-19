@@ -28,7 +28,8 @@ def test_research_query_classification_is_conservative():
 def test_research_plan_rewrites_novel_and_bounds_budget():
     plan = web_research.build_plan("帮我查一下《没钱修什么仙》的作者和设定", settings=_settings())
     assert plan.kind == "novel"
-    assert plan.queries[0] == "没钱修什么仙？ 作品简介 剧情 设定"
+    assert plan.queries[0] == "没钱修什么仙？"
+    assert plan.queries[1] == "没钱修什么仙？ 作品简介 剧情 设定"
     assert plan.max_rounds == 2
     assert plan.max_pages == 3
 

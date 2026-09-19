@@ -47,6 +47,8 @@ class ChatRequest(BaseModel):
     # 群聊社交判断提示：当前请求是否明确对机器人说话。旧调用方不传时，
     # /api/chat 群请求按已通过插件唤醒门禁处理为 True。
     group_directed: bool | None = None
+    # 仅由 QQ 网关在真实 @/Reply/前缀后的短时窗口透传；不授予权限。
+    group_context_active: bool = False
     # 图片只允许由 multipart API 注入，纯 JSON 请求仍保持兼容。
     image: ImagePayload | None = None
 
@@ -130,6 +132,8 @@ class ChatContext:
     # 由入口传入的群聊目标提示；旧的直接构造/调用默认视为已唤醒。
     # build_context 对私聊会显式写入 False。
     group_directed: bool = True
+    # 仅由 QQ 网关在 @ 后窗口内透传；不改变权限或群作用域。
+    group_context_active: bool = False
     auth: Any | None = None
     image: ImagePayload | None = None
     trace: TraceContext = field(default_factory=TraceContext)
@@ -289,6 +293,11 @@ def build_context(req: ChatRequest, request: Request, memory_module: Any) -> Cha
         group_directed=(bool(req.group_directed) if group_id else False)
         if req.group_directed is not None
         else bool(group_id),
+        group_context_active=(
+            bool(req.group_context_active)
+            if group_id and getattr(auth, "role", "") == "qq"
+            else False
+        ),
         auth=auth,
         image=req.image,
         trace=trace,
@@ -337,6 +346,8 @@ def _request_hash(req: ChatRequest) -> str:
     payload = {
         "message": req.message or "",
         "group_id": normalize_group_id(req.group_id),
+        "group_directed": req.group_directed,
+        "group_context_active": bool(req.group_context_active),
         "image_sha256": image.sha256 if image is not None else None,
         "image_media_type": image.media_type if image is not None else None,
         "image_size": image.size if image is not None else None,

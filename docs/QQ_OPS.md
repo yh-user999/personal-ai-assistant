@@ -57,7 +57,10 @@ FastAPI personal-assistant.service（默认 127.0.0.1:8000）
 | `QQ_GATEWAY_GROUP_TRIGGER_PREFIX` | 可选群触发前缀 |
 | `QQ_GATEWAY_GROUP_INTERJECT_ENABLED` | 是否允许非直达消息进入服务端主动插话，默认 `false` |
 | `QQ_GATEWAY_GROUP_MAX_REPLIES_PER_HOUR` | 每群成功发送上限，默认 30 |
-| `QQ_GATEWAY_FOLLOWUP_WINDOW_SECONDS` / `QQ_GATEWAY_FOLLOWUP_MAX_MESSAGES` | 短时续话窗口，默认 90 秒/1 条 |
+| `QQ_GATEWAY_FOLLOWUP_WINDOW_SECONDS` / `QQ_GATEWAY_FOLLOWUP_MAX_MESSAGES` | 旧兼容续话窗口，默认 90 秒/1 条 |
+| `QQ_GATEWAY_CONTEXT_WINDOW_ENABLED` | 是否启用真实 @ 后的短时语义分析窗口，默认开启 |
+| `QQ_GATEWAY_CONTEXT_WINDOW_SECONDS` / `QQ_GATEWAY_CONTEXT_MAX_MESSAGES` | 窗口有效期与最多分析消息数，默认 90 秒/10 条 |
+| `QQ_GATEWAY_CONTEXT_MAX_NONCONTINUATIONS` | 连续非续聊消息达到此数后关闭窗口，默认 5 条 |
 | `QQ_GATEWAY_API_BASE` | FastAPI 地址，默认 `http://127.0.0.1:8000` |
 
 `.env.example` 已包含全部无密钥配置键。网关启动入口为：

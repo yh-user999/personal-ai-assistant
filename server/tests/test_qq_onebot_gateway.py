@@ -13,6 +13,7 @@ from qq.onebot_gateway.chat import ChatClient, ChatResult
 from qq.onebot_gateway.config import GatewaySettings, parse_group_allowlist
 from qq.onebot_gateway.event import OneBotMessage
 from qq.onebot_gateway.gate import (
+    ContextWindowStore,
     DeliveryCache,
     FollowupStore,
     GroupReplyLimiter,
@@ -66,13 +67,16 @@ class FakeOneBot:
 
 
 class FakeChat:
-    def __init__(self, interaction=None):
+    def __init__(self, interaction=None, reply="回复"):
         self.calls = []
+        self.context_calls = []
         self.interaction = interaction or {}
+        self.reply = reply
 
-    async def chat(self, message, *, group_directed=False):
+    async def chat(self, message, *, group_directed=False, group_context_active=False):
         self.calls.append((message, group_directed))
-        return ChatResult("回复", self.interaction)
+        self.context_calls.append(group_context_active)
+        return ChatResult(self.reply, self.interaction)
 
     async def aclose(self):
         return None
@@ -181,7 +185,7 @@ async def test_reply_lookup_failure_is_fail_closed():
 async def test_gateway_sets_group_directed_and_deduplicates_delivery():
     onebot = FakeOneBot()
     chat = FakeChat({"followup": {"expires_in": 90, "max_messages": 1}})
-    gateway = Gateway(_settings(), onebot=onebot, chat=chat)
+    gateway = Gateway(_settings(context_window_enabled=False), onebot=onebot, chat=chat)
 
     direct = _event(
         [
@@ -383,6 +387,130 @@ def test_gateway_http_endpoint_checks_inbound_token():
     assert rejected.status_code == 401
     assert accepted.status_code == 200
     assert accepted.json() == {"status": "ignored", "reason": "unsupported_event"}
+
+
+def test_context_window_store_caps_total_messages_and_closes_after_noncontinuations():
+    windows = ContextWindowStore(
+        default_expires_in=90,
+        default_max_messages=10,
+        default_max_noncontinuations=5,
+    )
+    windows.open("99", "42", now=0)
+    for _ in range(9):
+        assert windows.consume("99", "42", now=1) is True
+        windows.observe(
+            "99",
+            "42",
+            {
+                "context_relation": "continues_previous",
+                "context_continue": True,
+                "reply_decision": "answer",
+            },
+            now=1,
+        )
+    assert windows.consume("99", "42", now=1) is True
+    assert windows.consume("99", "42", now=1) is False
+
+    windows.open("99", "42", now=2)
+    for _ in range(4):
+        assert windows.consume("99", "42", now=2) is True
+        windows.observe(
+            "99",
+            "42",
+            {"context_relation": "new_topic", "context_continue": False, "reply_decision": "ignore"},
+            now=2,
+        )
+    assert windows.consume("99", "42", now=2) is True
+    windows.observe(
+        "99",
+        "42",
+        {"context_relation": "new_topic", "context_continue": False, "reply_decision": "ignore"},
+        now=2,
+    )
+    assert windows.consume("99", "42", now=2) is False
+
+
+@pytest.mark.asyncio
+async def test_context_window_messages_do_not_consume_reply_quota_or_continue_after_ten():
+    onebot = FakeOneBot()
+    window = {
+        "context_window": {
+            "open": True,
+            "expires_in": 90,
+            "max_messages": 10,
+            "max_noncontinuations": 5,
+            "context_relation": "continues_previous",
+            "context_continue": True,
+            "reply_decision": "answer",
+        }
+    }
+    chat = FakeChat(window, reply="首轮回复")
+    gateway = Gateway(_settings(group_max_replies_per_hour=1), onebot=onebot, chat=chat)
+
+    first = await gateway.handle(
+        _event(
+            [{"type": "at", "data": {"qq": "100"}}, {"type": "text", "data": {"text": " 首轮"}}],
+            message_id="1",
+        )
+    )
+    chat.reply = ""
+    context_results = [
+        await gateway.handle(_event(f"续问{i}", message_id=str(i + 2)))
+        for i in range(10)
+    ]
+    after_window = await gateway.handle(_event("窗口外", message_id="12"))
+
+    assert first["sent"] is True
+    assert all(item["status"] == "ok" and item["sent"] is False for item in context_results)
+    assert after_window == {"status": "ignored", "reason": "not_directed"}
+    assert len(chat.calls) == 11
+    assert chat.context_calls[0] is False
+    assert all(chat.context_calls[1:])
+    assert len(onebot.group_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_directed_empty_reply_still_opens_context_window():
+    onebot = FakeOneBot()
+    chat = FakeChat({}, reply="")
+    gateway = Gateway(_settings(), onebot=onebot, chat=chat)
+
+    first = await gateway.handle(
+        _event(
+            [{"type": "at", "data": {"qq": "100"}}, {"type": "text", "data": {"text": " 静默开窗"}}],
+            message_id="20",
+        )
+    )
+    chat.reply = "窗口内回复"
+    second = await gateway.handle(_event("继续", message_id="21"))
+
+    assert first == {"status": "ok", "handled": True, "directed": True, "sent": False}
+    assert second["status"] == "ok"
+    assert second["directed"] is False
+    assert second["sent"] is True
+    assert chat.context_calls == [False, True]
+    assert len(onebot.group_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_directed_reply_without_interaction_uses_default_context_window():
+    onebot = FakeOneBot()
+    chat = FakeChat({}, reply="普通直达回复")
+    gateway = Gateway(_settings(), onebot=onebot, chat=chat)
+
+    first = await gateway.handle(
+        _event(
+            [{"type": "at", "data": {"qq": "100"}}, {"type": "text", "data": {"text": " 普通回复"}}],
+            message_id="30",
+        )
+    )
+    chat.reply = ""
+    second = await gateway.handle(_event("后续消息", message_id="31"))
+
+    assert first["sent"] is True
+    assert second["status"] == "ok"
+    assert second["directed"] is False
+    assert chat.context_calls == [False, True]
 
 
 def test_followup_and_delivery_stores_are_bounded_and_expirable():

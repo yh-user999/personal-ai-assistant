@@ -5,14 +5,19 @@ from app.chat.context import ChatContext, ChatRequest
 from app.chat.retrieval import RetrievalBundle
 
 
-def make_ctx(message, uid="", is_owner=True, group_id=""):
+def make_ctx(message, uid="", is_owner=True, group_id="", group_context_active=False):
     return ChatContext(
         request=type("Request", (), {"state": type("State", (), {})()})(),
-        request_model=ChatRequest(message=message, group_id=group_id or None),
+        request_model=ChatRequest(
+            message=message,
+            group_id=group_id or None,
+            group_context_active=group_context_active,
+        ),
         message=message,
         uid=uid,
         is_owner=is_owner,
         group_id=group_id,
+        group_context_active=group_context_active,
     )
 
 
@@ -222,6 +227,20 @@ def test_novel_prompt_requires_excerpt_support_without_exposing_quality_labels()
     assert "摘录明确支持" in system
     assert "凭记忆补写" in system
     assert "不要展示内部来源分级" in system
+
+
+def test_context_followup_prompt_avoids_repeating_source_list():
+    ctx = make_ctx("你怎么看", is_owner=False, group_id="99", group_context_active=True)
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "provider": "web_search",
+        "web_has_sources": True,
+        "research_kind": "novel",
+        "context_relation": "continues_previous",
+    }
+    system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
+    assert "不要重复上一轮来源清单" in system
+    assert "内部来源分级" in system
 
 
 def test_prompt_without_plan_has_no_search_wording():

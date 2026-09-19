@@ -66,7 +66,13 @@ class ChatClient:
             })
         return headers
 
-    async def chat(self, message: OneBotMessage, *, group_directed: bool = False) -> ChatResult:
+    async def chat(
+        self,
+        message: OneBotMessage,
+        *,
+        group_directed: bool = False,
+        group_context_active: bool = False,
+    ) -> ChatResult:
         owner = message.message_type == "private" and bool(
             self.settings.owner_id and message.user_id == self.settings.owner_id
         )
@@ -81,6 +87,8 @@ class ChatClient:
                 "group_id": message.group_id,
                 "group_directed": bool(group_directed),
             })
+            if group_context_active:
+                body["group_context_active"] = True
         try:
             response = await self._http_client().post(
                 f"{self.settings.server_api_base}/api/chat",

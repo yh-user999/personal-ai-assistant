@@ -63,6 +63,22 @@ def test_valid_llm_direct_plan_is_not_replaced_by_keyword_fallback():
     assert plan.provider is None
 
 
+def test_context_semantics_are_bounded_and_analysis_only_is_fail_closed():
+    plan = parse_llm_plan(
+        '{"mode":"casual_chat","confidence":0.95,"context_relation":"continues_previous",'
+        '"context_continue":true,"context_subject":"没钱修什么仙？",'
+        '"context_close_reason":"bad-value","reply_decision":"answer","analysis_only":true}'
+    )
+
+    assert plan.context_relation == "continues_previous"
+    assert plan.context_continue is True
+    assert plan.context_subject == "没钱修什么仙？"
+    assert plan.context_close_reason == ""
+    assert plan.reply_decision == "ignore"
+    assert plan.analysis_only is True
+    assert validate_plan(plan).reply_decision == "ignore"
+
+
 def test_low_confidence_falls_back_without_action():
     plan = parse_llm_plan(
         '{"intent":"unknown","mode":"action","confidence":0.2,"tool_required":true,"action":"delete"}'

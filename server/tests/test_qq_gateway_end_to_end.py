@@ -157,8 +157,8 @@ def test_real_at_reaches_server_and_reply_is_sent(server_env):
     assert text.strip(), "服务端回复不得为空"
 
 
-def test_reply_to_bot_is_directed_but_reply_to_others_is_not(server_env):
-    """Reply 目标是本账号才算直达；引用他人消息不触发。"""
+def test_reply_to_bot_is_directed_but_reply_to_others_enters_active_window(server_env):
+    """Reply 目标是本账号才直达；随后引用他人消息只进入已开启窗口并可静默。"""
     onebot = RecordingOneBot(senders={"9001": SELF_ID, "9002": "916200200"})
 
     async def scenario():
@@ -179,12 +179,13 @@ def test_reply_to_bot_is_directed_but_reply_to_others_is_not(server_env):
     to_bot, to_other = _run(scenario())
 
     assert to_bot["directed"] is True and to_bot["sent"] is True
-    assert to_other == {"status": "ignored", "reason": "not_directed"}
+    assert to_other["status"] == "ok"
+    assert to_other["directed"] is False and to_other["sent"] is False
     assert len(onebot.group_messages) == 1
 
 
-def test_prefix_triggers_and_plain_name_stays_silent(server_env):
-    """配置前缀放行；只在正文提到名字不触发，且不调用服务端。"""
+def test_prefix_triggers_and_plain_name_is_silent_inside_active_window(server_env):
+    """配置前缀放行；随后只在正文提到名字时进入窗口分析并保持静默。"""
     onebot = RecordingOneBot()
 
     async def scenario():
@@ -203,7 +204,8 @@ def test_prefix_triggers_and_plain_name_stays_silent(server_env):
     prefix, name_only = _run(scenario())
 
     assert prefix["directed"] is True and prefix["sent"] is True
-    assert name_only == {"status": "ignored", "reason": "not_directed"}
+    assert name_only["status"] == "ok"
+    assert name_only["directed"] is False and name_only["sent"] is False
     assert len(onebot.group_messages) == 1
 
 

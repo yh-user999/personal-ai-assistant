@@ -80,6 +80,10 @@ class GatewaySettings:
     followup_enabled: bool = True
     followup_window_seconds: float = 90.0
     followup_max_messages: int = 1
+    context_window_enabled: bool = True
+    context_window_seconds: float = 90.0
+    context_max_messages: int = 10
+    context_max_noncontinuations: int = 5
     request_timeout_seconds: float = 120.0
     max_message_chars: int = 2000
     max_reply_chars: int = 4000
@@ -136,6 +140,10 @@ class GatewaySettings:
             followup_enabled=_bool("QQ_GATEWAY_FOLLOWUP_ENABLED", True),
             followup_window_seconds=_float("QQ_GATEWAY_FOLLOWUP_WINDOW_SECONDS", 90.0, minimum=1.0),
             followup_max_messages=_int("QQ_GATEWAY_FOLLOWUP_MAX_MESSAGES", 1, minimum=1, maximum=10),
+            context_window_enabled=_bool("QQ_GATEWAY_CONTEXT_WINDOW_ENABLED", True),
+            context_window_seconds=_float("QQ_GATEWAY_CONTEXT_WINDOW_SECONDS", 90.0, minimum=1.0),
+            context_max_messages=_int("QQ_GATEWAY_CONTEXT_MAX_MESSAGES", 10, minimum=1, maximum=20),
+            context_max_noncontinuations=_int("QQ_GATEWAY_CONTEXT_MAX_NONCONTINUATIONS", 5, minimum=1, maximum=10),
             request_timeout_seconds=_float("QQ_GATEWAY_REQUEST_TIMEOUT_SECONDS", 120.0, minimum=1.0),
             max_message_chars=_int("QQ_GATEWAY_MAX_MESSAGE_CHARS", 2000, minimum=1, maximum=20000),
             max_reply_chars=_int("QQ_GATEWAY_MAX_REPLY_CHARS", 4000, minimum=1, maximum=20000),

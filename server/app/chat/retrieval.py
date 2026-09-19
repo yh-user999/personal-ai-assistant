@@ -466,7 +466,7 @@ async def _retrieve_group_web(
         plan["group_web_search"] = "disabled"
         ctx.trace.response_plan = plan
         return "", {}, plan
-    if not ctx.group_directed:
+    if not (ctx.group_directed or ctx.group_context_active):
         plan["group_web_search"] = "not_directed"
         ctx.trace.response_plan = plan
         return "", {}, plan

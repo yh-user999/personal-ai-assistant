@@ -155,7 +155,8 @@ async def prepare_group_scene(
     state = GroupTurnState(scene=scene, planner_history=planner_history, care=care_decision)
     # 每条进入服务端的群消息推进序号；主动插话配额只在发送成功后记账。
     group_interjection.interject_gate.observe_message(ctx.group_id)
-    if ctx.group_directed:
+    if ctx.group_directed or ctx.group_context_active:
+        # 窗口内消息允许进入 planner；它不是新的真实 @，也不参与主动插话评分。
         return state, None
 
     score = group_interjection.score_group_interjection(

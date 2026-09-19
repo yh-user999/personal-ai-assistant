@@ -10,6 +10,7 @@ import inspect
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from openai import OpenAIError
 
@@ -554,6 +555,24 @@ def _source_only_fallback_reply(bundle: retrieval.RetrievalBundle) -> str:
     )
 
 
+def _compact_source_text(bundle: retrieval.RetrievalBundle, *, limit: int = 4) -> str:
+    """生成前台紧凑来源尾注；不携带摘要、内部质量字段或审校元数据。"""
+    from app.chat import web_provider
+
+    compact: list[dict[str, Any]] = []
+    for item in list(bundle.evidence.get("sources") or [])[: max(1, limit)]:
+        if not isinstance(item, dict):
+            continue
+        compact.append({
+            "title": str(item.get("title") or "").strip()[:120],
+            "source": str(item.get("source") or item.get("origin") or "").strip()[:80],
+            "url": str(item.get("url") or "").strip(),
+            "published_at": str(item.get("published_at") or "").strip()[:40],
+            "time_known": item.get("time_known", True),
+        })
+    return web_provider.format_sources(compact, limit=limit)
+
+
 _GROUP_SOURCE_REFUSAL_RE = re.compile(
     r"(?:没有|未|无法|不能|没法).{0,24}(?:检索到|查到|找到|可靠来源|可靠资料|核实|确认|提供)"
     r"|(?:没有|无法|不能|没法).{0,18}(?:联网|实时检索).{0,12}(?:能力|资料|信息)"
@@ -591,7 +610,7 @@ def _enforce_web_sources(
         if ctx.is_group:
             plan["group_web_source_postprocess"] = status
 
-    source_text = _group_source_text(bundle)
+    source_text = _compact_source_text(bundle)
     if not source_text:
         if plan.get("web_no_sources") or plan.get("web_unavailable"):
             mark("no_sources_fixed_reply")
@@ -600,7 +619,11 @@ def _enforce_web_sources(
     draft = str(reply or "").strip()
     if _GROUP_SOURCE_REFUSAL_RE.search(draft):
         mark("replaced_refusal")
-        return "查到的公开资料如下（以来源为准）：\n" + source_text
+        return "我能确认到的公开信息有限，先不把没有证据的部分说满：\n" + source_text
+    # 窗口续问只回答当前问题，不重复首轮来源清单；来源仍保留在本轮证据和 trace 中。
+    if ctx.is_group and bool(getattr(ctx, "group_context_active", False)):
+        mark("accepted_followup_without_repeat")
+        return draft
     source_urls = [
         str(item.get("url") or "").strip()
         for item in bundle.evidence.get("sources", [])
@@ -608,7 +631,7 @@ def _enforce_web_sources(
     ]
     if source_urls and not any(url in draft for url in source_urls):
         mark("appended_sources")
-        return f"{draft}\n\n【本轮检索来源】\n{source_text}"
+        return f"{draft}\n\n参考来源：\n{source_text}"
     plan.setdefault("web_source_postprocess", "accepted")
     if ctx.is_group:
         plan.setdefault("group_web_source_postprocess", plan["web_source_postprocess"])
@@ -630,15 +653,19 @@ def _generation_failure_reply(ctx: ChatContext, generation_failed: bool) -> Chat
     ctx.trace.status = "failed"
     ctx.trace.error_code = "vision_failed" if ctx.image is not None else "llm_failed"
     if ctx.image is not None:
-        return ChatResponse(reply="抱歉，这张图片暂时识别失败，请稍后重试。", memories_used=0)
-    return ChatResponse(
-        reply=(
+        reply = "抱歉，这张图片暂时识别失败，请稍后重试。"
+    else:
+        reply = (
             "抱歉，长文生成连续两次失败（可能是服务商超时），等两分钟再说「继续」？"
             if generation_failed
             else "抱歉，我这会儿连不上大脑（LLM 调用失败），稍后再说一次？"
-        ),
-        memories_used=0,
+        )
+    interaction = followup.build_interaction_hint(
+        ctx,
+        getattr(ctx.trace, "response_plan", {}) or {},
+        reply,
     )
+    return ChatResponse(reply=reply, memories_used=0, interaction=interaction)
 
 
 async def run_chat(ctx: ChatContext, runtime: ChatRuntime) -> ChatResponse:
@@ -780,6 +807,7 @@ async def _run_chat(
             message=msg,
             history=planner_history,
             addressed=ctx.group_directed,
+            context_active=ctx.group_context_active,
             enabled=getattr(settings, "group_social_enabled", True),
             interject_enabled=getattr(settings, "group_social_interject_enabled", False),
             min_confidence=getattr(settings, "group_social_min_confidence", 0.6),
@@ -790,6 +818,31 @@ async def _run_chat(
     # 超时/非法 JSON/低置信或其他非 LLM 结果统一回落到规则安全计划。
     plan = hint if shadow_only or planned.source != "llm" else planned
     plan = response_plan.validate_plan(plan, is_owner=ctx.is_owner)
+    if ctx.is_group and ctx.group_context_active:
+        # 窗口内消息允许规划，但语义无法确认续聊时 fail-closed：只返回窗口状态，
+        # 不进入联网/生成，也不把普通群消息升级为主动插话。
+        if (
+            plan.context_relation != "continues_previous"
+            or not plan.context_continue
+            or plan.reply_decision in {"ignore", "interject"}
+        ):
+            plan.analysis_only = True
+            plan.reply_decision = "ignore"
+            plan.context_close_reason = (
+                "non_continuation"
+                if plan.context_relation != "continues_previous" or not plan.context_continue
+                else "planner_ignore"
+            )
+            ctx.trace.response_plan = {
+                **plan.summary(),
+                "context_window_close_candidate": plan.context_close_reason == "non_continuation",
+            }
+            await _persist_user_message(ctx, runtime)
+            return ChatResponse(
+                reply="",
+                memories_used=0,
+                interaction=followup.build_context_window_hint(ctx, plan),
+            )
     if group_state is not None and (ctx.group_directed or group_state.score is None):
         group_turn.apply_group_plan_fields(plan, group_state)
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":
@@ -883,12 +936,21 @@ async def _run_chat(
             ctx.trace.status = "degraded"
             ctx.trace.error_code = "web_no_sources"
             active_plan["web_source_postprocess"] = "no_sources_fixed_reply"
-            return ChatResponse(reply="未查到可靠的公开来源，暂时无法核实。", memories_used=0)
+            fixed_reply = "未查到可靠的公开来源，暂时无法核实。"
+            return ChatResponse(
+                reply=fixed_reply,
+                memories_used=0,
+                interaction=followup.build_interaction_hint(ctx, active_plan, fixed_reply),
+            )
         source_fallback = _source_only_fallback_reply(bundle)
         if source_fallback:
             ctx.trace.status = "degraded"
             ctx.trace.error_code = "llm_failed_source_fallback"
-            return ChatResponse(reply=source_fallback, memories_used=0)
+            return ChatResponse(
+                reply=source_fallback,
+                memories_used=0,
+                interaction=followup.build_interaction_hint(ctx, active_plan, source_fallback),
+            )
         return _generation_failure_reply(ctx, generation_failed)
 
     reply = await _apply_reply_reflection(
@@ -907,8 +969,10 @@ async def _run_chat(
         await group_turn.finalize_group_turn(ctx, runtime, plan, reply, group_state)
     else:
         await _finalize_private_turn(ctx, runtime, bundle, reply, assembly)
+    interaction_plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
+    interaction_plan.update(plan.summary())
     return ChatResponse(
         reply=reply,
         memories_used=len(bundle.mems),
-        interaction=followup.build_interaction_hint(ctx, plan, reply),
+        interaction=followup.build_interaction_hint(ctx, interaction_plan, reply),
     )

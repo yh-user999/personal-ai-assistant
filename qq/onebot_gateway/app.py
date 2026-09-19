@@ -11,6 +11,7 @@ from .chat import ChatClient, ChatConfigError, ChatUpstreamError
 from .config import GatewaySettings, settings as default_settings
 from .event import OneBotMessage
 from .gate import (
+    ContextWindowStore,
     DeliveryCache,
     FollowupStore,
     GroupReplyLimiter,
@@ -43,6 +44,11 @@ class Gateway:
         self.followups = FollowupStore(
             default_expires_in=config.followup_window_seconds,
             default_max_messages=config.followup_max_messages,
+        )
+        self.context_windows = ContextWindowStore(
+            default_expires_in=config.context_window_seconds,
+            default_max_messages=config.context_max_messages,
+            default_max_noncontinuations=config.context_max_noncontinuations,
         )
         self.deliveries = DeliveryCache()
         self._inflight: dict[str, Any] = {}
@@ -111,33 +117,57 @@ class Gateway:
             prefix=self.config.group_trigger_prefix,
             reply_sender=self.onebot.get_message_sender,
         )
+        context_active = False
         if directed:
             self.followups.clear(message.group_id, message.user_id)
+            self.context_windows.close(message.group_id, message.user_id)
+        elif (
+            self.config.context_window_enabled
+            and self.context_windows.consume(message.group_id, message.user_id)
+        ):
+            context_active = True
         elif self.config.followup_enabled and self.followups.consume(message.group_id, message.user_id):
             directed = True
         elif not self.config.group_interject_enabled:
             return {"status": "ignored", "reason": "not_directed"}
-        reservation = self.limiter.reserve(
-            message.group_id,
-            cooldown_seconds=self.config.group_cooldown_seconds,
-            max_replies_per_hour=self.config.group_max_replies_per_hour,
+
+        reservation = None
+        if directed or not context_active:
+            reservation = self.limiter.reserve(
+                message.group_id,
+                cooldown_seconds=self.config.group_cooldown_seconds,
+                max_replies_per_hour=self.config.group_max_replies_per_hour,
+            )
+            if reservation is None:
+                return {"status": "ignored", "reason": "group_rate_limited"}
+        return await self._chat_and_send(
+            message,
+            directed=directed,
+            context_active=context_active,
+            reservation=reservation,
         )
-        if reservation is None:
-            return {"status": "ignored", "reason": "group_rate_limited"}
-        return await self._chat_and_send(message, directed=directed, reservation=reservation)
 
     async def _process_private(self, message: OneBotMessage) -> dict[str, Any]:
-        return await self._chat_and_send(message, directed=False, reservation=None)
+        return await self._chat_and_send(
+            message,
+            directed=False,
+            context_active=False,
+            reservation=None,
+        )
 
     async def _chat_and_send(
         self,
         message: OneBotMessage,
         *,
         directed: bool,
+        context_active: bool,
         reservation: ReplyReservation | None,
     ) -> dict[str, Any]:
         try:
-            result = await self.chat.chat(message, group_directed=directed)
+            chat_kwargs = {"group_directed": directed}
+            if context_active:
+                chat_kwargs["group_context_active"] = True
+            result = await self.chat.chat(message, **chat_kwargs)
         except ChatConfigError as exc:
             # 服务器侧鉴权/配置错误：重试无用，也不该让群成员看到内部故障提示。
             self.limiter.release(reservation)
@@ -146,11 +176,38 @@ class Gateway:
         except ChatUpstreamError as exc:
             logger.warning("QQ 聊天上游失败：%s", type(exc).__name__)
             return await self._send_error(message, reservation)
+        context_decision = result.interaction.get("context_window") if isinstance(result.interaction, dict) else None
+        if message.group_id and context_active:
+            if isinstance(context_decision, dict) and context_decision.get("open") is False:
+                self.context_windows.close(message.group_id, message.user_id)
+            else:
+                self.context_windows.observe(message.group_id, message.user_id, context_decision)
         if not result.reply:
             self.limiter.release(reservation)
+            self.deliveries.mark(message.request_id)
             if message.group_id and directed:
                 self.followups.clear(message.group_id, message.user_id)
+                if self.config.context_window_enabled:
+                    window = result.interaction.get("context_window") if isinstance(result.interaction, dict) else None
+                    if not isinstance(window, dict) or window.get("open", True):
+                        self.context_windows.open(
+                            message.group_id,
+                            message.user_id,
+                            expires_in=window.get("expires_in") if isinstance(window, dict) else None,
+                            max_messages=window.get("max_messages") if isinstance(window, dict) else None,
+                            max_noncontinuations=(
+                                window.get("max_noncontinuations") if isinstance(window, dict) else None
+                            ),
+                        )
             return {"status": "ok", "handled": True, "directed": directed, "sent": False}
+        if reservation is None and message.group_id and not directed:
+            reservation = self.limiter.reserve(
+                message.group_id,
+                cooldown_seconds=self.config.group_cooldown_seconds,
+                max_replies_per_hour=self.config.group_max_replies_per_hour,
+            )
+            if reservation is None:
+                return {"status": "ignored", "reason": "group_rate_limited"}
         reply = result.reply[: self.config.max_reply_chars]
         try:
             if message.group_id:
@@ -165,6 +222,18 @@ class Gateway:
         self.deliveries.mark(message.request_id)
         if message.group_id and directed and self.config.followup_enabled:
             self.followups.remember(message.group_id, message.user_id, result.interaction)
+        if message.group_id and directed and self.config.context_window_enabled:
+            window = result.interaction.get("context_window") if isinstance(result.interaction, dict) else None
+            if not isinstance(window, dict) or window.get("open", True):
+                self.context_windows.open(
+                    message.group_id,
+                    message.user_id,
+                    expires_in=window.get("expires_in") if isinstance(window, dict) else None,
+                    max_messages=window.get("max_messages") if isinstance(window, dict) else None,
+                    max_noncontinuations=(
+                        window.get("max_noncontinuations") if isinstance(window, dict) else None
+                    ),
+                )
         return {"status": "ok", "handled": True, "directed": directed, "sent": True}
 
     async def _send_error(

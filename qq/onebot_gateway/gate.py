@@ -126,6 +126,122 @@ class _Followup:
     remaining: int
 
 
+@dataclass(slots=True)
+class _ContextWindow:
+    expires_at: float
+    remaining: int
+    noncontinuations: int
+    max_noncontinuations: int
+
+
+class ContextWindowStore:
+    """@ 触发后的有界上下文窗口；不保存原始消息或回复正文。"""
+
+    def __init__(
+        self,
+        *,
+        default_expires_in: float = 90.0,
+        default_max_messages: int = 10,
+        default_max_noncontinuations: int = 5,
+        maximum_items: int = 4096,
+    ) -> None:
+        self.default_expires_in = max(1.0, min(600.0, float(default_expires_in)))
+        self.default_max_messages = max(1, min(20, int(default_max_messages)))
+        self.default_max_noncontinuations = max(1, min(10, int(default_max_noncontinuations)))
+        self.maximum_items = max(1, int(maximum_items))
+        self._lock = RLock()
+        self._items: dict[tuple[str, str], _ContextWindow] = {}
+
+    def open(
+        self,
+        group_id: str,
+        user_id: str,
+        *,
+        expires_in: float | None = None,
+        max_messages: int | None = None,
+        max_noncontinuations: int | None = None,
+        now: float | None = None,
+    ) -> None:
+        key = (str(group_id or "").strip(), str(user_id or "").strip())
+        if not all(key):
+            return
+        expires = self.default_expires_in if expires_in is None else float(expires_in)
+        messages = self.default_max_messages if max_messages is None else int(max_messages)
+        noncontinuations = (
+            self.default_max_noncontinuations
+            if max_noncontinuations is None
+            else int(max_noncontinuations)
+        )
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            self._prune(current)
+            if key not in self._items and len(self._items) >= self.maximum_items:
+                return
+            self._items[key] = _ContextWindow(
+                expires_at=current + max(1.0, min(600.0, expires)),
+                remaining=max(1, min(20, messages)),
+                noncontinuations=0,
+                max_noncontinuations=max(1, min(10, noncontinuations)),
+            )
+
+    def consume(self, group_id: str, user_id: str, *, now: float | None = None) -> bool:
+        key = (str(group_id or "").strip(), str(user_id or "").strip())
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            self._prune(current)
+            item = self._items.get(key)
+            if item is None or item.remaining <= 0:
+                return False
+            item.remaining -= 1
+            if item.remaining <= 0:
+                self._items.pop(key, None)
+            return True
+
+    def observe(
+        self,
+        group_id: str,
+        user_id: str,
+        decision: Any,
+        *,
+        now: float | None = None,
+    ) -> None:
+        key = (str(group_id or "").strip(), str(user_id or "").strip())
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            self._prune(current)
+            item = self._items.get(key)
+            if item is None:
+                return
+            data = decision if isinstance(decision, dict) else {}
+            relation = str(data.get("context_relation") or "").strip()
+            reply_decision = str(data.get("reply_decision") or "").strip()
+            continued = (
+                relation == "continues_previous"
+                and data.get("context_continue") is True
+                and not bool(data.get("analysis_only"))
+                and reply_decision in {"answer", "ask_back"}
+            )
+            if continued:
+                item.noncontinuations = 0
+                return
+            item.noncontinuations += 1
+            if item.noncontinuations >= item.max_noncontinuations:
+                self._items.pop(key, None)
+
+    def close(self, group_id: str, user_id: str) -> None:
+        with self._lock:
+            self._items.pop((str(group_id or "").strip(), str(user_id or "").strip()), None)
+
+    def _prune(self, current: float) -> None:
+        for key, item in list(self._items.items()):
+            if item.expires_at <= current or item.remaining <= 0:
+                self._items.pop(key, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
 class FollowupStore:
     """只保存群/用户的短时计数，不保存原始消息或回复正文。"""
 
@@ -241,6 +357,7 @@ class DeliveryCache:
 
 
 __all__ = [
+    "ContextWindowStore",
     "DeliveryCache",
     "FollowupStore",
     "GroupReplyLimiter",

@@ -11,6 +11,9 @@ from app.common.timeutil import now_local
 _ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
 _ALLOWED_ROUTES = frozenset({"direct", "local_memory", "web_research", "hybrid", "domain"})
 _RESEARCH_KINDS = frozenset({"novel", "knowledge", "document", "project", "news", "url"})
+_CONTEXT_RELATIONS = frozenset({"new_topic", "continues_previous", "unclear"})
+_CONTEXT_CLOSE_REASONS = frozenset({"", "non_continuation", "planner_ignore", "window_exhausted", "expired"})
+_REPLY_DECISIONS = frozenset({"ignore", "answer", "ask_back", "interject"})
 SOCIAL_ACTIONS = frozenset({"ignore", "interject", "banter", "answer", "tease", "ask_back"})
 _HIGH_RISK_WORDS = ("删除", "执行", "运行", "发送", "修改生产", "改配置")
 _SOCIAL_SWITCH_RE = re.compile(r"换个话题|另外|顺便(?:问|说)|对了|再问一个|先不说|不聊这个了")
@@ -96,6 +99,12 @@ class ResponsePlan:
     source_preference: list[str] = field(default_factory=list)
     followup_kind: str = ""
     followup_required: bool = False
+    context_relation: str = "new_topic"
+    context_continue: bool = False
+    context_subject: str = ""
+    context_close_reason: str = ""
+    reply_decision: str = "answer"
+    analysis_only: bool = False
     action: str | None = None
     risk: str = "low"
     needs_clarification: bool = False
@@ -143,6 +152,12 @@ class ResponsePlan:
             "source_preference": list(self.source_preference)[:5],
             "followup_kind": self.followup_kind[:32],
             "followup_required": bool(self.followup_required),
+            "context_relation": self.context_relation,
+            "context_continue": bool(self.context_continue),
+            "context_subject": self.context_subject[:160],
+            "context_close_reason": self.context_close_reason[:40],
+            "reply_decision": self.reply_decision,
+            "analysis_only": bool(self.analysis_only),
             "action": self.action,
             "risk": self.risk,
             "tone": self.tone,
@@ -253,6 +268,7 @@ def apply_group_social_requirements(
     message: str,
     history: list[dict[str, Any]] | None = None,
     addressed: bool = True,
+    context_active: bool = False,
     enabled: bool = True,
     interject_enabled: bool = False,
     min_confidence: float = 0.6,
@@ -268,10 +284,11 @@ def apply_group_social_requirements(
         plan.social_topic_shift = False
         return plan
 
+    effective_addressed = bool(addressed or context_active)
     hint = build_group_social_hint(
         message,
         history,
-        addressed=addressed,
+        addressed=effective_addressed,
         interject_enabled=interject_enabled,
         scene=scene,
     )
@@ -286,24 +303,28 @@ def apply_group_social_requirements(
         else str(hint.get("atmosphere") or "casual")[:32]
     ) or "casual"
 
-    # 直接唤醒是现有插件的用户契约：不能被模型的社交判断静默掉。
-    if addressed and action in {"ignore", "interject"}:
+    # 直接唤醒或窗口内续话是现有用户契约：不能被模型的社交判断静默掉。
+    if effective_addressed and action in {"ignore", "interject"}:
         action = "answer"
         confidence = max(confidence, 0.9)
-        reasons.append("directed_must_answer")
-    # 非直接消息在主动插话开关关闭时严格沉默。
-    if not addressed and not interject_enabled:
+        reasons.append(
+            "directed_or_context_must_answer" if context_active else "directed_must_answer"
+        )
+    # 非直接、非窗口消息在主动插话开关关闭时严格沉默。
+    if not effective_addressed and not interject_enabled:
         action = "ignore"
         confidence = 1.0
         reasons.extend(("not_directed", "interject_disabled"))
-    # 低置信的模型动作回退到规则结果；直接消息仍以回答为最低保障。
+    # 低置信的模型动作回退到规则结果；直接/窗口消息仍以回答为最低保障。
     if confidence < max(0.0, min(1.0, float(min_confidence))):
         action = hint["action"]
         confidence = hint["confidence"]
         reasons.append("low_confidence_fallback")
-        if addressed and action in {"ignore", "interject"}:
+        if effective_addressed and action in {"ignore", "interject"}:
             action = "answer"
-            reasons.append("directed_must_answer")
+            reasons.append(
+                "directed_or_context_must_answer" if context_active else "directed_must_answer"
+            )
 
     plan.social_action = action
     plan.social_confidence = max(0.0, min(1.0, float(confidence)))
@@ -548,6 +569,18 @@ def parse_llm_plan(
         source_preference = _text_list(raw.get("source_preference"), limit=5)
         followup_kind = str(raw.get("followup_kind") or "").strip()[:32]
         followup_required = raw.get("followup_required") is True
+        context_relation = str(raw.get("context_relation") or "new_topic").strip().lower()
+        if context_relation not in _CONTEXT_RELATIONS:
+            context_relation = "unclear"
+        context_continue = raw.get("context_continue") is True
+        context_subject = str(raw.get("context_subject") or "").strip()[:160]
+        context_close_reason = str(raw.get("context_close_reason") or "").strip()[:40]
+        if context_close_reason not in _CONTEXT_CLOSE_REASONS:
+            context_close_reason = ""
+        reply_decision = str(raw.get("reply_decision") or "answer").strip().lower()
+        if reply_decision not in _REPLY_DECISIONS:
+            reply_decision = "ignore"
+        analysis_only = raw.get("analysis_only") is True
         risk = str(raw.get("risk") or "low").strip().lower()
         if risk not in {"low", "medium", "high"}:
             risk = "low"
@@ -589,6 +622,12 @@ def parse_llm_plan(
             source_preference=source_preference,
             followup_kind=followup_kind,
             followup_required=followup_required,
+            context_relation=context_relation,
+            context_continue=context_continue,
+            context_subject=context_subject,
+            context_close_reason=context_close_reason,
+            reply_decision=reply_decision,
+            analysis_only=analysis_only,
             action=action,
             risk=risk,
             reason=str(raw.get("reason") or "").strip()[:120],
@@ -674,6 +713,14 @@ def apply_rule_requirements(plan: ResponsePlan, hint: ResponsePlan, *, is_owner:
 
 def validate_plan(plan: ResponsePlan, *, is_owner: bool = True) -> ResponsePlan:
     """代码强制安全边界：planner 不能授予权限或执行未知工具。"""
+    if plan.context_relation not in _CONTEXT_RELATIONS:
+        plan.context_relation = "unclear"
+    if plan.context_close_reason not in _CONTEXT_CLOSE_REASONS:
+        plan.context_close_reason = ""
+    if plan.reply_decision not in _REPLY_DECISIONS:
+        plan.reply_decision = "ignore"
+    if plan.analysis_only:
+        plan.reply_decision = "ignore"
     if plan.route not in _ALLOWED_ROUTES:
         plan.route = "direct"
     if plan.research_kind not in _RESEARCH_KINDS:
@@ -754,6 +801,7 @@ def build_planner_messages(
     *,
     is_group: bool = False,
     group_directed: bool = True,
+    group_context_active: bool = False,
     group_scene: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     import json
@@ -767,6 +815,12 @@ def build_planner_messages(
         "source_preference": [],
         "followup_kind": "",
         "followup_required": False,
+        "context_relation": "new_topic",
+        "context_continue": False,
+        "context_subject": "",
+        "context_close_reason": "",
+        "reply_decision": "answer",
+        "analysis_only": False,
         "intent": "general_chat",
         "mode": "casual_chat",
         "confidence": 0.0,
@@ -800,6 +854,10 @@ def build_planner_messages(
             "明确 @、前缀或回复机器人时不得选择 ignore/interject，至少选择 answer。"
             "tease 只能针对当前话题或行为轻微吐槽，不得攻击个人敏感信息。"
             f"本轮是否明确对机器人说话：{bool(group_directed)}。"
+            f"本轮是否处于 @ 后短时上下文窗口：{bool(group_context_active)}。"
+            "窗口内必须额外判断 context_relation、context_continue、reply_decision 和 analysis_only："
+            "只有明确继续上一话题且 reply_decision 为 answer/ask_back 才生成回复；"
+            "换题、无关或不确定时可只分析并静默，不要凭关键词强行承接。"
         )
     return [
         {"role": "system", "content": (
@@ -833,6 +891,7 @@ def build_planner_messages(
             "rule_hint": rule_hint.summary(), "recent_investigation": investigation_context or {},
             "group_social": ({
                 "directed": bool(group_directed),
+                "context_active": bool(group_context_active),
                 "scene": group_scene or {},
             } if is_group else {}),
         }, ensure_ascii=False)},
@@ -859,6 +918,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             message=ctx.message,
             history=history,
             addressed=group_directed,
+            context_active=bool(getattr(ctx, "group_context_active", False)),
             enabled=getattr(runtime.settings, "group_social_enabled", True),
             interject_enabled=getattr(runtime.settings, "group_social_interject_enabled", False),
             min_confidence=getattr(runtime.settings, "group_social_min_confidence", 0.6),
@@ -879,6 +939,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
                 investigation_context=prior,
                 is_group=is_group,
                 group_directed=group_directed,
+                group_context_active=bool(getattr(ctx, "group_context_active", False)),
                 group_scene=group_scene,
             ),
             temperature=0.0,
@@ -905,6 +966,7 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
                 message=ctx.message,
                 history=history,
                 addressed=group_directed,
+                context_active=bool(getattr(ctx, "group_context_active", False)),
                 enabled=getattr(runtime.settings, "group_social_enabled", True),
                 interject_enabled=getattr(runtime.settings, "group_social_interject_enabled", False),
                 min_confidence=getattr(runtime.settings, "group_social_min_confidence", 0.6),

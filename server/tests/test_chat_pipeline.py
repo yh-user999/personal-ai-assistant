@@ -8,7 +8,12 @@ import pytest
 from app.group import interjection as group_interjection
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
-from app.chat.pipeline import _enforce_group_web_sources, _source_only_fallback_reply
+from app.chat.pipeline import (
+    _compact_source_text,
+    _enforce_group_web_sources,
+    _generation_failure_reply,
+    _source_only_fallback_reply,
+)
 import app.chat.pipeline as pipeline_module
 from app.config import settings
 from app.core import knowledge as knowledge_module
@@ -179,6 +184,22 @@ async def _noop():
     return None
 
 
+def test_directed_generation_failure_opens_context_window():
+    ctx = SimpleNamespace(
+        is_group=True,
+        group_directed=True,
+        group_context_active=False,
+        image=None,
+        trace=SimpleNamespace(response_plan={}),
+    )
+
+    response = _generation_failure_reply(ctx, generation_failed=False)
+
+    assert response.reply
+    assert response.interaction["context_window"]["max_messages"] == 10
+    assert response.interaction["context_window"]["max_noncontinuations"] == 5
+
+
 def test_source_only_fallback_returns_links_without_sources_no_answer():
     source_bundle = SimpleNamespace(evidence={"sources": [
         {
@@ -197,6 +218,25 @@ def test_source_only_fallback_returns_links_without_sources_no_answer():
     assert _source_only_fallback_reply(SimpleNamespace(evidence={})) == ""
 
 
+def test_compact_source_text_hides_excerpt_and_internal_quality_fields():
+    bundle = SimpleNamespace(evidence={"sources": [
+        {
+            "title": "作品资料",
+            "url": "https://www.qidian.com/book/1042256511/",
+            "source": "起点中文网",
+            "summary": "不应出现在紧凑尾注里的长摘要",
+            "_novel_quality": {"tier": 3, "role": "official"},
+        },
+    ]})
+
+    text = _compact_source_text(bundle)
+    assert "作品资料" in text
+    assert "https://www.qidian.com/book/1042256511/" in text
+    assert "长摘要" not in text
+    assert "tier" not in text
+    assert "official" not in text
+
+
 def test_group_web_sources_replace_false_no_source_claim():
     ctx = SimpleNamespace(
         is_group=True,
@@ -213,7 +253,8 @@ def test_group_web_sources_replace_false_no_source_claim():
     ]})
     reply = _enforce_group_web_sources(ctx, bundle, "目前没有可靠来源，请发一下链接或简介。")
     assert "目前没有可靠来源" not in reply
-    assert "作者与简介摘要" in reply
+    assert "作者与简介摘要" not in reply
+    assert "我能确认到的公开信息有限" in reply
     assert "https://www.qidian.com/book/1042256511/" in reply
     assert ctx.trace.response_plan["group_web_source_postprocess"] == "replaced_refusal"
 

@@ -401,6 +401,12 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
                     "摘录没有覆盖的剧情或评价不得凭记忆补写。回答自然简洁，"
                     "不要展示内部来源分级、评分或审校过程。"
                 )
+            if ctx.is_group and getattr(ctx, "group_context_active", False):
+                block.append(
+                    "这是 @ 后短时窗口内的后续消息：先直接回答当前这条消息，"
+                    "不要重复上一轮来源清单、检索过程或资料摘要；"
+                    "如果用户是在问看法，明确区分来源能支持的事实与有限判断。"
+                )
             if int(plan.get("web_max_reprint") or 0) >= 2:
                 block.append(
                     f"检索结果里有 {plan['web_max_reprint']} 条来自同一信源（多为转载），"

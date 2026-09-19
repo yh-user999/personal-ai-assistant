@@ -59,6 +59,7 @@ def test_chat_models_keep_external_fields_and_defaults():
         "user_id",
         "group_id",
         "group_directed",
+        "group_context_active",
         "image",
     }
     assert set(ChatResponse.model_fields) == {"reply", "memories_used", "interaction"}

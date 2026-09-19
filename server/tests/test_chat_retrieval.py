@@ -497,6 +497,30 @@ def test_web_backend_unavailable_marks_plan(db_env, monkeypatch):
     assert ctx.trace.response_plan["web_unavailable"] is True
 
 
+def test_group_guest_does_not_enter_owner_web_research(db_env, monkeypatch):
+    """群访客即使携带外部资料计划，也不得调用主人联网研究 Provider。"""
+    calls, runtime = _web_retrieval_env(monkeypatch, results=_sources())
+    _patch_memory_scoped(monkeypatch)
+
+    ctx = make_ctx(
+        "帮我查一下《没钱修什么仙》的作者",
+        uid="guest-1",
+        is_owner=False,
+        group_id="group-1",
+    )
+    ctx.trace.response_plan = {
+        "mode": "retrieve_then_answer",
+        "provider": "web_search",
+        "query": "帮我查一下《没钱修什么仙》的作者",
+    }
+    preparation = retrieval.prepare_turn(ctx, runtime)
+    bundle = asyncio.run(retrieval.retrieve(ctx, runtime, preparation))
+
+    assert calls["search"] == 0
+    assert "实时检索资料" not in bundle.knowledge_text
+    assert ctx.trace.response_plan.get("web_has_sources") is not True
+
+
 def test_healer_failure_does_not_break_main_flow(db_env, monkeypatch):
     """自愈诊断抛异常 → 只记日志，主回复链路照常拿到 bundle。"""
 

@@ -18,6 +18,7 @@ from typing import Any
 
 from openai import OpenAIError
 
+from app.chat import web_research
 from app.chat.context import ChatContext, ChatRuntime
 from app.core import embedding
 from app.models.database import connect
@@ -761,6 +762,31 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         # 实时检索通道：仅在响应计划要求联网时触发。
         # 无来源时不注入任何内容，并在计划里打标记，由提示词强制"未查到"口径。
         plan = dict(getattr(ctx.trace, "response_plan", {}) or {})
+        handled_web_research = False
+        if ctx.is_owner and plan.get("provider") == "web_search":
+            research_kind = web_research.classify_query(msg)
+            if research_kind in {"novel", "document", "project", "url", "knowledge"}:
+                with ctx.trace.stage("web_research"):
+                    research = await web_research.run_research(
+                        msg, settings=settings, kind=research_kind,
+                    )
+                data = research.as_search_data()
+                evidence = research.evidence
+                plan["web_research_kind"] = research.kind
+                plan["web_provider"] = research.provider
+                plan["web_query"] = research.query[:200]
+                plan["web_pages_read"] = research.pages_read
+                plan["web_page_failures"] = research.page_failures
+                plan["web_research_elapsed_ms"] = research.elapsed_ms
+                plan["web_research_stop_reason"] = research.stop_reason
+                if research.has_sources:
+                    plan["web_has_sources"] = True
+                    plan["web_report_count"] = len(research.sources)
+                    plan["web_observed_at"] = ""
+                    knowledge_text = research.prompt_block() + ("\n\n" + knowledge_text if knowledge_text else "")
+                else:
+                    plan["web_no_sources"] = True
+                handled_web_research = True
         if ctx.is_owner and plan.get("provider") == "hotboard":
             # 热点浏览：拉热榜（直连），注入为"当下热议话题清单"
             from app.chat import hotboard_provider
@@ -780,7 +806,7 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             else:
                 plan["hotboard_unavailable"] = True
             ctx.trace.response_plan = plan
-        elif ctx.is_owner and plan.get("provider") == "web_search":
+        elif not handled_web_research and ctx.is_owner and plan.get("provider") == "web_search":
             from app.chat import web_provider
 
             if not web_provider.configured():
@@ -942,6 +968,8 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 else:
                     plan["web_no_sources"] = True
             ctx.trace.response_plan = plan
+        if handled_web_research:
+            ctx.trace.response_plan = plan
 
         from app.chat.prompting import _untrusted_reference
 
@@ -994,7 +1022,6 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
         group_relationship=collected["group_relationship"],
         group_expression=collected["group_expression"],
         robot_state=collected["robot_state"],
-        older=collected["older"],
         extra_blocks=collected["extra_blocks"],
         evidence=evidence,
     )

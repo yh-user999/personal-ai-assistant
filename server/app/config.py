@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）
     search_min_results: int = 3
     web_search_enabled: bool = True
+    # 通用网页研究：复用 SearXNG/HTTPX，不默认写入记忆或知识库。
+    web_research_budget_seconds: float = 18.0
+    web_research_max_rounds: int = 2
+    web_research_max_pages: int = 3
+    web_research_max_results: int = 6
+    # GitHub 公开项目 Provider；token 可选，留空仍允许低频公开请求。
+    github_api_base: str = "https://api.github.com"
+    github_token: str = ""
+    github_timeout: float = 10.0
+    github_max_results: int = 6
     # 事件调查：首检后读取原文、按证据缺口补查；不影响普通聊天和热榜。
     # 所有抓页、分析、补查共享墙钟预算，不把重试藏到预算外。
     investigation_enabled: bool = True

@@ -462,3 +462,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`33ab7a4`、`4e87d26`、`74e646c`、`fda5c4c`、`5f8cf0c`、`7274275`、`28b9e8d`、`35c6e50`、`08db4cb` 均已推送 GitHub，部署仓已同步至 `08db4cb`。
 - 运行状态：仅重启 `personal-assistant`；`personal-qq-gateway` 未重启且 active；生产 `GROUP_WEB_SEARCH_ENABLED=true`，未改 `QQ_PUSH_*`/QQ 身份配置。
 - 未完成：真实 QQ 查询已确认网关与服务端 200，但上游目标模型最小 `chat/completions` 探针仍返回 503；等待上游恢复后再做最终带来源回复验收。QQ 推送/主人数字身份继续 blocked。
+
+### 2026-09-19 — 通用 Web Research 与 GitHub 项目 Provider
+
+- 代码/配置：复用现有 SearXNG、SSRF 安全抓页、正文清洗和 Evidence 链路，新增通用研究分类/有限研究编排与 GitHub 公开仓库、README、Release、Issue/PR Provider；明确小说、知识、文档、项目、URL 查询不能被语义 planner 改成闲聊；新增无密钥研究/GitHub 配置模板，不默认写入长期记忆。
+- 验证：服务端全量 1769 passed；通用研究/GitHub/聊天联网定向回归、Ruff、compileall 通过；GitHub Provider 公开 API 只读冒烟返回 3 个仓库；工作区 SearXNG 未配置时小说研究按 `no_sources` 安全降级。
+- 提交：待 staged 脱敏扫描后提交。
+- 运行状态：尚未部署或重启生产服务；QQ 配置、群联网开关和主人数字身份未改。
+- 未完成：生产部署与健康检查待本阶段提交；复杂 JavaScript 页面暂不引入浏览器抓取；QQ 推送/主人数字身份继续 blocked。

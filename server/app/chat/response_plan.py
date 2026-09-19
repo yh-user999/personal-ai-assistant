@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.chat import values as values_module
+from app.chat import web_research
 from app.common.timeutil import now_local
 
 _ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
@@ -732,6 +733,27 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
     if hint.intent == "current_datetime":
         hint.provider = "current_datetime"
         return hint
+    research_kind = web_research.classify_query(ctx.message)
+    if research_kind == "project":
+        return ResponsePlan(
+            mode="retrieve_then_answer", intent="project_lookup", confidence=0.96,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=ctx.message[:400],
+            constraints=[
+                "优先使用 GitHub 仓库、README、Release、Issue 或 PR 来源",
+                "只能依据公开项目资料回答，无法确认的内容明确说明",
+            ], source="rule",
+        )
+    if research_kind in {"document", "url", "knowledge"}:
+        return ResponsePlan(
+            mode="retrieve_then_answer", intent=f"{research_kind}_lookup", confidence=0.9,
+            evidence_required=True, retrieval_required=True, tool_required=True,
+            provider="web_search", query=ctx.message[:400],
+            constraints=[
+                "只能依据本轮网页来源回答，并保留来源链接",
+                "来源不足时明确说明无法核实，不得凭模型记忆补写",
+            ], source="rule",
+        )
     if not getattr(runtime.settings, "semantic_planner_enabled", False):
         return hint
     model = str(getattr(runtime.settings, "response_plan_model", "") or "").strip() or runtime.settings.llm_model

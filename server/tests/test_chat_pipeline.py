@@ -8,7 +8,7 @@ import pytest
 from app.group import interjection as group_interjection
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
-from app.chat.pipeline import _source_only_fallback_reply
+from app.chat.pipeline import _enforce_group_web_sources, _source_only_fallback_reply
 import app.chat.pipeline as pipeline_module
 from app.config import settings
 from app.core import knowledge as knowledge_module
@@ -195,6 +195,57 @@ def test_source_only_fallback_returns_links_without_sources_no_answer():
     assert "https://example.com/book" in reply
 
     assert _source_only_fallback_reply(SimpleNamespace(evidence={})) == ""
+
+
+def test_group_web_sources_replace_false_no_source_claim():
+    ctx = SimpleNamespace(
+        is_group=True,
+        trace=SimpleNamespace(response_plan={"group_web_search": "ok"}),
+    )
+    bundle = SimpleNamespace(evidence={"sources": [
+        {
+            "title": "作品资料",
+            "url": "https://example.com/book",
+            "source": "公开来源",
+            "published_at": "",
+            "summary": "作者与简介摘要",
+        },
+    ]})
+    reply = _enforce_group_web_sources(ctx, bundle, "目前没有可靠来源，请发一下链接或简介。")
+    assert "目前没有可靠来源" not in reply
+    assert "作者与简介摘要" in reply
+    assert "https://example.com/book" in reply
+    assert ctx.trace.response_plan["group_web_source_postprocess"] == "replaced_refusal"
+
+
+def test_group_web_sources_append_links_to_normal_answer():
+    ctx = SimpleNamespace(
+        is_group=True,
+        trace=SimpleNamespace(response_plan={"group_web_search": "ok"}),
+    )
+    bundle = SimpleNamespace(evidence={"sources": [
+        {
+            "title": "作品资料",
+            "url": "https://example.com/book",
+            "source": "公开来源",
+            "published_at": "",
+            "summary": "公开摘要",
+        },
+    ]})
+    reply = _enforce_group_web_sources(ctx, bundle, "作者是熊狼狗，题材是修真文明。")
+    assert reply.startswith("作者是熊狼狗")
+    assert "https://example.com/book" in reply
+    assert ctx.trace.response_plan["group_web_source_postprocess"] == "appended_sources"
+
+
+def test_group_web_sources_leave_no_source_reply_unchanged():
+    ctx = SimpleNamespace(
+        is_group=True,
+        trace=SimpleNamespace(response_plan={"group_web_search": "no_sources"}),
+    )
+    bundle = SimpleNamespace(evidence={"sources": []})
+    reply = "这个问题需要查资料才能答准。"
+    assert _enforce_group_web_sources(ctx, bundle, reply) == reply
 
 
 class _LLM:

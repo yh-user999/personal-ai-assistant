@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 
@@ -544,18 +545,60 @@ async def _apply_reply_reflection(
 
 def _source_only_fallback_reply(bundle: retrieval.RetrievalBundle) -> str:
     """LLM 失败但事实来源已到位时，只返回可核实来源，不自行补写结论。"""
-    sources = list(bundle.evidence.get("sources") or [])
-    if not sources:
-        return ""
-    from app.chat import web_provider
-
-    source_text = web_provider.format_sources(sources, limit=5)
+    source_text = _group_source_text(bundle)
     if not source_text:
         return ""
     return (
         "本轮已查到公开资料，但当前生成服务暂时不可用；先把可核实的来源摘录给你，"
         "不凭印象补写结论：\n" + source_text
     )
+
+
+_GROUP_SOURCE_REFUSAL_RE = re.compile(
+    r"(?:没有|未|无法|不能|没法).{0,24}(?:检索到|查到|找到|可靠来源|可靠资料|核实|确认|提供)"
+    r"|(?:没有|无法|不能|没法).{0,18}(?:联网|实时检索).{0,12}(?:能力|资料|信息)"
+    r"|(?:请|可以).{0,12}(?:发|提供).{0,12}(?:链接|简介|资料)"
+    r"|不凭印象(?:猜|乱说|补写)",
+    re.IGNORECASE,
+)
+
+
+def _group_source_text(bundle: retrieval.RetrievalBundle) -> str:
+    sources = list(bundle.evidence.get("sources") or [])
+    if not sources:
+        return ""
+    from app.chat import web_provider
+
+    return web_provider.format_sources(sources, limit=5)
+
+
+def _enforce_group_web_sources(
+    ctx: ChatContext,
+    bundle: retrieval.RetrievalBundle,
+    reply: str,
+) -> str:
+    """群联网成功后确定性保证回复不否认来源且带可核验链接。"""
+    if not ctx.is_group:
+        return reply
+    plan = getattr(ctx.trace, "response_plan", {}) or {}
+    if plan.get("group_web_search") != "ok":
+        return reply
+    source_text = _group_source_text(bundle)
+    if not source_text:
+        return reply
+    draft = str(reply or "").strip()
+    if _GROUP_SOURCE_REFUSAL_RE.search(draft):
+        ctx.trace.response_plan["group_web_source_postprocess"] = "replaced_refusal"
+        return "查到的公开资料如下（以来源为准）：\n" + source_text
+    source_urls = [
+        str(item.get("url") or "").strip()
+        for item in bundle.evidence.get("sources", [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    if source_urls and not any(url in draft for url in source_urls):
+        ctx.trace.response_plan["group_web_source_postprocess"] = "appended_sources"
+        return f"{draft}\n\n【本轮检索来源】\n{source_text}"
+    return draft
 
 
 def _generation_failure_reply(ctx: ChatContext, generation_failed: bool) -> ChatResponse:
@@ -764,7 +807,10 @@ async def _run_chat(
     group_reflection_enabled = bool(
         ctx.is_group and getattr(settings, "group_reflection_enabled", True)
     )
-    buffered_reply = buffered_investigation or group_reflection_enabled or bool(
+    group_web_reply = bool(
+        ctx.is_group and ctx.trace.response_plan.get("group_web_search") == "ok"
+    )
+    buffered_reply = buffered_investigation or group_reflection_enabled or group_web_reply or bool(
         ctx.is_owner and settings.reflection_enabled and bundle.evidence.get("sources")
     )
     with ctx.trace.stage("llm"):
@@ -790,6 +836,7 @@ async def _run_chat(
         buffered_investigation=buffered_investigation,
         group_reflection_enabled=group_reflection_enabled,
     )
+    reply = _enforce_group_web_sources(ctx, bundle, reply)
     if on_delta is not None and buffered_reply:
         await on_delta(reply)
 

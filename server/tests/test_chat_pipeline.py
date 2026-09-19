@@ -298,6 +298,35 @@ def test_command_short_circuit_skips_llm(db_env, monkeypatch):
     assert llm.calls == []
 
 
+def test_reference_lookup_overrides_semantic_planner_in_group(db_env, monkeypatch):
+    """明确书名查询不能被语义 planner 改成普通闲聊。"""
+    from app.chat.response_plan import ResponsePlan
+
+    async def casual_plan(*args, **kwargs):
+        return ResponsePlan(mode="casual_chat", intent="general_chat", provider=None)
+
+    monkeypatch.setattr(pipeline_module.response_plan, "plan_response", casual_plan)
+    monkeypatch.setattr(settings, "semantic_planner_shadow_only", False)
+    monkeypatch.setattr(settings, "group_web_search_enabled", False)
+    monkeypatch.setattr(settings, "group_reflection_enabled", False)
+    llm = _LLM(reply="测试回复")
+    runtime = make_runtime(llm=llm)
+    ctx = make_ctx(
+        "帮我查一下《没钱修什么仙》的简介、作者和主要设定",
+        uid="123",
+        is_owner=False,
+        group_id="456",
+        group_directed=True,
+    )
+
+    resp = asyncio.run(run_chat(ctx, runtime))
+
+    assert resp.reply == "测试回复"
+    assert ctx.trace.response_plan["provider"] == "web_search"
+    assert ctx.trace.response_plan["intent"] == "external_reference_lookup"
+    assert ctx.trace.response_plan["planned_source"] == "fallback"
+
+
 def test_llm_failure_returns_friendly_reply(db_env, monkeypatch):
     """LLM 失败：用户消息已入库，assistant 侧不写，返回友好文案。"""
     llm = _LLM(reply=RuntimeError("backend down"))

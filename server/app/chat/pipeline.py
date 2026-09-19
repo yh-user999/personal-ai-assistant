@@ -747,6 +747,12 @@ async def _run_chat(
         )
     shadow_only = bool(getattr(settings, "semantic_planner_shadow_only", True))
     plan = hint if shadow_only else planned
+    # 明确书名/作品资料查询是确定性联网意图，不能被语义规划器改成闲聊。
+    from app.chat import web_provider
+
+    if web_provider.looks_like_external_reference_lookup(msg):
+        plan = hint
+        plan.source = "rule_reference_override"
     if group_state is not None:
         group_turn.apply_group_plan_fields(plan, group_state)
     if plan.mode == "direct_fact" and plan.provider == "current_datetime":

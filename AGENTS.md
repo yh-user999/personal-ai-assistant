@@ -100,7 +100,7 @@ QQ/NapCat 登录（保留）
 - QQ 薄网关已实现：OneBot v11 HTTP 事件入口、真实 At/Reply/前缀 fail-closed 门禁、`group_directed` 映射、短时 follow-up、发送限流、HMAC/幂等客户端、systemd 模板和契约测试已加入仓库。
 - QQ 薄网关已在部署机安装并启用：`personal-qq-gateway.service` active（127.0.0.1:3101），NapCat `httpClients[xy-gateway]` 已配置生效；OneBot action 使用 `/{action}` 专用路径并要求发送返回有效 `message_id`，`.env` 密钥与配置仅存本机。
 - 每日 AI 资讯日报已部署：每天 08:00（Asia/Shanghai）复用现有 SearXNG 与聊天 LLM 搜索并生成来源约束摘要，独立表按主体/日期幂等归档；`/api/ai-news` 仅 `owner`/`internal`，聊天快捷读取仅主人私聊，QQ 推送未配置时非阻塞跳过。
-- 受控私聊/群聊联网检索已实现并部署：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留和默认关闭均已纳入；生产 `GROUP_WEB_SEARCH_ENABLED` 仍为关闭。
+- 受控私聊/群聊联网检索已实现并部署：书名/作品查询规则、HTTP(S) 来源硬门槛、群真实直达门禁、按群冷却/小时限额/单次预算、失败释放预留、作品资料来源过滤与 LLM 故障来源兜底均已纳入；生产 `GROUP_WEB_SEARCH_ENABLED` 已按用户确认开启，当前真机验收受上游生成接口 503 阻塞。
 
 ### 未完成/明确限制
 
@@ -108,8 +108,8 @@ QQ/NapCat 登录（保留）
 - `QQ_PUSH_URL`/`QQ_PUSH_TOKEN`/`QQ_ADMIN_ID` 在部署 `.env` 长期为空（提醒与 AI 日报 QQ 推送未启用、服务端主人身份为 `owner` 哨兵）；网关已改用 `QQ_GATEWAY_ONEBOT_URL/TOKEN`、`QQ_GATEWAY_OWNER_ID` 接线。若要恢复推送并把主人身份切到数字 QQ，需要迁移 owner 历史数据并重启服务，属待决事项。
 - 网关当前只处理文本事件；图片、语音、视频和文件安全忽略，媒体入口另行设计。
 - 服务端已由 systemd 管理（`EnvironmentFile` 固定 `PORT=8000`），不再受宿主 `PORT` 继承问题影响；仅手工调试时才需要 `env -u PORT PORT=8000 .venv/bin/python run.py`。
-- 群聊实时公网搜索的生产开关仍保持关闭：本轮已补齐公共 HTTP(S) 来源、来源审校、按群限额、单次预算和失败释放等受控策略；开启 `GROUP_WEB_SEARCH_ENABLED` 前仍需用户确认，并在部署机做真实 At 查询《没钱修什么仙》的来源/降级验收。
-- QQ 网关本身处理稳定，但上游 LLM 偶有 30–56 秒延迟；近期 12 个已完成 OneBot 请求中 3 个超过 30 秒，网关/服务端日志未见发送、鉴权或 5xx 错误。
+- 群聊实时公网搜索的生产开关已按用户确认开启：公共 HTTP(S) 来源、来源审校、按群限额、12 秒默认单次预算、失败释放和作品资料相关性过滤均已部署；生产 helper 已命中 5 个相关来源，但《没钱修什么仙》真机完整回答仍待上游生成接口恢复。
+- QQ 网关入站/出站与服务端链路稳定；2026-09-19 最近真机请求的上游 `chat/completions` 连续返回 503，已增加“已有来源时直接返回来源摘要”的 LLM 故障兜底；目标模型最小真实探针仍返回 503。
 - 原 opencode 聊天通道于 2026-09-17 达到月度额度上限；当前聊天已切换至受信任 HTTPS New API 的 `gemini-3.8-flash-high`，如需切回需使用仓外旧配置备份。
 - `/api/ready` 曾因服务进程内单个长连接出现 FTS5 视图异常而 503；本次再次出现 `memories_fts` malformed inverted index 后，已在仓外在线备份副本验证并重建生产 `memories_fts`/`knowledge_fts`，完整性检查恢复正常。
 - `qq/`、`deploy/maibot/` 与根 `data/` 已于 2026-09-15 从仓库删除；@ 判定语义见 `docs/QQ_MENTION_REFERENCE.md`，原实现可在 Git 历史中查阅。
@@ -454,3 +454,11 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：`5dab307`；已推送 GitHub，部署仓已 fast-forward 同步。
 - 运行状态：仅重启 `personal-assistant`；未重启 QQ 网关，生产 `GROUP_WEB_SEARCH_ENABLED` 保持关闭。
 - 未完成：用户确认后开启群联网并真机验收《没钱修什么仙》来源、无来源降级与限额行为；QQ 推送/主人数字身份仍按既有决策项阻塞。
+
+### 2026-09-19 — 作品检索命中优化与上游生成故障兜底
+
+- 代码/配置：作品查询改走通用网页类别，保留标题问号，首轮使用“作品简介/剧情/设定”词并过滤无关结果；群默认预算调为 12 秒；LLM 生成失败但已有可靠来源时直接返回来源摘要与链接，不凭印象补写。
+- 验证：服务端全量 1756 passed；定向联网/流水线 150 passed；Ruff、compileall、git diff --check 和 staged 高置信脱敏扫描通过；生产 helper 返回 5 个相关 HTTPS 来源，`/api/ready` 200。
+- 提交：`33ab7a4`、`4e87d26`、`74e646c`、`fda5c4c`、`5f8cf0c`、`7274275`、`28b9e8d`、`35c6e50`、`08db4cb` 均已推送 GitHub，部署仓已同步至 `08db4cb`。
+- 运行状态：仅重启 `personal-assistant`；`personal-qq-gateway` 未重启且 active；生产 `GROUP_WEB_SEARCH_ENABLED=true`，未改 `QQ_PUSH_*`/QQ 身份配置。
+- 未完成：真实 QQ 查询已确认网关与服务端 200，但上游目标模型最小 `chat/completions` 探针仍返回 503；等待上游恢复后再做最终带来源回复验收。QQ 推送/主人数字身份继续 blocked。

@@ -490,7 +490,7 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 
 ### 2026-09-19 — 语义 planner 主路由改造
 - 代码/配置：响应计划新增 route/research_kind/subject/research_question/research_queries/source_preference 与有限 followup 字段；私聊、群聊研究、社交动作、语气和续话消费结构化计划；规则层仅保留安全合并与 planner 失败 fallback；来源无结果固定降级；新增语义查询、群隔离、访客权限和副作用边界回归。
-- 验证：服务端全量 1776 passed；定向语义/研究/群聊回归通过；Ruff、compileall、git diff --check 通过；脱敏扫描待提交前完成。
-- 提交：未提交。
-- 运行状态：尚未部署或重启生产服务；QQ 配置、群联网生产开关和推送配置未改。
-- 未完成：staged 脱敏扫描、提交推送、部署仓同步、systemd 重启和 `/api/health`/`/api/ready` 生产验收；复杂 JavaScript 页面正文提取与 QQ 推送/主人数字身份继续 blocked。
+- 验证：服务端全量 1776 passed；定向语义/研究/群聊回归通过；Ruff、compileall、git diff --check 和 staged 高置信脱敏扫描通过；部署后 `/api/health`、`/api/ready`、QQ 网关 `/health` 均正常，数据库 schema 18。
+- 提交：`9e707e7`；已推送 GitHub，部署仓已 fast-forward 同步。
+- 运行状态：`personal-assistant` 已重启并 active；QQ 网关未重启且保持 active；QQ 配置、群联网生产开关和推送配置未改。
+- 未完成：复杂 JavaScript 页面正文提取与 QQ 推送/主人数字身份继续 blocked；无本阶段新增阻塞。

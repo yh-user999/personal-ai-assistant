@@ -8,6 +8,7 @@ import pytest
 from app.group import interjection as group_interjection
 from app.chat.context import ChatContext, ChatRequest, ChatRuntime
 from app.chat.pipeline import run_chat
+from app.chat.pipeline import _source_only_fallback_reply
 import app.chat.pipeline as pipeline_module
 from app.config import settings
 from app.core import knowledge as knowledge_module
@@ -176,6 +177,24 @@ class _Services:
 
 async def _noop():
     return None
+
+
+def test_source_only_fallback_returns_links_without_sources_no_answer():
+    source_bundle = SimpleNamespace(evidence={"sources": [
+        {
+            "title": "作品资料",
+            "url": "https://example.com/book",
+            "source": "公开来源",
+            "published_at": "",
+            "summary": "公开摘要",
+        },
+    ]})
+    reply = _source_only_fallback_reply(source_bundle)
+    assert "生成服务暂时不可用" in reply
+    assert "公开摘要" in reply
+    assert "https://example.com/book" in reply
+
+    assert _source_only_fallback_reply(SimpleNamespace(evidence={})) == ""
 
 
 class _LLM:

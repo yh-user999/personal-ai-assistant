@@ -542,6 +542,22 @@ async def _apply_reply_reflection(
     return reply
 
 
+def _source_only_fallback_reply(bundle: retrieval.RetrievalBundle) -> str:
+    """LLM 失败但事实来源已到位时，只返回可核实来源，不自行补写结论。"""
+    sources = list(bundle.evidence.get("sources") or [])
+    if not sources:
+        return ""
+    from app.chat import web_provider
+
+    source_text = web_provider.format_sources(sources, limit=5)
+    if not source_text:
+        return ""
+    return (
+        "本轮已查到公开资料，但当前生成服务暂时不可用；先把可核实的来源摘录给你，"
+        "不凭印象补写结论：\n" + source_text
+    )
+
+
 def _generation_failure_reply(ctx: ChatContext, generation_failed: bool) -> ChatResponse:
     """生成失败的可见回复：标记 Trace，再按图片/长文/普通失败区分话术。"""
     ctx.trace.status = "failed"
@@ -759,6 +775,11 @@ async def _run_chat(
     if reply is None:
         if group_state is not None:
             group_turn.release_group_reservation(group_state)
+        source_fallback = _source_only_fallback_reply(bundle)
+        if source_fallback:
+            ctx.trace.status = "degraded"
+            ctx.trace.error_code = "llm_failed_source_fallback"
+            return ChatResponse(reply=source_fallback, memories_used=0)
         return _generation_failure_reply(ctx, generation_failed)
 
     reply = await _apply_reply_reflection(

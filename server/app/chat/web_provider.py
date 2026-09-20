@@ -8,7 +8,7 @@
   退回模型记忆作答；
 - 抓页做 SSRF 护栏：只允许 http(s)、拒绝内网与环回地址，避免搜索结果
   把请求引向本机服务；
-- 不引入 HTML 解析依赖，用正则剥离 script/style 与标签；
+- 优先用 lxml 按正文容器提取，缺少依赖或解析失败时回退正则清洗；
 - 事件聚合按标题相似度 + 时间邻近归并，同一事件的多篇报道合成一条。
 """
 from __future__ import annotations
@@ -21,13 +21,63 @@ import logging
 import math
 import re
 import socket
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
+from app.config import settings
+
+try:
+    from lxml import html as lxml_html
+except ImportError:  # pragma: no cover - 生产环境已安装，保留纯正则回退
+    lxml_html = None
+
 logger = logging.getLogger("assistant.web")
+
+
+class SearchBatch(list):
+    """兼容 list 调用方，同时携带检索后端状态和阶段计数。"""
+
+    def __init__(
+        self,
+        values: list[dict[str, Any]] | None = None,
+        *,
+        backend_status: str = "ok",
+        raw_hits: int = 0,
+        unresponsive_engines: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(values or [])
+        self.backend_status = str(backend_status or "ok")[:32]
+        self.raw_hits = max(0, int(raw_hits or 0))
+        self.unresponsive_engines = tuple(str(item)[:80] for item in unresponsive_engines[:20])
+
+
+_SEARCH_CACHE: dict[str, tuple[float, SearchBatch]] = {}
+_SEARCH_FAILURE_COUNT = 0
+_SEARCH_COOLDOWN_UNTIL = 0.0
+_LAST_SEARCH_STARTED = 0.0
+
+
+def reset_search_state() -> None:
+    """清空进程内检索缓存/熔断状态；测试和运维探针可显式调用。"""
+    global _SEARCH_FAILURE_COUNT, _SEARCH_COOLDOWN_UNTIL, _LAST_SEARCH_STARTED
+    _SEARCH_CACHE.clear()
+    _SEARCH_FAILURE_COUNT = 0
+    _SEARCH_COOLDOWN_UNTIL = 0.0
+    _LAST_SEARCH_STARTED = 0.0
+
+
+def _copy_search_batch(batch: SearchBatch) -> SearchBatch:
+    return SearchBatch(
+        [dict(item) for item in batch],
+        backend_status=batch.backend_status,
+        raw_hits=batch.raw_hits,
+        unresponsive_engines=batch.unresponsive_engines,
+    )
+
 
 # SearXNG time_range 取值
 TIME_RANGES = frozenset({"day", "week", "month", "year"})
@@ -87,6 +137,14 @@ _FOLLOWUP_RE = re.compile(
 _FOLLOWUP_MAX_CHARS = 12
 
 _SCRIPT_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_NOISE_BLOCK_RE = re.compile(
+    r"<(?:script|style|nav|aside|footer|header|form|iframe|noscript)\b[^>]*>.*?</(?:script|style|nav|aside|footer|header|form|iframe|noscript)>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_NOISE_ATTR_RE = re.compile(
+    r"<(?:div|section|aside|span|ul|ol)\b[^>]*(?:class|id)=[\"'][^\"']*(?:advert|comment|sidebar|recommend|related|footer|header)[^\"']*[\"'][^>]*>.*?</(?:div|section|aside|span|ul|ol)>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _NL_RE = re.compile(r"\n{3,}")
@@ -212,15 +270,28 @@ _NOVEL_READABLE_DOMAINS = (
     "ubook.reader.qq.com",
     "imarket.qq.com",
 )
-_NOVEL_LOW_QUALITY_DOMAINS = (
+# 旧小说来源排序的兼容信号；通用研究链路不依赖域名白名单/黑名单，
+# 只使用正文长度、实体重叠、事实密度和模板噪声等内容信号。
+_LOW_QUALITY_DOMAINS = (
     "bookszw.com",
     "kudushu.org",
     "uukan.org",
     "uukanshu.com",
     "biquge.com",
 )
-_NOVEL_LOW_QUALITY_TEXT_RE = re.compile(
+_LOW_QUALITY_TEXT_RE = re.compile(
     r"全文免费|最新章节|无错字|TXT下载|EPUB下载|加入书架|推荐本书|免费提供|章节目录",
+    re.IGNORECASE,
+)
+_NOVEL_LOW_QUALITY_DOMAINS = _LOW_QUALITY_DOMAINS
+_NOVEL_LOW_QUALITY_TEXT_RE = _LOW_QUALITY_TEXT_RE
+_QUALITY_BOILERPLATE_RE = re.compile(
+    r"首页|登录|注册|导航|广告|相关推荐|猜你喜欢|加入书架|章节目录|全文免费|最新章节|TXT下载|EPUB下载",
+    re.IGNORECASE,
+)
+_QUALITY_FACT_RE = re.compile(
+    r"(?:20\d{2}[年./-]\d{1,2}(?:[月./-]\d{1,2})?|\d+(?:\.\d+)?(?:万|亿|%|元|美元|公里|页|章)|"
+    r"第\s*\d+\s*[章节]|[\"“‘「][^\"”’」]{4,}[\"”’」])",
     re.IGNORECASE,
 )
 _NOVEL_NON_NAME_RE = re.compile(
@@ -714,8 +785,18 @@ def looks_like_external_reference_lookup(text: str) -> bool:
     return has_title and (has_intent or bool(re.search(r"书名\s*(?:是|叫|为|[:：])", value)))
 
 
+_REFERENCE_DEIXIS_RE = re.compile(
+    r"\s*[这那](?:本|部|款|个|套|张)?(?:书|小说|作品|剧|电影|动漫|游戏|软件|产品|歌|曲|专辑|app|APP)\s*$"
+)
+
+
 def _reference_title_text(text: str) -> str:
     value = (text or "").strip()
+    # 先剥口语包装，再提取书名号；否则末尾指示词可能误伤标题本身。
+    value = _LEADING_FRAME_RE.sub("", value)
+    value = _BROWSING_FRAME_RE.sub("", value)
+    value = _TRAILING_PARTICLE_RE.sub("", value)
+    value = _REFERENCE_DEIXIS_RE.sub("", value).strip()
     titles = re.findall(r"[《「]([^》」]{2,40})[》」]", value)
     if titles:
         return titles[0].strip()
@@ -747,24 +828,41 @@ def reference_search_queries(text: str) -> tuple[str, str | None]:
     return primary, expanded[:200]
 
 
-def filter_reference_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """只保留可见文本明确提到作品标题的结果，避免把泛搜索噪声当成来源。"""
+def _reference_relevance(query: str, item: dict[str, Any]) -> float:
     title = _reference_title_text(query)
-    needle = re.sub(r"[\W_]+", "", unquote(title), flags=re.UNICODE)
+    needle = _novel_compact(unquote(title))
+    haystack = " ".join(
+        str(item.get(key) or "") for key in ("title", "summary", "content", "url")
+    )
+    compact = _novel_compact(unquote(haystack))
+    exact = bool(needle and needle in compact)
+    similarity = _similar(_title_features(title), _title_features(haystack))
+    return max(1.0 if exact else 0.0, similarity)
+
+
+def filter_reference_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按标题特征重叠保留相关结果，避免包装词或轻微变体导致整批归零。"""
+    title = _reference_title_text(query)
+    needle = _novel_compact(unquote(title))
     if len(needle) < 2:
         return list(results or [])
-    relevant: list[dict[str, Any]] = []
+    features = _title_features(title)
+    short_title = len(needle) <= 4
+    relevant: list[tuple[float, dict[str, Any]]] = []
     for item in results or []:
         if not isinstance(item, dict):
             continue
+        score = _reference_relevance(query, item)
         haystack = " ".join(
-            str(item.get(key) or "")
-            for key in ("title", "summary", "content", "url")
+            str(item.get(key) or "") for key in ("title", "summary", "content", "url")
         )
-        compact = re.sub(r"[\W_]+", "", unquote(haystack), flags=re.UNICODE)
-        if needle in compact:
-            relevant.append(item)
-    return relevant
+        compact = _novel_compact(unquote(haystack))
+        exact = bool(needle in compact)
+        threshold = 0.5 if short_title else 0.34
+        if exact or (features and score >= threshold):
+            relevant.append((score, item))
+    relevant.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in relevant]
 
 
 def looks_like_followup(text: str) -> bool:
@@ -832,15 +930,11 @@ def clean_query(text: str) -> str:
 
 
 def _backend_url() -> str:
-    from app.config import settings
-
     return str(getattr(settings, "search_backend_url", "") or "").strip().rstrip("/")
 
 
 def configured() -> bool:
     """是否启用并配置了检索后端；开关关闭时不得搜索或抓页。"""
-    from app.config import settings
-
     return bool(getattr(settings, "web_search_enabled", True)) and bool(_backend_url())
 
 
@@ -881,8 +975,38 @@ def _is_safe_url(url: str) -> bool:
     return _public_address(host)
 
 
-async def _resolve_public_addresses(url: str) -> list[str]:
-    """每跳校验全部 DNS 答案，混有一个非公网地址也拒绝；可由测试完整替换。"""
+def _loopback_proxy_url() -> str:
+    """仅接受可选的本机回环代理；空值表示禁用代理回退。"""
+    value = str(getattr(settings, "fetch_page_proxy", "") or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        logger.warning("抓页代理配置非法，忽略代理回退")
+        return ""
+    allowed_schemes = {"http", "https", "socks5", "socks5h"}
+    if parsed.scheme.lower() not in allowed_schemes or not host or parsed.username or parsed.password:
+        logger.warning("抓页代理配置不受支持，忽略代理回退")
+        return ""
+    loopback_only = bool(getattr(settings, "fetch_page_proxy_loopback_only", True))
+    loopback_hosts = {"localhost", "::1", str(ipaddress.ip_address(0x7F000001))}
+    if loopback_only and host not in loopback_hosts:
+        logger.warning("抓页代理不是本机回环地址，忽略代理回退")
+        return ""
+    if port is not None and not 0 < port <= 65535:
+        logger.warning("抓页代理端口非法，忽略代理回退")
+        return ""
+    return value
+
+
+async def _resolve_public_addresses(url: str, *, allow_proxy: bool = False) -> list[str]:
+    """每跳校验全部 DNS 答案，混有一个非公网地址也拒绝。"""
+    if allow_proxy and _loopback_proxy_url():
+        # 回环代理负责公网域名解析；调用方仍须先通过 _is_safe_url。
+        return []
     if not _is_safe_url(url):
         return []
     parsed = urlparse(url)
@@ -897,8 +1021,18 @@ async def _resolve_public_addresses(url: str) -> list[str]:
         addresses = list(dict.fromkeys(answer[4][0] for answer in answers))
     else:
         addresses = [str(address)]
-    if not addresses or len(addresses) > 16 or not all(_public_address(a) for a in addresses):
+    if not addresses:
+        logger.warning("抓页被拒（DNS 无解析）: %s", host)
         return []
+    if len(addresses) > 16:
+        # 多地址本身不是 SSRF；只记录，避免正常大站因 DNS 轮询被误拒。
+        logger.warning("抓页地址数偏多（%d）: %s 样例=%s", len(addresses), host, addresses[:3])
+    bad = [address for address in addresses if not _public_address(address)]
+    if bad:
+        logger.warning("抓页被拒（含非公网地址）: %s 样例=%s", host, bad[:3])
+        return []
+    # IPv4 优先：部分双栈站点的 IPv6 路由不稳定，避免首跳直接失败。
+    addresses.sort(key=lambda item: ":" in item)
     return addresses
 
 
@@ -908,6 +1042,15 @@ def _bounded_number(value: Any, default: float, upper: float) -> float:
     except (ValueError, TypeError, OverflowError):
         number = default
     return min(upper, max(0.001, number)) if math.isfinite(number) else default
+
+
+def _bounded_limit(value: Any, default: int, upper: int) -> int:
+    """读取可关闭的大小/长度护栏；0 表示不截断，非法值回退默认值。"""
+    try:
+        number = int(value)
+    except (ValueError, TypeError, OverflowError):
+        number = int(default)
+    return max(0, min(number, int(upper)))
 
 
 # 新闻 URL 常见日期：/2026-09-10/ 与 /20260910A01/ 两类
@@ -968,24 +1111,93 @@ def normalize_result(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-async def web_search(
+def _search_cache_key(query: str, category: str, time_range: str, engines: str | None) -> str:
+    cleaned = clean_query(query)[:400]
+    engine_text = ",".join(
+        part.strip() for part in str(engines or "").split(",") if part.strip()
+    )
+    return "|".join((cleaned, category or "general", time_range or "", engine_text[:200]))
+
+
+async def _wait_search_interval() -> None:
+    """限制连续打 SearXNG 的频率，避免引擎级限流形成空结果正反馈。"""
+    global _LAST_SEARCH_STARTED
+    try:
+        interval = max(0.0, float(getattr(settings, "search_min_interval_seconds", 1.0)))
+    except (TypeError, ValueError, OverflowError):
+        interval = 1.0
+    now = time.monotonic()
+    wait = interval - (now - _LAST_SEARCH_STARTED) if _LAST_SEARCH_STARTED else 0.0
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _LAST_SEARCH_STARTED = time.monotonic()
+
+
+def _backend_failure(status: str) -> None:
+    global _SEARCH_FAILURE_COUNT, _SEARCH_COOLDOWN_UNTIL
+    threshold = max(1, int(getattr(settings, "search_backend_failure_threshold", 3)))
+    cooldown = max(0.0, float(getattr(settings, "search_backend_cooldown_seconds", 90.0)))
+    _SEARCH_FAILURE_COUNT += 1
+    if _SEARCH_FAILURE_COUNT >= threshold and cooldown > 0:
+        _SEARCH_COOLDOWN_UNTIL = time.monotonic() + cooldown
+        logger.warning(
+            "检索后端进入冷却（连续失败=%d，状态=%s，冷却=%.1fs）",
+            _SEARCH_FAILURE_COUNT, status, cooldown,
+        )
+
+
+def _backend_success() -> None:
+    global _SEARCH_FAILURE_COUNT, _SEARCH_COOLDOWN_UNTIL
+    _SEARCH_FAILURE_COUNT = 0
+    _SEARCH_COOLDOWN_UNTIL = 0.0
+
+
+def _backend_unresponsive(payload: Any) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    raw = payload.get("unresponsive_engines") or payload.get("unresponsive") or ()
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    values: list[str] = []
+    for item in raw[:20]:
+        if isinstance(item, (list, tuple)) and item:
+            item = item[0]
+        text = str(item or "").strip()
+        if text:
+            values.append(text[:80])
+    return tuple(dict.fromkeys(values))
+
+
+async def _web_search_batch(
     query: str,
     *,
     category: str = "general",
     time_range: str = "week",
     limit: int = 10,
     engines: str | None = None,
-) -> list[dict[str, Any]]:
-    """检索网页/新闻。后端未配置、超时或返回异常一律返回空列表。"""
+) -> SearchBatch:
     backend = _backend_url()
-    text = (query or "").strip()
+    text = clean_query(query)[:400]
     if not configured() or not text:
-        return []
+        return SearchBatch(backend_status="unavailable")
 
-    from app.config import settings
+    now = time.monotonic()
+    if _SEARCH_COOLDOWN_UNTIL > now:
+        return SearchBatch(backend_status="cooling_down")
+
+    key = _search_cache_key(text, category, time_range, engines)
+    try:
+        ttl = max(0.0, float(getattr(settings, "search_cache_ttl_seconds", 300.0)))
+    except (TypeError, ValueError, OverflowError):
+        ttl = 300.0
+    cached = _SEARCH_CACHE.get(key)
+    if cached and ttl > 0 and now - cached[0] < ttl:
+        return _copy_search_batch(cached[1])
+    if cached:
+        _SEARCH_CACHE.pop(key, None)
 
     params = {
-        "q": text[:400],
+        "q": text,
         "format": "json",
         "language": "zh-CN",
     }
@@ -1000,21 +1212,30 @@ async def web_search(
     )
     if engine_text:
         params["engines"] = engine_text[:200]
-    timeout = float(getattr(settings, "search_timeout", 15.0))
+    timeout = _bounded_number(getattr(settings, "search_timeout", 25.0), 25.0, 40.0)
     cap = max(1, min(int(limit), int(getattr(settings, "search_max_results", 10))))
 
+    await _wait_search_interval()
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.get(f"{backend}/search", params=params)
             response.raise_for_status()
             payload = response.json()
+    except httpx.TimeoutException as exc:
+        _backend_failure("timeout")
+        logger.warning("检索后端超时（%s），本轮按后端退化处理", type(exc).__name__)
+        return SearchBatch(backend_status="timeout")
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("检索后端不可用（%s），本轮按未查到处理", type(exc).__name__)
-        return []
+        _backend_failure("error")
+        logger.warning("检索后端不可用（%s），本轮按后端退化处理", type(exc).__name__)
+        return SearchBatch(backend_status="error")
 
     raw_items = payload.get("results") if isinstance(payload, dict) else None
+    unresponsive = _backend_unresponsive(payload)
     if not isinstance(raw_items, list):
-        return []
+        _backend_failure("error")
+        return SearchBatch(backend_status="error", unresponsive_engines=unresponsive)
+    raw_hits = len(raw_items)
     out: list[dict[str, Any]] = []
     for raw in raw_items:
         item = normalize_result(raw)
@@ -1022,49 +1243,99 @@ async def web_search(
             out.append(item)
         if len(out) >= cap:
             break
-    return out
+    if not out:
+        _backend_failure("empty_backend")
+        logger.warning(
+            "检索后端返回空结果（raw_hits=%d，unresponsive=%s）",
+            raw_hits, list(unresponsive),
+        )
+        return SearchBatch(
+            backend_status="empty_backend",
+            raw_hits=raw_hits,
+            unresponsive_engines=unresponsive,
+        )
+
+    _backend_success()
+    batch = SearchBatch(
+        out,
+        backend_status="ok",
+        raw_hits=raw_hits,
+        unresponsive_engines=unresponsive,
+    )
+    if ttl > 0:
+        _SEARCH_CACHE[key] = (time.monotonic(), _copy_search_batch(batch))
+    return batch
+
+
+async def web_search(
+    query: str,
+    *,
+    category: str = "general",
+    time_range: str = "week",
+    limit: int = 10,
+    engines: str | None = None,
+) -> list[dict[str, Any]]:
+    """检索网页/新闻；保持 list 兼容，同时返回带状态的 SearchBatch。"""
+    return await _web_search_batch(
+        query,
+        category=category,
+        time_range=time_range,
+        limit=limit,
+        engines=engines,
+    )
 
 
 async def fetch_page(url: str) -> dict[str, Any] | None:
-    """有界抓页。逐跳验 DNS、钉住公网 IP，保留原 Host/TLS 名称，防 DNS 重绑定。
+    """有界抓页，直连失败后可选地使用本机回环代理重试。
 
-    页面禁用自动跳转和压缩（避免解压炸弹），最多三跳、1 MB；DNS、网络、
-    流读取共用墙钟期限。取消直接向上传播。配置的搜索后端不受网页护栏约束。
+    直连逐跳验 DNS、钉住公网 IP 并保留原 Host/TLS 名称；代理模式跳过本地
+    DNS 钉 IP 以绕过本地解析异常，但仍保留 URL、回环代理、响应大小、禁压缩、
+    重定向和超时护栏。取消直接向上传播。
     """
     if not configured() or not _is_safe_url(url):
         return None
 
-    from app.config import settings
-
     timeout = _bounded_number(getattr(settings, "search_timeout", 15.0), 15.0, 20.0)
-    max_bytes = int(_bounded_number(
+    max_bytes = _bounded_limit(
         getattr(settings, "search_max_page_bytes", 500_000), 500_000, 1_000_000,
-    ))
+    )
+    proxy_url = _loopback_proxy_url()
 
-    async def _fetch() -> dict[str, Any] | None:
+    async def _fetch(*, proxy: str = "") -> dict[str, Any] | None:
         current = url
         for hop in range(4):
-            addresses = await _resolve_public_addresses(current)
-            if not addresses:
-                return None
+            proxy_mode = bool(proxy)
+            # 代理模式由本机回环代理解析公网域名，跳过本地 DNS 钉 IP；URL
+            # 语法和私网字面量仍由 _is_safe_url 拒绝。该模式保留残余 SSRF 风险。
+            addresses = await _resolve_public_addresses(current, allow_proxy=proxy_mode)
             original = httpx.URL(current)
-            pinned = original.copy_with(host=addresses[0])
-            host_header = original.netloc.decode("ascii")
+            if proxy_mode:
+                request_url = original
+                request_headers = {"Accept-Encoding": "identity"}
+                request_extensions = {}
+            else:
+                if not addresses:
+                    return None
+                request_url = original.copy_with(host=addresses[0])
+                request_headers = {"Host": original.netloc.decode("ascii"), "Accept-Encoding": "identity"}
+                request_extensions = {"sni_hostname": original.host}
             # 每跳独立连接池：同一 IP 的不同域名不能复用错误的 TLS SNI。
-            async with httpx.AsyncClient(
-                timeout=timeout, trust_env=False, follow_redirects=False,
-            ) as client:
+            client_kwargs: dict[str, Any] = {
+                "timeout": timeout, "trust_env": False, "follow_redirects": False,
+            }
+            if proxy:
+                client_kwargs["proxy"] = proxy
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 async with client.stream(
-                    "GET", pinned,
-                    headers={"Host": host_header, "Accept-Encoding": "identity"},
-                    extensions={"sni_hostname": original.host},
+                    "GET", request_url, headers=request_headers, extensions=request_extensions,
                 ) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location", "")
                         if not location or hop == 3:
                             return None
                         current = urljoin(current, location)
-                        # 下一轮在发请求前重新做语法和 DNS 校验。
+                        if not _is_safe_url(current):
+                            return None
                         continue
                     response.raise_for_status()
                     if "html" not in response.headers.get("content-type", "").lower():
@@ -1072,35 +1343,87 @@ async def fetch_page(url: str) -> dict[str, Any] | None:
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         return None
                     length = response.headers.get("content-length", "")
-                    if length and int(length) > max_bytes:
+                    if max_bytes and length and int(length) > max_bytes:
                         return None
                     body = bytearray()
-                    async for chunk in response.aiter_raw(chunk_size=min(8192, max_bytes + 1)):
-                        if len(body) + len(chunk) > max_bytes:
+                    # 多读出最多一个字节的窗口，让“首块已超过上限”在读取
+                    # 下一块前就被拒绝，同时允许恰好达到上限的合法正文完成。
+                    chunk_size = min(8192, max_bytes + 1) if max_bytes else 8192
+                    async for chunk in response.aiter_raw(chunk_size=chunk_size):
+                        if max_bytes and len(body) + len(chunk) > max_bytes:
                             return None
                         body.extend(chunk)
                     encoding = response.encoding or "utf-8"
                     text = extract_text(bytes(body).decode(encoding, errors="replace"))
                     if text:
-                        return {"url": current, "text": text, "fetched_at": _now_iso()}
+                        return {"url": current, "text": text, "fetched_at": _now_iso(), "via_proxy": proxy_mode}
                     return None
         return None
 
     try:
-        return await asyncio.wait_for(_fetch(), timeout=timeout)
+        try:
+            direct = await asyncio.wait_for(_fetch(), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError, TypeError, LookupError, asyncio.TimeoutError) as exc:
+            logger.warning("抓页直连失败（%s）", type(exc).__name__)
+            direct = None
+        if direct or not proxy_url:
+            return direct
+        logger.info("抓页直连失败，使用回环代理重试: %s", urlparse(proxy_url).netloc)
+        return await asyncio.wait_for(_fetch(proxy=proxy_url), timeout=timeout)
+    except asyncio.CancelledError:
+        raise
     except (httpx.HTTPError, OSError, ValueError, TypeError, LookupError, asyncio.TimeoutError) as exc:
-        logger.warning("抓页失败（%s）", type(exc).__name__)
+        logger.warning("抓页代理回退失败（%s）", type(exc).__name__)
         return None
 
 
+def _normalize_extracted_text(value: str, *, max_chars: int) -> str:
+    text = html.unescape(value or "")
+    text = _WS_RE.sub(" ", text)
+    text = _NL_RE.sub("\n\n", text)
+    text = text.strip()
+    return text if max_chars <= 0 else text[:max_chars]
+
+
+def _extract_main_text(markup: str, *, max_chars: int) -> str:
+    """用 lxml 选正文主体；解析失败返回空串交给正则回退。"""
+    if lxml_html is None:
+        return ""
+    try:
+        document = lxml_html.fromstring(markup or "")
+        for node in document.xpath(
+            "//script|//style|//nav|//aside|//footer|//header|//form|//iframe|//noscript|"
+            "//*[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'advert')]|"
+            "//*[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'comment')]"
+        ):
+            parent = node.getparent()
+            if parent is not None:
+                parent.remove(node)
+        candidates = document.xpath(
+            "//article|//main|//*[@role='main']|//*[@id='content']|"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' content ')]"
+        )
+        root = candidates[0] if candidates else document
+        text = "\n".join(part.strip() for part in root.itertext() if part.strip())
+        return _normalize_extracted_text(text, max_chars=max_chars)
+    except (AttributeError, TypeError, ValueError, LookupError):
+        return ""
+
+
 def extract_text(markup: str) -> str:
-    """HTML → 纯文本（无第三方解析依赖）。"""
-    body = _SCRIPT_RE.sub(" ", markup or "")
+    """HTML → 有界正文；lxml 优先，解析失败时回退纯正则实现。"""
+    max_chars = _bounded_limit(
+        getattr(settings, "search_max_text_chars", 12_000), 12_000, 50_000,
+    )
+    extracted = _extract_main_text(markup, max_chars=max_chars)
+    if extracted:
+        return extracted
+    body = _NOISE_BLOCK_RE.sub(" ", markup or "")
+    body = _NOISE_ATTR_RE.sub(" ", body)
     body = _TAG_RE.sub("\n", body)
-    body = html.unescape(body)
-    body = _WS_RE.sub(" ", body)
-    body = _NL_RE.sub("\n\n", body)
-    return body.strip()[:8000]
+    return _normalize_extracted_text(body, max_chars=max_chars)
 
 
 def _title_features(title: str) -> set[str]:
@@ -1133,6 +1456,148 @@ def _similar(left: set[str], right: set[str]) -> float:
     if not union:
         return 0.0
     return len(left & right) / len(union)
+
+
+def _source_host(item: dict[str, Any]) -> str:
+    try:
+        return (urlparse(str(item.get("url") or "")).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _source_body(item: dict[str, Any]) -> str:
+    for key in ("content", "text", "summary"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def source_quality_signals(
+    item: dict[str, Any],
+    *,
+    query: str = "",
+    source_count: int | None = None,
+) -> dict[str, Any]:
+    """提取跨类别来源质量信号；只做减法门禁，不把域名当官方白名单。"""
+    body = _source_body(item)
+    title = str(item.get("title") or "").strip()
+    source = str(item.get("source") or "").strip()
+    host = _source_host(item)
+    haystack = " ".join((title, body, source, str(item.get("url") or "")))
+    target = _reference_title_text(query) if query else ""
+    if not target and query:
+        target = clean_query(query)
+    entity_hit = 0.0
+    if target:
+        needle = _novel_compact(target)
+        compact = _novel_compact(haystack)
+        entity_hit = max(
+            1.0 if needle and needle in compact else 0.0,
+            _similar(_title_features(target), _title_features(haystack)),
+        )
+    token_count = max(1, len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", body)))
+    boilerplate_hits = len(_QUALITY_BOILERPLATE_RE.findall(body))
+    boilerplate_ratio = min(1.0, boilerplate_hits / token_count)
+    has_facts = bool(_QUALITY_FACT_RE.search(body))
+    try:
+        independent_sources = int(item.get("source_count") or source_count or 1)
+    except (TypeError, ValueError, OverflowError):
+        independent_sources = 1
+    independent_sources = max(1, min(independent_sources, 20))
+    low_domain = _host_matches(host, _LOW_QUALITY_DOMAINS)
+    low_template = bool(_LOW_QUALITY_TEXT_RE.search(haystack))
+    # 这是已知低质来源的减法信号，不是按类别建立的一手来源白名单；
+    # 其余来源仍只由正文内容信号决定，模板噪声需要达到比例门槛才剔除。
+    hard_reject = bool(low_domain or (low_template and boilerplate_ratio >= 0.04))
+    body_score = min(1.0, len(body) / 1200.0)
+    multi_source_score = min(1.0, independent_sources / 3.0)
+    score = (
+        body_score * 0.35
+        + entity_hit * 0.25
+        + (1.0 if has_facts else 0.0) * 0.20
+        + (1.0 - boilerplate_ratio) * 0.10
+        + multi_source_score * 0.10
+    )
+    return {
+        "body_len": len(body),
+        "entity_hit": round(entity_hit, 4),
+        "has_facts": has_facts,
+        "boilerplate_ratio": round(boilerplate_ratio, 6),
+        "source_count": independent_sources,
+        "low_domain": low_domain,
+        "low_quality": hard_reject,
+        "quality_score": round(max(0.0, min(1.0, score)), 4),
+    }
+
+
+def rank_general_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """通用来源质量门禁；低质命中剔除，其余按内容信号稳定排序。"""
+    items = [item for item in (results or []) if isinstance(item, dict)]
+    host_counts: dict[str, int] = {}
+    for item in items:
+        host = _source_host(item) or str(item.get("url") or "")
+        host_counts[host] = host_counts.get(host, 0) + 1
+    ranked: list[tuple[float, int, dict[str, Any]]] = []
+    for index, item in enumerate(items):
+        host = _source_host(item) or str(item.get("url") or "")
+        signals = source_quality_signals(
+            item,
+            query=query,
+            source_count=host_counts.get(host, 1),
+        )
+        if signals["low_quality"]:
+            continue
+        enriched = dict(item)
+        enriched["_web_quality"] = signals
+        ranked.append((float(signals["quality_score"]), index, enriched))
+    ranked.sort(key=lambda value: (-value[0], value[1]))
+    return [item for _, _, item in ranked]
+
+
+def compact_source_text(text: str, *, query: str = "", max_chars: int = 1200) -> str:
+    """围绕实体、事实数字和字段标签压缩正文，保留原文顺序且有界。"""
+    value = html.unescape(str(text or ""))
+    value = _WS_RE.sub(" ", value)
+    value = _NL_RE.sub("\n\n", value).strip()
+    if max_chars <= 0 or len(value) <= max_chars:
+        return value
+    chunks = [part.strip() for part in re.split(r"\n{2,}|(?<=[。！？!?])\s*", value) if part.strip()]
+    if not chunks:
+        return value[:max_chars]
+    target = _reference_title_text(query) if query else ""
+    if not target and query:
+        target = clean_query(query)
+    target_compact = _novel_compact(target)
+    target_features = _title_features(target)
+    scored: list[tuple[float, int, str]] = []
+    for index, chunk in enumerate(chunks):
+        compact = _novel_compact(chunk)
+        score = 0.0
+        if target_compact and target_compact in compact:
+            score += 4.0
+        score += _similar(target_features, _title_features(chunk)) * 3.0
+        if _QUALITY_FACT_RE.search(chunk):
+            score += 2.0
+        if re.search(r"作者|主角|类型|分类|时间|日期|章节|字数|版本|发布|更新|简介|设定", chunk, re.IGNORECASE):
+            score += 1.5
+        if index == 0:
+            score += 0.5
+        score -= min(1.0, len(_QUALITY_BOILERPLATE_RE.findall(chunk)) / 3.0)
+        scored.append((score, index, chunk))
+    selected: list[tuple[int, str]] = []
+    used = 0
+    for _, index, chunk in sorted(scored, key=lambda value: (-value[0], value[1])):
+        if used >= max_chars:
+            break
+        remaining = max_chars - used
+        piece = chunk if len(chunk) <= remaining else chunk[:remaining].rstrip()
+        if not piece:
+            continue
+        selected.append((index, piece))
+        used += len(piece)
+    selected.sort(key=lambda value: value[0])
+    return " ".join(piece for _, piece in selected).strip()[:max_chars]
 
 
 def cluster_events(
@@ -1196,8 +1661,6 @@ def cluster_events(
 
 def time_range_default() -> str:
     """默认检索时间窗（配置项，非法值回退 week）。"""
-    from app.config import settings
-
     value = str(getattr(settings, "search_time_range", "week") or "week").strip()
     return value if value in TIME_RANGES else "week"
 
@@ -1311,7 +1774,10 @@ def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
             stamp = published
         else:
             stamp = f"{published}（据链接推断）"
-        summary = str(item.get("summary") or "").strip()[:200]
+        raw_body = str(
+            item.get("summary") or item.get("text") or item.get("content") or ""
+        ).strip()
+        summary = compact_source_text(raw_body, query=title, max_chars=200)
         line = f"- {title}（{source}，{stamp}）"
         line += f"\n  来源链接：{url}"
         if summary:
@@ -1330,8 +1796,6 @@ def widen_time_range(time_range: str) -> str:
 
 def _min_results() -> int:
     """达标线：低于此结果数视为证据不足，继续放宽。"""
-    from app.config import settings
-
     try:
         return max(1, int(getattr(settings, "search_min_results", 3)))
     except (TypeError, ValueError):
@@ -1387,13 +1851,10 @@ async def search_and_cluster(
     而同一事件实际有 52 条。
     """
     search_category = category if category in {"news", "general"} else "news"
-    # general 网页查询可能依赖书名问号等标点；新闻查询仍剥掉口语包装。
-    if search_category == "general":
-        cleaned = str(query or "").strip()[:400]
-        alt = str(alt_query or "").strip()[:400] if alt_query else ""
-    else:
-        cleaned = clean_query(query)
-        alt = clean_query(alt_query) if alt_query else ""
+    # 所有类别统一剥离口语包装；clean_query 会在结果过短时回退原文，
+    # 因此书名号、实体词和真正的检索内容仍会保留。
+    cleaned = clean_query(query)[:400]
+    alt = clean_query(alt_query)[:400] if alt_query else ""
     candidates = [cleaned] + ([alt] if alt and alt != cleaned else [])
     initial_window = time_range if search_category == "news" else ""
 
@@ -1417,12 +1878,14 @@ async def search_and_cluster(
     last_attempt: tuple[str, str, str] | None = None
     tried: set[tuple[str, str, str]] = set()
     attempt_log: list[dict[str, Any]] = []
-    request_cap = int(_bounded_number(max_attempts, 9, 9)) if max_attempts is not None else 9
+    configured_cap = max(1, int(getattr(settings, "search_request_cap", 4)))
+    request_cap = int(_bounded_number(max_attempts, configured_cap, 9)) if max_attempts is not None else configured_cap
     # 显式 0 的语义就是零次请求；默认策略仍至少允许一次。
-    if max_attempts is None:
-        request_cap = max(1, request_cap)
-    else:
+    if max_attempts is not None:
         request_cap = max(0, request_cap)
+    # 深挖角度是独立的补充证据，保留至少两条并发槽位；不改变普通查询的预算上限。
+    if deep_dive and max_attempts is None:
+        request_cap = max(request_cap, 6)
     request_count = 0
     budget_exhausted = False
     deadline = None
@@ -1445,8 +1908,19 @@ async def search_and_cluster(
             return False
         return request_count < request_cap
 
+    raw_hits = 0
+    backend_statuses: list[str] = []
+    unresponsive_engines: set[str] = set()
+
     def merge_batch(items: Any) -> int:
+        nonlocal raw_hits
         added = 0
+        if isinstance(items, SearchBatch):
+            raw_hits += items.raw_hits or len(items)
+            backend_statuses.append(items.backend_status)
+            unresponsive_engines.update(items.unresponsive_engines)
+        elif isinstance(items, list):
+            raw_hits += len(items)
         for item in items[:100] if isinstance(items, list) else []:
             if not isinstance(item, dict) or len(results) >= 100:
                 continue
@@ -1489,6 +1963,7 @@ async def search_and_cluster(
                 break
             continue
         record["received"] = len(batch) if isinstance(batch, list) else 0
+        record["backend_status"] = getattr(batch, "backend_status", "ok")
         record["added"] = merge_batch(batch)
         if record["added"]:
             used = key  # 最后实际贡献来源的查询，而不是空批次的查询
@@ -1539,6 +2014,11 @@ async def search_and_cluster(
             budget_exhausted = True
         logger.warning("GDELT 合并失败（%s），仅用已有检索结果", type(exc).__name__)
 
+    # 搜索结果进入任何最终资料块前都经过通用内容门禁。这里不按域名列
+    # 白名单，而是用正文长度、实体重叠、事实密度和模板噪声排序/减法。
+    before_quality = len(results)
+    results = rank_general_results(cleaned, results)
+    quality_filtered = max(0, before_quality - len(results))
     events = cluster_events(results) if results else []
     return {
         "query": query,
@@ -1552,10 +2032,28 @@ async def search_and_cluster(
         "attempts": len(tried),
         "attempt_log": attempt_log,
         "request_count": request_count,
+        "stage_counts": {
+            "raw_hits": raw_hits,
+            "kept_after_dedupe": before_quality,
+            "kept_after_quality": len(results),
+            "quality_filtered": quality_filtered,
+            "requests": request_count,
+        },
+        "backend_status": (
+            "cooling_down" if "cooling_down" in backend_statuses else
+            "empty_backend" if backend_statuses and all(status == "empty_backend" for status in backend_statuses) else
+            "error" if "error" in backend_statuses else
+            "timeout" if "timeout" in backend_statuses else
+            "ok" if results else (backend_statuses[-1] if backend_statuses else "unavailable")
+        ),
+        "backend_statuses": list(dict.fromkeys(backend_statuses)),
+        "unresponsive_engines": sorted(unresponsive_engines)[:20],
         "budget_exhausted": budget_exhausted,
         "threshold_met": len(results) >= threshold,
         "stop_reason": "budget_exhausted" if budget_exhausted else (
-            "threshold_met" if len(results) >= threshold else "attempt_limit" if request_count >= request_cap else "search_complete"
+            "quality_gate_empty" if before_quality and not results else
+            "threshold_met" if len(results) >= threshold else
+            "attempt_limit" if request_count >= request_cap else "search_complete"
         ),
         "gdelt_count": gdelt_count,
         "angle_added": angle_added,

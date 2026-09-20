@@ -51,12 +51,17 @@ class _FakeClient:
 
 @pytest.fixture(autouse=True)
 def backend(monkeypatch):
+    web_provider.reset_search_state()
     monkeypatch.setattr(settings, "search_backend_url", "http://127.0.0.1:8888")
     monkeypatch.setattr(settings, "search_timeout", 5.0)
     monkeypatch.setattr(settings, "search_max_results", 10)
+    monkeypatch.setattr(settings, "search_min_interval_seconds", 0.0)
+    # 默认关闭缓存，避免单元测试之间共享后端结果；缓存行为单独覆盖。
+    monkeypatch.setattr(settings, "search_cache_ttl_seconds", 0.0)
     # 默认关掉 GDELT，避免主检索测试误连真实 API；需要时用例内单独开
     monkeypatch.setattr(settings, "gdelt_enabled", False)
     yield
+    web_provider.reset_search_state()
 
 
 @pytest.fixture
@@ -376,6 +381,40 @@ def test_format_sources_marks_unknown_and_inferred_time():
     assert "（媒体A，2026-09-10）" in text
     assert "2026-09-09（据链接推断）" in text
     assert "时间未见标注" in text
+
+
+def test_general_quality_uses_content_signals_without_official_domain_whitelist():
+    results = web_provider.rank_general_results(
+        "TCP 三次握手原理",
+        [
+            {
+                "title": "TCP 三次握手原理与状态转换",
+                "url": "https://ordinary.example/tcp",
+                "source": "ordinary.example",
+                "summary": "TCP 三次握手在 2026-09 通过 SYN、SYN-ACK 和 ACK 建立连接；第 1 步客户端发送序列号，第 2 步服务端确认并返回序列号，第 3 步客户端确认。",
+            },
+            {
+                "title": "TCP 最新章节目录",
+                "url": "https://ordinary.example/chapters",
+                "source": "ordinary.example",
+                "summary": "全文免费，最新章节目录，加入书架，推荐本书。",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in results] == ["https://ordinary.example/tcp"]
+    quality = results[0]["_web_quality"]
+    assert {"body_len", "entity_hit", "has_facts", "boilerplate_ratio", "source_count"} <= quality.keys()
+    assert quality["entity_hit"] > 0
+    assert quality["has_facts"] is True
+    assert "quality" not in web_provider.format_sources(results)
+
+
+def test_compact_source_text_keeps_relevant_facts_under_bound():
+    text = "导航广告。" + "无关段落。" * 30 + "TCP 三次握手在 2026 年通过 SYN、SYN-ACK、ACK 完成连接建立。"
+    compact = web_provider.compact_source_text(text, query="TCP 三次握手", max_chars=80)
+    assert len(compact) <= 80
+    assert "TCP" in compact and "2026" in compact
 
 
 # ── 空结果兜底：上游引擎会随机 CAPTCHA/超时 ─────────────────
@@ -1017,3 +1056,98 @@ def test_fetch_cancellation_closes_stream_and_propagates(page_network):
         assert stream.closed
 
     asyncio.run(scenario())
+
+
+def test_fetch_allows_more_than_sixteen_public_dns_addresses(page_network):
+    page_network["dns"]["many.example"] = [
+        str(ipaddress.ip_address((8 << 24) | (8 << 16) | (8 << 8) | index))
+        for index in range(1, 21)
+    ]
+    page_network["handler"] = lambda request: _page_response("<main>多地址站点正文</main>")
+    page = asyncio.run(web_provider.fetch_page("https://many.example/article"))
+    assert page and page["text"] == "多地址站点正文"
+    assert len(page_network["calls"]) == 1
+
+
+def test_extract_text_prefers_main_and_removes_layout_nodes():
+    markup = (
+        "<html><body><nav>导航噪声</nav><script>secret_script()</script>"
+        "<main><p>正文主体一。</p><p>正文主体二。</p></main>"
+        "<div class='comments'>评论噪声</div><footer>页脚噪声</footer></body></html>"
+    )
+    text = web_provider.extract_text(markup)
+    assert "正文主体一" in text and "正文主体二" in text
+    assert "导航噪声" not in text
+    assert "secret_script" not in text
+    assert "评论噪声" not in text
+    assert "页脚噪声" not in text
+
+
+def test_extract_text_regex_fallback_remains_available(monkeypatch):
+    monkeypatch.setattr(web_provider, "lxml_html", None)
+    text = web_provider.extract_text(
+        "<nav>导航</nav><main><p>正文&amp;内容</p></main><script>bad()</script>"
+    )
+    assert "正文&内容" in text
+    assert "导航" not in text and "bad()" not in text
+
+
+def test_fetch_page_retries_once_with_loopback_proxy_after_direct_failure(monkeypatch):
+    class StreamContext:
+        def __init__(self, response, *, fail=False):
+            self.response = response
+            self.fail = fail
+
+        async def __aenter__(self):
+            if self.fail:
+                raise OSError("direct connect failed")
+            return self.response
+
+        async def __aexit__(self, *exc):
+            await self.response.aclose()
+            return False
+
+    class Client:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            type(self).instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            response = web_provider.httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                stream=_PageStream(["<main>代理正文</main>".encode("utf-8")]),
+                request=web_provider.httpx.Request(
+                    "GET", "https://proxy.example/article"
+                ),
+            )
+            return StreamContext(response, fail="proxy" not in self.kwargs)
+
+
+    async def resolve(_url, **kwargs):
+        return [str(ipaddress.ip_address(0x5DB8D822))]
+
+    monkeypatch.setattr(settings, "fetch_page_proxy", "http://localhost:7890")
+    monkeypatch.setattr(web_provider, "_resolve_public_addresses", resolve)
+    monkeypatch.setattr(web_provider.httpx, "AsyncClient", Client)
+    page = asyncio.run(web_provider.fetch_page("https://proxy.example/article"))
+    assert page and page["text"] == "代理正文" and page["via_proxy"] is True
+    assert len(Client.instances) == 2
+    assert Client.instances[1].kwargs["proxy"] == "http://localhost:7890"
+
+
+def test_fetch_proxy_does_not_bypass_private_literal(page_network, monkeypatch):
+    monkeypatch.setattr(settings, "fetch_page_proxy", "http://localhost:7890")
+    page_network["handler"] = lambda request: pytest.fail("私网字面量不得进入代理")
+    assert asyncio.run(web_provider.fetch_page(
+        f"http://{_NONPUBLIC_TEST_ADDRESSES[0]}/secret"
+    )) is None
+    assert not page_network["calls"]

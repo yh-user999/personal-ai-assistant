@@ -563,6 +563,24 @@ async def _retrieve_group_web(
             plan["web_page_failures"] = research.page_failures
             plan["web_research_elapsed_ms"] = research.elapsed_ms
             plan["web_research_stop_reason"] = research.stop_reason
+            plan["web_backend_status"] = str(getattr(research, "backend_status", "") or "")[:32]
+            plan["web_backend_statuses"] = list(getattr(research, "backend_statuses", ()) or ())[:20]
+            plan["web_unresponsive_engines"] = list(getattr(research, "unresponsive_engines", ()) or ())[:20]
+            stage_counts = dict(getattr(research, "stage_counts", {}) or {})
+            plan["web_stage_counts"] = stage_counts
+            plan["web_raw_hits"] = int(stage_counts.get("raw_hits") or 0)
+            plan["web_kept_after_dedupe"] = int(stage_counts.get("kept_after_dedupe") or 0)
+            plan["web_kept_after_quality"] = int(stage_counts.get("kept_after_quality") or 0)
+            plan["web_quality_filtered"] = int(getattr(research, "quality_filtered", 0) or stage_counts.get("quality_filtered") or 0)
+            plan["web_evidence_rejected"] = int(getattr(research, "evidence_rejected", 0) or 0)
+            plan["web_only_candidates"] = bool(
+                plan["web_evidence_rejected"]
+                or (
+                    research.page_failures > 0
+                    and int(stage_counts.get("kept_after_quality") or 0) > 0
+                )
+            )
+            plan["web_request_count"] = int(stage_counts.get("requests") or 0)
             plan["web_report_count"] = len(sources)
             plan["web_reliable_sources"] = research.has_reliable_sources
             if not sources or not research.has_reliable_sources:
@@ -616,11 +634,21 @@ async def _retrieve_group_web(
         events = web_provider.cluster_events(results) if results else []
         evidence = investigation.build_evidence(query, results)
         sources = list(evidence.get("sources") or [])
+        stage_counts = dict(data.get("stage_counts") or {})
         plan["web_query"] = query[:200]
         plan["web_raw_report_count"] = len(raw_results)
         plan["web_report_count"] = len(results)
         plan["web_reliable_sources"] = bool(sources) if is_reference_lookup else None
         plan["web_observed_at"] = data.get("observed_at", "")
+        plan["web_backend_status"] = str(data.get("backend_status") or "")[:32]
+        plan["web_backend_statuses"] = list(data.get("backend_statuses") or [])[:20]
+        plan["web_unresponsive_engines"] = list(data.get("unresponsive_engines") or [])[:20]
+        plan["web_stage_counts"] = stage_counts
+        plan["web_raw_hits"] = int(stage_counts.get("raw_hits") or data.get("result_count") or 0)
+        plan["web_kept_after_dedupe"] = int(stage_counts.get("kept_after_dedupe") or len(raw_results))
+        plan["web_kept_after_quality"] = int(stage_counts.get("kept_after_quality") or len(raw_results))
+        plan["web_quality_filtered"] = int(stage_counts.get("quality_filtered") or 0)
+        plan["web_request_count"] = int(stage_counts.get("requests") or data.get("request_count") or 0)
         if not sources:
             reservation.release()
             plan["group_web_search"] = "no_sources"
@@ -898,6 +926,25 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
             plan["web_page_failures"] = research.page_failures
             plan["web_research_elapsed_ms"] = research.elapsed_ms
             plan["web_research_stop_reason"] = research.stop_reason
+            plan["web_backend_status"] = str(getattr(research, "backend_status", "") or "")[:32]
+            plan["web_backend_statuses"] = list(getattr(research, "backend_statuses", ()) or ())[:20]
+            plan["web_unresponsive_engines"] = list(getattr(research, "unresponsive_engines", ()) or ())[:20]
+            stage_counts = dict(getattr(research, "stage_counts", {}) or {})
+            plan["web_stage_counts"] = stage_counts
+            plan["web_raw_hits"] = int(stage_counts.get("raw_hits") or 0)
+            plan["web_kept_after_dedupe"] = int(stage_counts.get("kept_after_dedupe") or 0)
+            plan["web_kept_after_quality"] = int(stage_counts.get("kept_after_quality") or 0)
+            plan["web_quality_filtered"] = int(getattr(research, "quality_filtered", 0) or stage_counts.get("quality_filtered") or 0)
+            plan["web_evidence_rejected"] = int(getattr(research, "evidence_rejected", 0) or 0)
+            plan["web_only_candidates"] = bool(
+                plan["web_evidence_rejected"]
+                or (
+                    research.page_failures > 0
+                    and int(stage_counts.get("kept_after_quality") or 0) > 0
+                )
+            )
+            plan["web_request_count"] = int(stage_counts.get("requests") or 0)
+            plan["web_report_count"] = len(research.sources)
             plan["web_reliable_sources"] = research.has_reliable_sources
             if research.has_reliable_sources:
                 plan["web_has_sources"] = True

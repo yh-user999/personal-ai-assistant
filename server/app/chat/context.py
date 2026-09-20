@@ -270,7 +270,8 @@ def build_context(req: ChatRequest, request: Request, memory_module: Any) -> Cha
         elif route_name.endswith("/stream"):
             channel = "stream"
         elif getattr(auth, "role", "") == "qq":
-            channel = "qq"
+            # 群聊来自 OneBot 网关时单独归类，便于区分私聊 QQ 与群联网请求。
+            channel = "onebot" if group_id else "qq"
         else:
             channel = "chat"
     trace = TraceContext(

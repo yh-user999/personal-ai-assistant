@@ -205,7 +205,7 @@ def test_novel_research_keeps_search_snippet_as_partial_evidence(monkeypatch):
                 "title": "没钱修什么仙？（熊狼狗）作品资料",
                 "url": "https://book.qq.com/kol-rec/example",
                 "source": "book.qq.com",
-                "summary": "仙侠 修真文明 413万字，张羽与法力贷。",
+                "summary": "仙侠修真题材，作品资料摘要提到作者熊狼狗、全书约 413 万字，主角张羽在修真文明中面对法力贷与持续修炼成本；摘要还提及世界设定、角色处境、修行资源和债务压力等线索，但未提供可直接读取的作品页正文，以下内容只能作为有限的搜索摘要证据，不能替代完整章节或官方正文。",
             }],
             "events": [],
             "has_sources": True,
@@ -228,7 +228,98 @@ def test_novel_research_keeps_search_snippet_as_partial_evidence(monkeypatch):
     assert result.page_failures == 1
     assert result.evidence["status"] == "partial"
     assert result.evidence["gaps"][0]["id"] == "web_research_page_body_unavailable"
-    assert "413万字" in result.prompt_block()
+    assert "413 万字" in result.prompt_block()
+    assert "证据类型：搜索摘要" in result.prompt_block()
+    assert "证据类型：页面正文" not in result.prompt_block()
+
+
+def test_short_search_snippet_enters_evidence_gap_not_sources(monkeypatch):
+    async def short_search(*args, **kwargs):
+        return {
+            "results": [{
+                "title": "TCP 三次握手资料",
+                "url": "https://example.com/tcp",
+                "source": "example.com",
+                "summary": "只有标题附近的一小段摘要。",
+            }],
+            "backend_status": "ok",
+            "backend_statuses": ["ok"],
+            "stage_counts": {"raw_hits": 1, "kept_after_dedupe": 1, "requests": 1},
+        }
+
+    async def unavailable_page(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", short_search)
+    monkeypatch.setattr(web_provider, "fetch_page", unavailable_page)
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我搜索 TCP 三次握手资料",
+            settings=_settings(search_min_evidence_chars=120),
+        )
+    )
+
+    assert result.sources == []
+    assert result.evidence_rejected == 1
+    assert any(gap["id"] == "web_research_evidence_too_short" for gap in result.evidence["gaps"])
+    assert result.prompt_block() == ""
+
+
+def test_research_refills_after_first_page_failure(monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return {
+            "results": [
+                {"title": "TCP 首选页面", "url": "https://first.example/tcp", "source": "first.example", "summary": "候选"},
+                {"title": "TCP 备用页面", "url": "https://second.example/tcp", "source": "second.example", "summary": "候选"},
+            ],
+            "backend_status": "ok",
+            "backend_statuses": ["ok"],
+            "stage_counts": {"raw_hits": 2, "kept_after_dedupe": 2, "requests": 1},
+        }
+
+    async def fetch(url):
+        if "first.example" in url:
+            raise OSError("first candidate failed")
+        return {
+            "url": url,
+            "text": "TCP 备用页面正文说明三次握手过程；第 1 步发送 SYN，第 2 步返回 SYN-ACK，第 3 步确认 ACK，连接随后进入已建立状态。",
+        }
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", fake_search)
+    monkeypatch.setattr(web_provider, "fetch_page", fetch)
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我搜索 TCP 三次握手资料",
+            settings=_settings(web_research_max_pages=1),
+        )
+    )
+
+    assert result.pages_read == 1
+    assert result.page_failures == 1
+    assert [source["url"] for source in result.sources] == ["https://second.example/tcp"]
+    assert result.sources[0]["evidence_level"] == "webpage"
+
+
+def test_backend_degradation_is_distinguished_in_evidence_gap(monkeypatch):
+    async def failed_search(*args, **kwargs):
+        return {
+            "results": [],
+            "backend_status": "timeout",
+            "backend_statuses": ["timeout"],
+            "stage_counts": {"raw_hits": 0, "kept_after_dedupe": 0, "requests": 1},
+        }
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", failed_search)
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我搜索 TCP 三次握手资料",
+            settings=_settings(),
+        )
+    )
+
+    assert result.sources == []
+    assert result.backend_status == "timeout"
+    assert any(gap["id"] == "web_research_backend_unavailable" for gap in result.evidence["gaps"])
 
 
 def test_novel_research_with_only_low_quality_sources_degrades_safely(monkeypatch):

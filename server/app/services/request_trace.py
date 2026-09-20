@@ -290,19 +290,39 @@ def record(
                 "web_fallback", "web_attempts",
                 "web_origin_count", "web_max_reprint", "web_unknown_count",
                 "web_claim_conflicts", "web_claim_singles", "web_claim_extracted",
-                "web_gdelt_count",
+                "web_backend_status", "web_backend_statuses", "web_unresponsive_engines",
+                "web_raw_hits", "web_kept_after_dedupe", "web_kept_after_quality",
+                "web_quality_filtered", "web_evidence_rejected", "web_only_candidates",
+                "web_request_count", "web_stage_counts", "web_gdelt_count",
                 "hotboard_count", "hotboard_ok", "hotboard_empty", "hotboard_unavailable",
                 "web_deep_dive", "web_angle_added", "investigation_required",
                 "investigation_status", "investigation_rounds", "investigation_search_calls",
                 "investigation_pages_read", "investigation_claim_count", "investigation_gap_count",
                 "investigation_elapsed_ms", "investigation_stop_reason", "investigation_resumed", "investigation_analysis_error",
             },
-            numeric={"web_report_count", "web_event_count"},
+            numeric={
+                "web_report_count", "web_event_count", "web_raw_hits",
+                "web_kept_after_dedupe", "web_kept_after_quality", "web_quality_filtered",
+                "web_evidence_rejected", "web_request_count",
+            },
         )
         if isinstance(response_plan, dict):
             summary = safe_investigation_summary(response_plan.get("investigation_summary"))
             if summary:
                 safe_plan["investigation_summary"] = summary
+            counts = response_plan.get("web_stage_counts")
+            if isinstance(counts, dict):
+                safe_counts = {}
+                for key in (
+                    "raw_hits", "kept_after_dedupe", "kept_after_quality",
+                    "quality_filtered", "requests",
+                ):
+                    try:
+                        safe_counts[key] = max(0, int(counts.get(key) or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                if safe_counts:
+                    safe_plan["web_stage_counts"] = safe_counts
         safe_social = _safe_social_judgment(social_judgment)
         safe_trace_id = _safe_text(trace_id, 160)
         safe_request_id = _safe_text(request_id, 160)

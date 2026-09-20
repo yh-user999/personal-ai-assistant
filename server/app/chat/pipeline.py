@@ -226,7 +226,8 @@ async def _record_request_trace(
     system: str = "",
 ) -> None:
     """统一收尾写入 Trace；只保存统计元数据，不保存 prompt/图片原文。"""
-    if not (ctx.is_owner and runtime.settings.request_trace_enabled):
+    # 主人私聊与群作用域请求都允许落脱敏 trace；普通访客私聊仍不落库。
+    if not ((ctx.is_owner or ctx.is_group) and runtime.settings.request_trace_enabled):
         return
     if bundle is not None:
         trace = bundle.trace
@@ -265,8 +266,8 @@ async def _record_request_trace(
         search_ms,
         trace_id=ctx.trace.trace_id,
         request_id=ctx.request_id or "",
-        channel=ctx.trace.channel,
-        route_name=ctx.trace.route_name,
+        channel="onebot" if ctx.is_group else ctx.trace.channel,
+        route_name="group" if ctx.is_group else ctx.trace.route_name,
         retrieval=ctx.trace.retrieval,
         stages=ctx.trace.stages,
         reflection=ctx.trace.reflection,
@@ -638,6 +639,9 @@ def _enforce_web_sources(
 
     source_text = _compact_source_text(bundle)
     if not source_text:
+        if plan.get("web_only_candidates"):
+            mark("candidates_without_readable_body")
+            return "只检索到标题或候选，未能读取足够正文，暂时无法核实。"
         if plan.get("web_no_sources") or plan.get("web_unavailable"):
             mark("no_sources_fixed_reply")
             return "未查到可靠的公开来源，暂时无法核实。"

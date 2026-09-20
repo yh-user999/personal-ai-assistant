@@ -16,6 +16,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from app.chat import github_provider, web_provider
+from app.config import settings
 
 ResearchKind = Literal["none", "novel", "document", "project", "url", "knowledge", "news"]
 
@@ -55,6 +56,12 @@ class ResearchResult:
     page_failures: int = 0
     provider: str = "searxng"
     source_preference: tuple[str, ...] = ()
+    backend_status: str = "ok"
+    backend_statuses: tuple[str, ...] = ()
+    unresponsive_engines: tuple[str, ...] = ()
+    stage_counts: dict[str, int] = field(default_factory=dict)
+    quality_filtered: int = 0
+    evidence_rejected: int = 0
     stop_reason: str = "completed"
     elapsed_ms: int = 0
 
@@ -70,25 +77,64 @@ class ResearchResult:
 
     @property
     def evidence(self) -> dict[str, Any]:
-        partial = bool(self.sources) and self.kind == "novel" and (
-            self.pages_read == 0 or self.page_failures > 0
+        levels = {
+            str(source.get("evidence_level") or "search_snippet")
+            for source in self.sources
+            if isinstance(source, dict)
+        }
+        partial = bool(self.sources) and (
+            self.pages_read == 0
+            or self.page_failures > 0
+            or "search_snippet" in levels
         )
-        gaps = []
+        gaps: list[dict[str, Any]] = []
+        if partial:
+            gaps.append({
+                "id": "web_research_page_body_unavailable",
+                "question": self.query[:240],
+                "why": "本轮包含搜索摘要或页面正文未完整读取；只能回答摘录明确支持的内容，不能把搜索摘要称为已读取正文",
+                "query": self.query[:400],
+                "priority": 60,
+            })
         if not self.sources:
+            if self.page_failures > 0 and self.pages_read == 0:
+                gaps.append({
+                    "id": "web_research_page_body_unavailable",
+                    "question": self.query[:240],
+                    "why": "候选页面未能读取到正文，标题和链接不能替代正文证据",
+                    "query": self.query[:400],
+                    "priority": 90,
+                })
+            if self.evidence_rejected:
+                gaps.append({
+                    "id": "web_research_evidence_too_short",
+                    "question": self.query[:240],
+                    "why": "候选来源没有达到最小有效摘录长度，标题或链接不能单独作为证据",
+                    "query": self.query[:400],
+                    "priority": 90,
+                })
+            if self.quality_filtered:
+                gaps.append({
+                    "id": "web_research_quality_gate_empty",
+                    "question": self.query[:240],
+                    "why": "候选来源未通过通用内容相关性或模板噪声门禁",
+                    "query": self.query[:400],
+                    "priority": 90,
+                })
+            if self.backend_status in {"unavailable", "empty_backend", "error", "timeout", "cooling_down"}:
+                gaps.append({
+                    "id": "web_research_backend_unavailable",
+                    "question": self.query[:240],
+                    "why": "检索后端本轮不可用或处于降级状态",
+                    "query": self.query[:400],
+                    "priority": 100,
+                })
             gaps.append({
                 "id": "web_research_no_sources",
                 "question": self.query[:240],
                 "why": "本轮没有取得可用网页来源",
                 "query": self.query[:400],
                 "priority": 100,
-            })
-        elif partial:
-            gaps.append({
-                "id": "web_research_page_body_unavailable",
-                "question": self.query[:240],
-                "why": "已取得搜索摘要，但作品页正文未成功读取；只能回答摘要明确支持的字段",
-                "query": self.query[:400],
-                "priority": 60,
             })
         return {
             "version": 1,
@@ -103,6 +149,7 @@ class ResearchResult:
                 "mode": "web_research",
                 "pages_read": self.pages_read,
                 "page_failures": self.page_failures,
+                "source_levels": sorted(levels),
                 "source_preference": list(self.source_preference),
             },
         }
@@ -110,6 +157,12 @@ class ResearchResult:
     def prompt_block(self) -> str:
         if not self.sources:
             return ""
+        excerpt_limit = _bounded_cap(
+            _setting(settings, "search_source_excerpt_chars", 1200), 1200, 12_000,
+        )
+        prompt_limit = _bounded_cap(
+            _setting(settings, "web_research_prompt_max_chars", 12_000), 12_000, 50_000,
+        )
         lines = [f"【通用网页研究资料·{self.kind}】", f"研究问题：{self.query[:300]}"]
         if self.kind == "novel":
             card = web_provider.novel_evidence_card(self.sources)
@@ -119,20 +172,26 @@ class ResearchResult:
             title = str(source.get("title") or "").strip()
             url = str(source.get("url") or "").strip()
             origin = str(source.get("origin") or source.get("source") or "").strip()
-            excerpt = str(source.get("text") or source.get("summary") or "").strip()[:1200]
+            level = str(source.get("evidence_level") or "search_snippet").strip()
+            label = "页面正文" if level == "webpage" else "结构化资料" if level == "structured" else "搜索摘要"
+            raw_excerpt = str(source.get("text") or source.get("summary") or "").strip()
+            excerpt = web_provider.compact_source_text(
+                raw_excerpt, query=self.query, max_chars=excerpt_limit,
+            )
             if not title or not url:
                 continue
-            lines.append(f"\n[{index}] {title}（{origin}）\n来源链接：{url}")
+            lines.append(f"\n[{index}] {title}（{origin}；证据类型：{label}）\n来源链接：{url}")
             if excerpt:
                 lines.append(f"可核对摘录：{excerpt}")
         if self.kind == "novel":
             lines.append(
-                "以上资料分为搜索摘要和页面正文：两者都属于本轮可核对证据；页面正文失败只表示资料不完整，不能把已有摘要当成没有来源。"
-                "先回答证据卡片中明确支持的字段，未出现的字段单独说明无法核实；不要凭模型记忆补写。"
+                "以上资料分为搜索摘要、结构化资料和页面正文：搜索摘要只能按摘要表述，不能称为已读取正文；页面正文失败只表示资料不完整。"
+                "先回答摘录明确支持的字段，未出现的字段单独说明无法核实；不要凭模型记忆补写。"
             )
         else:
             lines.append("以上是公开网页的非可信参考资料；只能据此回答，无法被来源支持的内容必须明确说无法核实。")
-        return "\n".join(lines)[:12000]
+        block = "\n".join(lines)
+        return block if prompt_limit <= 0 else block[:prompt_limit]
 
     def as_search_data(self) -> dict[str, Any]:
         return {
@@ -146,6 +205,12 @@ class ResearchResult:
             "provider": self.provider,
             "research_kind": self.kind,
             "source_preference": list(self.source_preference),
+            "backend_status": self.backend_status,
+            "backend_statuses": list(self.backend_statuses),
+            "unresponsive_engines": list(self.unresponsive_engines),
+            "stage_counts": dict(self.stage_counts),
+            "quality_filtered": self.quality_filtered,
+            "evidence_rejected": self.evidence_rejected,
             "pages_read": self.pages_read,
             "page_failures": self.page_failures,
             "stop_reason": self.stop_reason,
@@ -162,6 +227,15 @@ def _bounded_int(value: Any, default: int, upper: int) -> int:
     except (TypeError, ValueError, OverflowError):
         parsed = default
     return max(1, min(parsed, upper))
+
+
+def _bounded_cap(value: Any, default: int, upper: int) -> int:
+    """可配置的大小上限；0 表示关闭该截断。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    return max(0, min(parsed, upper))
 
 
 def _bounded_float(value: Any, default: float, upper: float) -> float:
@@ -311,7 +385,29 @@ def _to_source(item: dict[str, Any], *, text: str = "", kind: str = "search_snip
     if not url or not title or not web_provider._is_safe_url(url):
         return None
     summary = str(item.get("summary") or "").strip()
-    body = (text or summary).strip()[:4000]
+    page_text = str(text or "").strip()
+    body = (page_text or summary).strip()
+    # 只有正文/摘要本身带信息时才进入证据包；链接和标题不算证据。
+    if not body:
+        return None
+    public_kind = str(item.get("kind") or kind or "search_snippet").strip()[:40]
+    evidence_level = "webpage" if page_text else (
+        "structured" if public_kind != "search_snippet" else "search_snippet"
+    )
+    from app.config import settings
+
+    min_chars = _bounded_cap(
+        _setting(settings, "search_min_evidence_chars", 120), 120, 20_000,
+    )
+    # 搜索摘要和结构化 Provider 资料必须达到最小摘录长度；真实抓到的
+    # 页面正文即使是短页也保留，由页面正文标签约束回答口径。
+    if evidence_level != "webpage" and min_chars > 0 and len(body) < min_chars:
+        return None
+    max_chars = _bounded_cap(
+        _setting(settings, "search_max_text_chars", 12_000), 12_000, 50_000,
+    )
+    if max_chars > 0:
+        body = body[:max_chars]
     return {
         "id": _source_id(url),
         "url": url[:1000],
@@ -321,7 +417,8 @@ def _to_source(item: dict[str, Any], *, text: str = "", kind: str = "search_snip
         "published_at": str(item.get("published_at") or "")[:40],
         "origin": str(item.get("source") or "")[:120],
         "source": str(item.get("source") or "")[:120],
-        "kind": str(item.get("kind") or kind)[:40],
+        "kind": public_kind,
+        "evidence_level": evidence_level,
     }
 
 
@@ -337,31 +434,47 @@ async def _read_pages(result: ResearchResult, plan: ResearchPlan, deadline: floa
             ),
             reverse=True,
         )
-    candidates = candidates[: plan.max_pages]
+    candidates = candidates[: max(plan.max_pages * 2, plan.max_pages)]
     if not candidates:
         return
-    semaphore = asyncio.Semaphore(plan.max_pages)
+    target = max(1, plan.max_pages)
+    concurrency = max(1, min(plan.max_pages, len(candidates)))
 
-    async def read(item: dict[str, Any]) -> None:
-        nonlocal result
+    async def read(item: dict[str, Any]) -> bool:
         left = deadline - asyncio.get_running_loop().time()
         if left <= 0:
-            result.stop_reason = "budget_exhausted"
-            return
-        async with semaphore:
-            try:
-                page = await asyncio.wait_for(web_provider.fetch_page(str(item["url"])), timeout=min(8.0, left))
-            except (asyncio.TimeoutError, OSError, ValueError, TypeError):
-                result.page_failures += 1
-                return
-            if not isinstance(page, dict) or not str(page.get("text") or "").strip():
-                result.page_failures += 1
-                return
-            item["content"] = str(page.get("text") or "")[:8000]
-            item["page_url"] = str(page.get("url") or item["url"])
-            result.pages_read += 1
+            return False
+        try:
+            page = await asyncio.wait_for(
+                web_provider.fetch_page(str(item["url"])), timeout=min(8.0, left),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 单个候选失败后继续补抓后续候选
+            result.page_failures += 1
+            return False
+        if not isinstance(page, dict) or not str(page.get("text") or "").strip():
+            result.page_failures += 1
+            return False
+        max_chars = _bounded_cap(
+            getattr(settings, "search_max_text_chars", 12_000), 12_000, 50_000,
+        )
+        page_text = str(page.get("text") or "")
+        item["content"] = page_text if max_chars <= 0 else page_text[:max_chars]
+        item["page_url"] = str(page.get("url") or item["url"])
+        result.pages_read += 1
+        return True
 
-    await asyncio.gather(*(read(item) for item in candidates), return_exceptions=True)
+    for start in range(0, len(candidates), concurrency):
+        if result.pages_read >= target:
+            break
+        if deadline - asyncio.get_running_loop().time() <= 0:
+            result.stop_reason = "budget_exhausted"
+            break
+        batch = candidates[start : start + concurrency]
+        await asyncio.gather(*(read(item) for item in batch), return_exceptions=True)
+    if result.pages_read == 0 and result.page_failures and result.stop_reason != "budget_exhausted":
+        result.stop_reason = "no_page_read"
 
 
 async def _search_cluster_compat(
@@ -431,6 +544,70 @@ async def run_research(
         result.stop_reason = "not_requested"
         return result
     deadline = asyncio.get_running_loop().time() + plan.budget_seconds
+    backend_statuses: list[str] = []
+    unresponsive_engines: list[str] = []
+    stage_counts = {
+        "raw_hits": 0,
+        "kept_after_dedupe": 0,
+        "kept_after_quality": 0,
+        "quality_filtered": 0,
+        "requests": 0,
+    }
+
+    def record_search_meta(data: Any) -> None:
+        if not isinstance(data, Mapping):
+            return
+        raw_statuses = data.get("backend_statuses")
+        statuses = raw_statuses if isinstance(raw_statuses, (list, tuple)) else [data.get("backend_status")]
+        for status in statuses:
+            text = str(status or "").strip()[:32]
+            if text and text not in backend_statuses:
+                backend_statuses.append(text)
+        raw_engines = data.get("unresponsive_engines")
+        if isinstance(raw_engines, (list, tuple)):
+            for engine in raw_engines:
+                text = str(engine or "").strip()[:80]
+                if text and text not in unresponsive_engines:
+                    unresponsive_engines.append(text)
+        counts = data.get("stage_counts")
+        if isinstance(counts, Mapping):
+            for key in ("raw_hits", "requests", "quality_filtered"):
+                try:
+                    stage_counts[key] += max(0, int(counts.get(key) or 0))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            for key in ("kept_after_dedupe", "kept_after_quality"):
+                try:
+                    stage_counts[key] = max(stage_counts[key], int(counts.get(key) or 0))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        elif data.get("results"):
+            stage_counts["raw_hits"] += len(list(data.get("results") or []))
+            stage_counts["requests"] += max(0, int(data.get("request_count") or data.get("attempts") or 1))
+
+    def finish_search_meta() -> None:
+        stage_counts["kept_after_dedupe"] = len(result.results)
+        stage_counts["kept_after_quality"] = len(result.results)
+        stage_counts["quality_filtered"] = max(
+            stage_counts.get("quality_filtered", 0), result.quality_filtered,
+        )
+        result.backend_statuses = tuple(backend_statuses[:20])
+        result.unresponsive_engines = tuple(unresponsive_engines[:20])
+        result.stage_counts = dict(stage_counts)
+        if not backend_statuses:
+            return
+        if "cooling_down" in backend_statuses:
+            result.backend_status = "cooling_down"
+        elif backend_statuses and all(item == "empty_backend" for item in backend_statuses):
+            result.backend_status = "empty_backend"
+        elif "error" in backend_statuses:
+            result.backend_status = "error"
+        elif "timeout" in backend_statuses:
+            result.backend_status = "timeout"
+        elif result.results:
+            result.backend_status = "ok"
+        else:
+            result.backend_status = backend_statuses[-1]
 
     research_text = " ".join(
         item for item in (
@@ -502,6 +679,7 @@ async def run_research(
                     data = task.result()
                 except (asyncio.CancelledError, Exception):
                     continue
+                record_search_meta(data)
                 for item in list(data.get("results") or []):
                     if not isinstance(item, dict):
                         continue
@@ -533,6 +711,7 @@ async def run_research(
                         if plan.kind == "novel" else None
                     ),
                 )
+                record_search_meta(data)
                 batch = list(data.get("results") or [])
                 seen = {str(item.get("url") or "") for item in result.results}
                 for item in batch:
@@ -543,7 +722,21 @@ async def run_research(
                     break
         result.provider = "searxng"
 
+    def apply_generic_quality() -> None:
+        if plan.kind == "novel" or not result.results:
+            return
+        before = len(result.results)
+        result.results = web_provider.rank_general_results(result.query, result.results)
+        removed = max(0, before - len(result.results))
+        if removed:
+            result.quality_filtered += removed
+            stage_counts["quality_filtered"] += removed
+        stage_counts["kept_after_quality"] = len(result.results)
+
+    apply_generic_quality()
     await _read_pages(result, plan, deadline)
+    # 页面正文写回后重新计算通用信号，防止搜索摘要看似正常、正文实际是模板页。
+    apply_generic_quality()
     if plan.kind == "novel":
         result.results = web_provider.select_novel_evidence_results(
             result.query,
@@ -551,9 +744,16 @@ async def run_research(
             source_preference=plan.source_preference,
         )
     for item in result.results:
-        source = _to_source(item, text=str(item.get("content") or ""), kind=str(item.get("kind") or "search_snippet"))
+        page_text = str(item.get("content") or "")
+        source = _to_source(
+            item,
+            text=page_text,
+            kind=str(item.get("kind") or "search_snippet"),
+        )
         if source:
             result.sources.append(source)
+        else:
+            result.evidence_rejected += 1
     deduped: dict[str, dict[str, Any]] = {}
     for source in result.sources:
         deduped.setdefault(source["url"], source)
@@ -561,6 +761,8 @@ async def run_research(
     if not result.sources:
         result.stop_reason = "no_sources"
     elif result.pages_read == 0 and result.kind not in {"project"}:
-        result.stop_reason = "search_snippets_only"
+        if result.stop_reason not in {"no_page_read", "budget_exhausted"}:
+            result.stop_reason = "search_snippets_only"
+    finish_search_meta()
     result.elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
     return result

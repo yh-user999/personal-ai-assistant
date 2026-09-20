@@ -146,11 +146,27 @@ class Settings(BaseSettings):
     # 未配置时检索能力关闭，助手对实时问题只能回答"无法核实"，
     # 不会退回模型记忆作答。
     search_backend_url: str = ""
-    search_timeout: float = 15.0
+    # SearXNG 退化时单次请求可能达到 20 秒；过低会把慢后端静默成空结果。
+    search_timeout: float = 25.0
     search_max_results: int = 10
+    # 检索后端保护：限制单问阶梯请求、连续失败熔断，并缓存非空成功结果。
+    search_request_cap: int = 4
+    search_min_interval_seconds: float = 1.0
+    search_backend_failure_threshold: int = 3
+    search_backend_cooldown_seconds: float = 90.0
+    search_cache_ttl_seconds: float = 300.0
     # 小说资料优先使用本机实测较快的引擎；逗号分隔，留空则使用 SearXNG 默认引擎集合。
     novel_search_engines: str = "brave,bing"
     search_max_page_bytes: int = 500_000
+    search_max_text_chars: int = 12_000
+    # 进入通用证据包的最小正文/摘要长度；设为 0 可关闭该门槛。
+    search_min_evidence_chars: int = 120
+    # 研究提示词总长度和单来源摘录长度上限；均可通过环境变量收紧或关闭。
+    web_research_prompt_max_chars: int = 12_000
+    web_research_source_excerpt_chars: int = 1_200
+    # 抓页代理回退留空=禁用；启用时只接受本机回环代理。
+    fetch_page_proxy: str = ""
+    fetch_page_proxy_loopback_only: bool = True
     search_time_range: str = "week"
     # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）
     search_min_results: int = 3

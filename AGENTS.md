@@ -525,3 +525,10 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：代码提交 `a9e0918`；本条状态记录随本次文档提交推送 GitHub。
 - 运行状态：`personal-assistant` 与 `personal-qq-gateway` 均 active；服务端数据库 schema 18、integrity/foreign key 检查正常；部署仓库保留一个既有未跟踪文档，未改动。
 - 未完成：上游聊天生成接口仍可能 503，生产完整 QQ 生成回复验收暂缓；QQ 推送/主人数字身份仍按既有决策项未启用。
+
+### 2026-09-20 — 联网检索 P0-P3 全量验证与部署
+- 代码/配置：提交联网检索可观测性、抓页代理回退、lxml 正文抽取、失败候选补抓、通用质量门禁、证据长度与正文类型标记、空证据固定降级和长文压缩；未提交配置文件、密钥或部署备份。
+- 验证：定向回归 195 passed；服务端全量 1834 passed；Ruff、compileall、git diff --check 和 staged 脱敏扫描通过，敏感信息高置信规则 0 命中；`/api/health`、`/api/ready`、QQ 网关 `/health` 均正常，数据库 schema 18、完整性和外键检查正常。
+- 提交：代码 `eca2313` 已推送 GitHub；部署仓已 fast-forward 同步，本条状态记录随补充提交推送。
+- 运行状态：`personal-assistant` 重启后 active；未修改 QQ 网关配置，未发送真实 QQ 测试消息；部署仓既有未跟踪实施方案文档保留且未纳入 Git。
+- 未完成：上游聊天生成偶发 503、QQ 推送/主人数字身份仍按既有决策项暂缓；无新增代码阻塞。

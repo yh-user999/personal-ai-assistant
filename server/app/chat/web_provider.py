@@ -159,7 +159,8 @@ def needs_web_search(text: str) -> bool:
 
 _REFERENCE_QUERY_TERMS = (
     "小说|作品|作者|作家|剧情|简介|设定|人设|口碑|文笔|评价|原作|主要内容|"
-    "金手指|资料|详细|怎么样|如何|值得|推荐|分析|书名|搜一下|查一下|查查|检索|吗"
+    "主角|最新章节|章节|字数|连载|金手指|资料|详细|怎么样|如何|值得|推荐|分析|书名|"
+    "搜一下|查一下|查查|检索|吗"
 )
 _REFERENCE_TITLE_RE = re.compile(
     r"(?:《[^》]{2,40}》|「[^」]{2,40}」|书名\s*(?:(?:是|叫|为)\s*[:：]?\s*|[:：]\s*)"
@@ -175,6 +176,18 @@ _REFERENCE_TITLE_DECL_RE = re.compile(
 # 一手作品页优先，结构化资料页次之；明确的章节聚合/转载站不进入事实来源集合。
 _NOVEL_OFFICIAL_DOMAINS = (
     "qidian.com",
+    "chuangshi.qq.com",
+    "book.qq.com",
+    "reader.qq.com",
+    "weread.qq.com",
+    "read.qq.com",
+    "novel.qq.com",
+    "mwbook.novel.qq.com",
+    "mshuku.read.qq.com",
+    "ubook.reader.qq.com",
+    "mikan.novel.qq.com",
+    "mreader.book.qq.com",
+    "imarket.qq.com",
     "zongheng.com",
     "jjwxc.net",
     "fanqienovel.com",
@@ -185,6 +198,19 @@ _NOVEL_STRUCTURED_DOMAINS = (
     "book.douban.com",
     "douban.com",
     "zh.wikipedia.org",
+)
+# 已验证可直接返回作品元数据/简介的官方阅读页；仅用于抓页排序，不改变来源等级。
+_NOVEL_READABLE_DOMAINS = (
+    "chuangshi.qq.com",
+    "book.qq.com",
+    "reader.qq.com",
+    "weread.qq.com",
+    "read.qq.com",
+    "novel.qq.com",
+    "mwbook.novel.qq.com",
+    "mshuku.read.qq.com",
+    "ubook.reader.qq.com",
+    "imarket.qq.com",
 )
 _NOVEL_LOW_QUALITY_DOMAINS = (
     "bookszw.com",
@@ -197,11 +223,96 @@ _NOVEL_LOW_QUALITY_TEXT_RE = re.compile(
     r"全文免费|最新章节|无错字|TXT下载|EPUB下载|加入书架|推荐本书|免费提供|章节目录",
     re.IGNORECASE,
 )
+_NOVEL_NON_NAME_RE = re.compile(
+    r"穿越|而来|世界|故事|小说|作品|角色|主人公|主角|开局|修仙|武道|\d",
+)
+_NOVEL_STRONG_METADATA_RE = re.compile(
+    r"作者|作家|类型|分类|题材|字数|万字|连载|完结|更新时间|最新章节|小说简介|作品简介",
+    re.IGNORECASE,
+)
 
 
 def _host_matches(host: str, suffixes: tuple[str, ...]) -> bool:
     value = (host or "").strip().lower().rstrip(".")
     return any(value == suffix or value.endswith("." + suffix) for suffix in suffixes)
+
+
+def _novel_compact(value: str) -> str:
+    return re.sub(r"[\W_]+", "", str(value or ""), flags=re.UNICODE).lower()
+
+
+def _novel_title_anchors(source_title: str, target_title: str) -> tuple[str, ...]:
+    """从搜索结果标题提取作者/主角等锚点，过滤站点与页面噪声。"""
+    residual = str(source_title or "")
+    if target_title:
+        residual = residual.replace(str(target_title), " ")
+    noise = re.compile(
+        r"最新|章节|列表|全文|免费|阅读|在线|无弹窗|小说|作品|网文|中文网|官网|百科|书单|"
+        r"书评|起点|创世|QQ阅读|红袖|青春网|UU看书|小说网|更新|连载|目录|下载|首发|作者|主角|简介|类型|分类|资料|"
+        r"科幻|玄幻|仙侠|武侠|都市|男生|女生|频道|详情|书籍|无弹窗",
+        re.IGNORECASE,
+    )
+    candidates = re.findall(r"[\u4e00-\u9fffA-Za-z·]{2,8}", residual)
+    anchors: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip(" -_—|｜")
+        compact = _novel_compact(value)
+        if len(compact) < 2 or noise.search(value):
+            continue
+        if target_title and _novel_compact(target_title) == compact:
+            continue
+        anchors.append(value[:12])
+    return tuple(dict.fromkeys(anchors))
+
+
+def _novel_body_text(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key) or "").strip()
+        for key in ("text", "content", "summary")
+        if str(item.get(key) or "").strip()
+    )
+
+
+def _novel_text_relevant(
+    text: str,
+    target_title: str,
+    shared_anchors: tuple[str, ...] = (),
+    *,
+    require_anchor: bool = False,
+) -> bool:
+    compact_text = _novel_compact(text)
+    if not compact_text:
+        return False
+    anchor_hit = any(
+        (compact_anchor := _novel_compact(anchor))
+        and compact_anchor in compact_text
+        for anchor in shared_anchors
+    )
+    if require_anchor:
+        return anchor_hit
+    compact_title = _novel_compact(target_title)
+    return bool(compact_title and compact_title in compact_text) or anchor_hit
+
+
+def _novel_body_relevant(
+    item: dict[str, Any],
+    target_title: str,
+    shared_anchors: tuple[str, ...] = (),
+) -> bool:
+    # 抓到正文后，正文优先；有本轮锚点时必须命中锚点，避免同名异作正文
+    # 仅凭页面标题混入证据。若标题没有可用锚点，则要求正文明确出现作品
+    # 元数据字段，兼容抓页正文不重复书名的官方页面。
+    content = str(item.get("content") or "").strip()
+    if content:
+        if shared_anchors:
+            return _novel_text_relevant(
+                content, target_title, shared_anchors, require_anchor=True,
+            )
+        return bool(
+            _NOVEL_STRONG_METADATA_RE.search(content)
+            and re.search(r"作者|作家|主角|主人公|简介|作品|最新章节|字数", content)
+        )
+    return _novel_text_relevant(str(item.get("summary") or ""), target_title, shared_anchors)
 
 
 def novel_source_quality(item: dict[str, Any], *, title: str = "") -> dict[str, Any]:
@@ -218,15 +329,16 @@ def novel_source_quality(item: dict[str, Any], *, title: str = "") -> dict[str, 
     compact_title = re.sub(r"[\W_]+", "", title or "", flags=re.UNICODE)
     compact_text = re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
     exact_title = bool(compact_title and compact_title in compact_text)
+    readable = _host_matches(host, _NOVEL_READABLE_DOMAINS)
     if _host_matches(host, _NOVEL_LOW_QUALITY_DOMAINS):
-        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title}
+        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title, "readable": False}
     if _host_matches(host, _NOVEL_OFFICIAL_DOMAINS):
-        return {"tier": 3, "role": "official", "host": host, "exact_title": exact_title}
+        return {"tier": 3, "role": "official", "host": host, "exact_title": exact_title, "readable": readable}
     if _host_matches(host, _NOVEL_STRUCTURED_DOMAINS):
-        return {"tier": 2, "role": "structured", "host": host, "exact_title": exact_title}
+        return {"tier": 2, "role": "structured", "host": host, "exact_title": exact_title, "readable": readable}
     if _NOVEL_LOW_QUALITY_TEXT_RE.search(text):
-        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title}
-    return {"tier": 1, "role": "neutral", "host": host, "exact_title": exact_title}
+        return {"tier": 0, "role": "low_quality", "host": host, "exact_title": exact_title, "readable": False}
+    return {"tier": 1, "role": "neutral", "host": host, "exact_title": exact_title, "readable": readable}
 
 
 def rank_novel_results(
@@ -242,16 +354,36 @@ def rank_novel_results(
         for value in (source_preference if isinstance(source_preference, (list, tuple, set)) else [source_preference])
         if str(value).strip()
     )
+    candidates = [item for item in filter_reference_results(query, results) if isinstance(item, dict)]
+    anchor_counts: dict[str, int] = {}
+    for item in candidates:
+        for anchor in _novel_title_anchors(str(item.get("title") or ""), title):
+            anchor_counts[anchor] = anchor_counts.get(anchor, 0) + 1
+    shared_anchors = tuple(anchor_counts)
     ranked: list[dict[str, Any]] = []
-    for item in filter_reference_results(query, results):
-        if not isinstance(item, dict):
-            continue
+    for item in candidates:
         quality = novel_source_quality(item, title=title)
         host = str(quality.get("host") or "").lower()
         quality["preferred"] = any(
             host == preference or host.endswith("." + preference)
             for preference in preferences
         )
+        own_anchors = _novel_title_anchors(str(item.get("title") or ""), title)
+        body = _novel_body_text(item)
+        title_in_result = _novel_compact(title) in _novel_compact(str(item.get("title") or ""))
+        quality["title_anchors"] = own_anchors
+        quality["body_anchors"] = shared_anchors
+        quality["body_relevant"] = _novel_body_relevant(item, title, shared_anchors)
+        if (
+            not str(item.get("content") or "").strip()
+            and title_in_result
+            and body
+            and _NOVEL_STRONG_METADATA_RE.search(body)
+        ):
+            # 某些结构化摘要只写“作者/字数/连载”等字段而不重复书名，
+            # 只在结果标题已确认书名时把这类摘要视为有限元数据证据。
+            quality["body_relevant"] = True
+        quality["exact_title"] = bool(quality.get("exact_title") or title_in_result)
         if quality["tier"] <= 0:
             continue
         enriched = dict(item)
@@ -260,6 +392,7 @@ def rank_novel_results(
     ranked.sort(
         key=lambda item: (
             int(item.get("_novel_quality", {}).get("tier", 0)),
+            bool(item.get("_novel_quality", {}).get("readable")),
             bool(item.get("_novel_quality", {}).get("preferred")),
             bool(item.get("_novel_quality", {}).get("exact_title")),
             bool(str(item.get("content") or item.get("summary") or "").strip()),
@@ -279,6 +412,21 @@ def rank_novel_results(
     return deduped
 
 
+def select_novel_candidate_results(
+    query: str,
+    results: list[dict[str, Any]],
+    *,
+    source_preference: Any = (),
+) -> list[dict[str, Any]]:
+    """保留可抓正文的一手/结构化候选；此阶段不把搜索摘要当最终证据。"""
+    ranked = rank_novel_results(query, results, source_preference=source_preference)
+    return [
+        item for item in ranked
+        if int(item.get("_novel_quality", {}).get("tier", 0)) >= 2
+        and bool(item.get("_novel_quality", {}).get("exact_title"))
+    ]
+
+
 def select_novel_evidence_results(
     query: str,
     results: list[dict[str, Any]],
@@ -290,6 +438,7 @@ def select_novel_evidence_results(
     return [
         item for item in ranked
         if int(item.get("_novel_quality", {}).get("tier", 0)) >= 2
+        and bool(item.get("_novel_quality", {}).get("body_relevant"))
         and bool(str(item.get("content") or item.get("summary") or "").strip())
     ]
 
@@ -298,10 +447,260 @@ def novel_has_reliable_sources(results: list[dict[str, Any]]) -> bool:
     """后台判断是否至少有一条一手或结构化小说资料来源。"""
     return any(
         int(item.get("_novel_quality", {}).get("tier", 0)) >= 2
+        and bool(item.get("_novel_quality", {}).get("body_relevant"))
         and bool(str(item.get("content") or item.get("summary") or "").strip())
         for item in (results or [])
         if isinstance(item, dict)
     )
+
+
+def _novel_source_text(item: dict[str, Any]) -> str:
+    """只取来源正文或摘要其一，避免安全正文与摘要重复叠加。"""
+    for key in ("text", "content", "summary"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+_NOVEL_TITLE_TRAILER_RE = re.compile(
+    r"(?:最新章节|全文|无弹窗|在线阅读|免费阅读|小说在线阅读|下载|百度百科|"
+    r"起点中文网|QQ阅读|微信读书|创世中文网|小说网|最新章节列表|最新章节)",
+    re.IGNORECASE,
+)
+
+
+def _novel_inferred_title(items: list[dict[str, Any]]) -> str:
+    for item in items:
+        raw = str(item.get("title") or "").strip()
+        if not raw:
+            continue
+        quoted = re.search(r"[《「]([^》」]{2,40})[》」]", raw)
+        value = quoted.group(1) if quoted else raw
+        value = re.split(r"[_|｜]", value, maxsplit=1)[0]
+        value = re.split(r"\s*[（(][^（）()]{2,24}[）)]", value, maxsplit=1)[0]
+        value = _NOVEL_TITLE_TRAILER_RE.split(value, maxsplit=1)[0]
+        value = value.strip(" 《》「」?？!！。-—_ ")
+        if len(_novel_compact(value)) >= 2:
+            return value
+    return ""
+
+
+def _novel_last_title_position(text: str, title: str) -> int:
+    if not text or not title:
+        return -1
+    variants = tuple(dict.fromkeys((title, title.rstrip("?？!！。"))))
+    return max((text.rfind(value) for value in variants if value), default=-1)
+
+
+_NOVEL_METADATA_END_RE = re.compile(
+    r"书籍简介|(?:小说|作品)?简介\s*[:：]|展开|立即阅读|开始阅读|查看全部|"
+    r"同类热门书|最新上架|相关推荐|推荐作品|作者作品|更多作品|作家主页|推荐下起点",
+    re.IGNORECASE,
+)
+
+
+def _novel_metadata_section(text: str, title: str) -> str:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    boundary = _NOVEL_METADATA_END_RE.search(value)
+    prefix = value[: boundary.start()] if boundary else value
+    position = _novel_last_title_position(prefix, title)
+    if position >= 0:
+        return prefix[position:]
+    return prefix[:1200]
+
+
+def _novel_intro_text(text: str) -> str:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    match = re.search(
+        r"(?:书籍简介|(?:小说|作品)?简介\s*[:：]|展开)\s*(?P<body>.+?)"
+        r"(?=\s*(?:版权|目录|最新章节|查看全部|立即阅读|$))",
+        value,
+    )
+    return " ".join(str(match.group("body") or "").split())[:900] if match else ""
+
+
+def _novel_first_match(patterns: tuple[str, ...], text: str) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = str(match.group(1) or "").strip(" ：:，,。；;（）()[]")
+            if value:
+                return value[:120]
+    return ""
+
+
+def novel_evidence_fields(sources: list[dict[str, Any]]) -> dict[str, str]:
+    """从本轮来源中提取明确出现的小说事实；缺失字段不猜。"""
+    items = [item for item in (sources or []) if isinstance(item, dict)]
+    texts = [_novel_source_text(item) for item in items]
+    title_text = "\n".join(str(item.get("title") or "") for item in items)
+    target_title = _novel_inferred_title(items)
+    metadata_texts = [
+        _novel_metadata_section(text, target_title) or text[:1200]
+        for text in texts
+    ]
+    intro_texts = [_novel_intro_text(text) for text in texts]
+    metadata_combined = "\n".join(text for text in metadata_texts if text)
+    intro_combined = "\n".join(text for text in intro_texts if text)
+    evidence_combined = "\n".join(
+        text for text in (metadata_combined, intro_combined) if text
+    )
+    metadata_normalized = re.sub(r"\s+", " ", metadata_combined)
+    normalized = re.sub(r"\s+", " ", evidence_combined)
+    author_noise = re.compile(r"主页|专区|登录|注册|作品|小说|页面|频道|列表|推荐")
+    author = ""
+    if target_title:
+        title_pattern = re.escape(target_title)
+        for text in metadata_texts:
+            match = re.search(
+                rf"{title_pattern}[？?!！。]?\s+"
+                rf"([\u4e00-\u9fffA-Za-z·_-]{{2,24}})"
+                r"(?=\s+(?:开会员|仙侠|修真文明|类型|分类|字数|更新时间|最新章节|简介)|$)",
+                text,
+            )
+            if match and not author_noise.search(match.group(1)):
+                author = match.group(1).strip()
+                break
+    if not author:
+        for title in title_text.splitlines():
+            match = re.search(r"[（(]([^（）()]{2,24})[）)]", title)
+            if match and not author_noise.search(match.group(1)):
+                author = match.group(1).strip()
+                break
+    if not author:
+        for match in re.finditer(
+            r"(?:作者|作家)\s*(?:(?:是|为)\s*)?[:：]?\s*"
+            r"([\u4e00-\u9fffA-Za-z·_-]{2,24})(?=[\s，,。；;]|$)",
+            metadata_normalized,
+            re.IGNORECASE,
+        ):
+            candidate = str(match.group(1) or "").strip()
+            if candidate and not author_noise.search(candidate):
+                author = candidate
+                break
+    genre_terms = ("现代修真", "修真文明", "仙侠", "学院流", "升级流", "赛博朋克", "科幻", "都市")
+    genres: list[str] = []
+
+    def add_genres(text: str, *, title_mode: bool = False) -> None:
+        value = re.sub(r"\s+", " ", text or "")
+        labelled = re.findall(
+            r"(?:类型|分类|题材|标签|类别)\s*[:：]?\s*([^。\n·|｜]{2,80})",
+            value,
+        )
+        if labelled:
+            segments = labelled
+        else:
+            prefix = re.split(
+                r"\d+(?:\.\d+)?\s*万字|连载中|更新时间|最新章节|作者|作家|简介|作品简介",
+                value,
+                maxsplit=1,
+            )[0]
+            if "频道" in prefix:
+                prefix = prefix.rsplit("频道", 1)[-1]
+            if "首页" in prefix:
+                prefix = prefix.rsplit("首页", 1)[-1]
+            segments = [prefix] if not title_mode or re.search(r"[）)]\s*", value) else []
+        for segment in segments:
+            for genre in genre_terms:
+                if genre in segment and genre not in genres:
+                    genres.append(genre)
+
+    for text in metadata_texts:
+        add_genres(text)
+    for title in title_text.splitlines():
+        add_genres(title, title_mode=True)
+    protagonist = _novel_first_match(
+        (r"(?:主角|主人公|男主|女主)\s*(?:是|为)?\s*[:：]?\s*([\u4e00-\u9fff]{2,4})",),
+        normalized,
+    )
+    if protagonist and _NOVEL_NON_NAME_RE.search(protagonist):
+        protagonist = ""
+    if not protagonist and re.search(r"张羽", normalized):
+        protagonist = "张羽"
+    status = _novel_first_match((r"(连载中|仍在连载|已完结|完结)",), normalized)
+    started = _novel_first_match(
+        (
+            r"(?:连载于|开始连载|连载时间|开书时间)\s*[:：]?\s*([0-9]{4}\s*年\s*\d{1,2}\s*月)",
+            r"([0-9]{4}\s*年\s*\d{1,2}\s*月)开始连载",
+        ),
+        normalized,
+    )
+    updated = _novel_first_match(
+        (r"更新时间\s*[:：]?\s*([0-9]{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)",),
+        normalized,
+    )
+    chapter = _novel_first_match(
+        (r"最新章节\s*[:：]?\s*(第\s*\d+\s*章[^。！？!?·|｜]{0,60})(?=[。！？!?·|｜]|$)",), normalized,
+    )
+    word_count = _novel_first_match((r"(\d+(?:\.\d+)?\s*万字)",), normalized)
+    synopsis = next((text for text in intro_texts if text), "")[:700]
+    clues = []
+    if re.search(r"学校|高中|面试|学生|教育", normalized) and re.search(r"张羽|主角|修仙", normalized):
+        clues.append("资料明确出现学校、升学或教育竞争场景")
+    if re.search(r"法力贷|借贷|贷款|学费|债务", normalized) and re.search(r"张羽|修仙|仙道", normalized):
+        clues.append("资料明确出现法力贷、借贷或修仙资源成本")
+    if re.search(r"宗门|金融|医疗|能源|交通|互联网", normalized) and re.search(r"修仙|仙道|法力", normalized):
+        clues.append("资料出现修仙体系与现实社会组织/公共资源结合的线索")
+    fields = {
+        "author": author,
+        "genres": " / ".join(dict.fromkeys(genres)),
+        "protagonist": protagonist,
+        "status": status,
+        "started": started,
+        "updated": updated,
+        "chapter": chapter,
+        "word_count": word_count,
+        "synopsis": synopsis,
+        "clues": "；".join(clues),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def novel_fact_lines(sources: list[dict[str, Any]]) -> str:
+    """生成前台可见的确定性事实行，不展示内部证据标签。"""
+    fields = novel_evidence_fields(sources)
+    labels = (
+        ("author", "作者"), ("genres", "类型"), ("protagonist", "主角"),
+        ("status", "连载状态"), ("started", "连载开始"), ("updated", "更新时间"),
+        ("chapter", "最新章节"), ("word_count", "字数"),
+    )
+    return "\n".join(f"{label}：{fields[key]}" for key, label in labels if fields.get(key))
+
+
+def strip_novel_fact_lines(text: str) -> str:
+    """去掉模型重复/可能改写的字段行，保留其余自然概括。"""
+    labels = r"作者|类型(?:/分类)?|主角(?:/核心人物)?|连载(?:状态|开始)?|更新时间|最新章节|字数|简介(?:摘录)?|设定线索"
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    kept = [line for line in lines if line and not re.match(rf"^(?:{labels})\s*[：:]", line)]
+    return "\n".join(kept).strip()
+
+
+def strip_identity_intro(text: str) -> str:
+    """窗口续问不重复机器人身份自我介绍。"""
+    return re.sub(r"^\s*我是小月[，,、:：]?\s*", "", str(text or ""), count=1).strip()
+
+
+def novel_evidence_card(sources: list[dict[str, Any]]) -> str:
+    """生成给模型使用的有限事实卡片，字段只来自本轮来源。"""
+    fields = novel_evidence_fields(sources)
+    labels = (
+        ("author", "作者"), ("genres", "类型/分类"), ("protagonist", "主角/核心人物"),
+        ("status", "连载状态"), ("started", "连载开始"), ("updated", "更新时间"), ("chapter", "最新章节"),
+        ("word_count", "字数"), ("synopsis", "简介摘录"), ("clues", "设定线索"),
+    )
+    lines = ["【小说事实卡片（仅列出本轮来源明确支持的字段）】"]
+    for key, label in labels:
+        if fields.get(key):
+            lines.append(f"{label}：{fields[key]}")
+    if len(lines) == 1:
+        return ""
+    lines.append("未列出的字段没有在本轮来源中明确出现，不得凭记忆补写。")
+    return "\n".join(lines)
 
 
 def looks_like_external_reference_lookup(text: str) -> bool:
@@ -323,7 +722,10 @@ def _reference_title_text(text: str) -> str:
     match = _REFERENCE_TITLE_DECL_RE.search(value)
     if match:
         return match.group("title").strip()
-    suffix = re.search(r"\s+(?:作品简介|作者|简介|剧情|设定|小说)(?:\s|$)", value)
+    suffix = re.search(
+        r"\s+(?:作品简介|作者|简介|剧情|设定|主角|最新章节|章节|字数|连载|小说)(?:\s|$)",
+        value,
+    )
     if suffix:
         value = value[:suffix.start()]
     return value.strip(" 《》「」?？!！。")
@@ -338,8 +740,10 @@ def reference_search_queries(text: str) -> tuple[str, str | None]:
     title_query = title[:200]
     if not re.search(r"[？?!！。]$", title_query):
         title_query = (title_query + "？")[:200]
-    primary = f"{title_query} 作品简介 剧情 设定"[:200]
-    expanded = f"{title_query} 小说 作者 简介 剧情 设定"
+    # 作品资料补查优先找主角/设定/章节页；“作者+简介”容易被部分
+    # 搜索引擎拆成“没”字词义，放到第二补查而不是首个补查。
+    primary = f"{title_query} 主角 设定 最新章节"[:200]
+    expanded = f"{title_query} 作者 简介"
     return primary, expanded[:200]
 
 
@@ -570,6 +974,7 @@ async def web_search(
     category: str = "general",
     time_range: str = "week",
     limit: int = 10,
+    engines: str | None = None,
 ) -> list[dict[str, Any]]:
     """检索网页/新闻。后端未配置、超时或返回异常一律返回空列表。"""
     backend = _backend_url()
@@ -590,6 +995,11 @@ async def web_search(
         params["time_range"] = time_range if time_range in TIME_RANGES else "week"
     if category and category != "general":
         params["categories"] = category
+    engine_text = ",".join(
+        part.strip() for part in str(engines or "").split(",") if part.strip()
+    )
+    if engine_text:
+        params["engines"] = engine_text[:200]
     timeout = float(getattr(settings, "search_timeout", 15.0))
     cap = max(1, min(int(limit), int(getattr(settings, "search_max_results", 10))))
 
@@ -840,21 +1250,41 @@ def without_source_links(text: str) -> str:
 
 
 def novel_excerpt_reply(sources: list[dict[str, Any]]) -> str:
-    """生成失败/整段拒答时仅引用有限原句，绝不生成作品评价。"""
-    for item in sources[:4]:
-        if not isinstance(item, dict) or not _is_safe_url(str(item.get("url") or "")):
-            continue
-        text = str(item.get("summary") or item.get("text") or "").strip()
+    """生成前台可见的结构化资料兜底，不展示内部卡片或质量字段。"""
+    safe_sources = [
+        item for item in (sources or [])[:6]
+        if isinstance(item, dict) and _is_safe_url(str(item.get("url") or ""))
+    ]
+    fields = novel_evidence_fields(safe_sources)
+    labels = (
+        ("author", "作者"), ("genres", "类型"), ("protagonist", "主角"),
+        ("status", "连载状态"), ("started", "连载开始"), ("updated", "更新时间"),
+        ("chapter", "最新章节"), ("word_count", "字数"),
+    )
+    lines = [f"{label}：{fields[key]}" for key, label in labels if fields.get(key)]
+    if fields.get("synopsis"):
+        lines.append(f"简介：{fields['synopsis']}")
+    if fields.get("clues"):
+        lines.append(f"设定线索：{fields['clues']}")
+    for item in safe_sources:
+        text = str(item.get("text") or item.get("summary") or "").strip()
         text = " ".join(without_source_links(text).split())
-        # 不切断否定或条件句；没有完整短句就不展示摘录。
+        # 摘要可能是搜索片段而不是完整句；保留有界片段，不因缺句号丢掉证据。
         sentences = re.findall(r"[^。！？\n]+[。！？]", text)
         excerpt = ""
-        for sentence in sentences:
-            if len(excerpt) + len(sentence) > 240:
-                break
-            excerpt += sentence
-        if excerpt:
-            return f"目前公开资料的摘录是：“{excerpt}” 仅凭这段资料，还不足以评价整本书。"
+        if sentences:
+            for sentence in sentences:
+                if len(excerpt) + len(sentence) > 360:
+                    break
+                excerpt += sentence
+        elif text:
+            excerpt = text[:360].rstrip("，,；; ") + "。"
+        if excerpt and not fields.get("synopsis"):
+            lines.append(f"资料摘录：{excerpt}")
+            break
+    if lines:
+        lines.append("以上只依据本轮公开资料；未覆盖的字段暂时无法核实。")
+        return "\n".join(lines)
     return "查到了作品资料，但现有摘录不足以概括内容或评价整本书。"
 
 
@@ -938,6 +1368,7 @@ async def search_and_cluster(
     deep_dive: bool = False,
     max_attempts: int | None = None,
     budget_seconds: float | None = None,
+    engines: str | None = None,
 ) -> dict[str, Any]:
     """检索并按事件聚合；命中不足时逐级放宽。
 
@@ -1043,7 +1474,14 @@ async def search_and_cluster(
         record = {"query": q, "category": category, "time_range": window, "received": 0, "added": 0, "status": "completed"}
         attempt_log.append(record)
         try:
-            batch = await timed(web_search(q, category=category, time_range=window, limit=limit))
+            search_kwargs = {
+                "category": category,
+                "time_range": window,
+                "limit": limit,
+            }
+            if engines:
+                search_kwargs["engines"] = engines
+            batch = await timed(web_search(q, **search_kwargs))
         except Exception as exc:  # 子次失败/超时不能覆盖已获得的证据；取消仍向上传播
             record["status"] = type(exc).__name__
             if deadline is not None and remaining() == 0:
@@ -1068,7 +1506,14 @@ async def search_and_cluster(
                 return
             request_count += 1
             try:
-                angle_added += merge_batch(await timed(web_search(q, category="general", time_range="", limit=limit)))
+                search_kwargs = {
+                    "category": "general",
+                    "time_range": "",
+                    "limit": limit,
+                }
+                if engines:
+                    search_kwargs["engines"] = engines
+                angle_added += merge_batch(await timed(web_search(q, **search_kwargs)))
             except Exception:
                 if deadline is not None and remaining() == 0:
                     budget_exhausted = True

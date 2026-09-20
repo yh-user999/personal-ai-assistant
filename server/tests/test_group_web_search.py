@@ -91,12 +91,12 @@ def test_reference_lookup_stays_conservative_without_a_title():
 
 def test_reference_queries_start_with_exact_title_then_expand():
     primary, alternate = web_provider.reference_search_queries("《没钱修什么仙》这本小说的剧情")
-    assert primary == "没钱修什么仙？ 作品简介 剧情 设定"
-    assert alternate == "没钱修什么仙？ 小说 作者 简介 剧情 设定"
+    assert primary == "没钱修什么仙？ 主角 设定 最新章节"
+    assert alternate == "没钱修什么仙？ 作者 简介"
 
     primary, alternate = web_provider.reference_search_queries("书名是：没钱修什么仙的简介")
-    assert primary == "没钱修什么仙？ 作品简介 剧情 设定"
-    assert alternate == "没钱修什么仙？ 小说 作者 简介 剧情 设定"
+    assert primary == "没钱修什么仙？ 主角 设定 最新章节"
+    assert alternate == "没钱修什么仙？ 作者 简介"
 
 
 def test_reference_results_drop_safe_but_irrelevant_noise():
@@ -206,7 +206,7 @@ def test_group_web_search_injects_only_current_sources(monkeypatch):
                     "url": "https://www.qidian.com/book/1042256511/",
                     "source": "起点中文网",
                     "published_at": "2026-09-18T00:00:00Z",
-                    "summary": "公开检索摘要",
+                        "summary": "没钱修什么仙？公开检索摘要",
                 }
             ],
             "events": [],

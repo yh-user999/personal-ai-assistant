@@ -148,6 +148,8 @@ class Settings(BaseSettings):
     search_backend_url: str = ""
     search_timeout: float = 15.0
     search_max_results: int = 10
+    # 小说资料优先使用本机实测较快的引擎；逗号分隔，留空则使用 SearXNG 默认引擎集合。
+    novel_search_engines: str = "brave,bing"
     search_max_page_bytes: int = 500_000
     search_time_range: str = "week"
     # 低于此结果数视为证据不足，触发阶梯式放宽（见 web_provider.search_and_cluster）

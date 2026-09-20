@@ -29,9 +29,42 @@ def test_research_plan_rewrites_novel_and_bounds_budget():
     plan = web_research.build_plan("帮我查一下《没钱修什么仙》的作者和设定", settings=_settings())
     assert plan.kind == "novel"
     assert plan.queries[0] == "没钱修什么仙？"
-    assert plan.queries[1] == "没钱修什么仙？ 作品简介 剧情 设定"
+    assert plan.queries[1] == "没钱修什么仙？ 主角 设定 最新章节"
     assert plan.max_rounds == 2
     assert plan.max_pages == 3
+
+
+def test_novel_research_passes_configured_fast_engines(monkeypatch):
+    calls = []
+
+    async def fake_search(query, **kwargs):
+        calls.append((query, kwargs.get("engines")))
+        return {
+            "results": [{
+                "title": "没钱修什么仙？资料",
+                "url": "https://book.qq.com/novel",
+                "source": "book.qq.com",
+                "summary": "熊狼狗，张羽，修仙题材。",
+            }],
+            "events": [],
+            "has_sources": True,
+        }
+
+    async def fake_fetch(url):
+        return {"url": url, "text": "作者熊狼狗，主角张羽。"}
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", fake_search)
+    monkeypatch.setattr(web_provider, "fetch_page", fake_fetch)
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我查一下《没钱修什么仙》",
+            settings=_settings(novel_search_engines="brave,bing"),
+        )
+    )
+
+    assert result.kind == "novel"
+    assert calls
+    assert {engine for _, engine in calls} == {"brave,bing"}
 
 
 def test_semantic_plan_queries_override_rule_classification(monkeypatch):
@@ -163,6 +196,39 @@ def test_novel_research_drops_low_quality_sources_and_keeps_page_body(monkeypatc
     assert "作品页正文" in result.sources[0]["text"]
     assert "作品页正文" in result.prompt_block()
     assert "最新章节" not in result.prompt_block()
+
+
+def test_novel_research_keeps_search_snippet_as_partial_evidence(monkeypatch):
+    async def snippet_search(*args, **kwargs):
+        return {
+            "results": [{
+                "title": "没钱修什么仙？（熊狼狗）作品资料",
+                "url": "https://book.qq.com/kol-rec/example",
+                "source": "book.qq.com",
+                "summary": "仙侠 修真文明 413万字，张羽与法力贷。",
+            }],
+            "events": [],
+            "has_sources": True,
+        }
+
+    async def unavailable_page(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(web_provider, "search_and_cluster", snippet_search)
+    monkeypatch.setattr(web_provider, "fetch_page", unavailable_page)
+    result = asyncio.run(
+        web_research.run_research(
+            "帮我查《没钱修什么仙》的作者和设定",
+            settings=_settings(),
+        )
+    )
+
+    assert result.sources
+    assert result.pages_read == 0
+    assert result.page_failures == 1
+    assert result.evidence["status"] == "partial"
+    assert result.evidence["gaps"][0]["id"] == "web_research_page_body_unavailable"
+    assert "413万字" in result.prompt_block()
 
 
 def test_novel_research_with_only_low_quality_sources_degrades_safely(monkeypatch):

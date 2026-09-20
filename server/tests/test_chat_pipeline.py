@@ -269,6 +269,36 @@ def test_novel_sources_are_shown_only_on_explicit_request(message):
     assert "https://www.qidian.com/book/fixture/" in reply
 
 
+def test_novel_fact_lines_override_model_rewritten_fields():
+    ctx = _novel_reply_context("《测试作品》简介")
+    bundle = SimpleNamespace(evidence={"sources": [{
+        "title": "测试作品（熊狼狗）仙侠",
+        "url": "https://book.qq.com/kol-rec/fixture",
+        "source": "book.qq.com",
+        "summary": "张羽面对法力贷和修仙债务。",
+    }]})
+    reply = _enforce_group_web_sources(
+        ctx,
+        bundle,
+        "作者：是熊狼狗\n类型：现代修真\n主角：穿越者\n这是关于修仙债务的简介。",
+    )
+    assert "作者：熊狼狗" in reply
+    assert "类型：仙侠" in reply
+    assert "主角：张羽" in reply
+    assert "作者：是熊狼狗" not in reply
+    assert "主角：穿越者" not in reply
+
+
+def test_novel_followup_strips_repeated_identity_intro():
+    ctx = _novel_reply_context("你怎么看？", active=True)
+    reply = _enforce_group_web_sources(
+        ctx,
+        _novel_source_bundle(),
+        "我是小月，这个设定的债务隐喻很有意思。",
+    )
+    assert reply == "这个设定的债务隐喻很有意思。"
+
+
 def test_novel_reply_hides_model_supplied_links_but_keeps_summary():
     ctx = _novel_reply_context("不要链接，概括一下")
     reply = _enforce_group_web_sources(ctx, _novel_source_bundle(),

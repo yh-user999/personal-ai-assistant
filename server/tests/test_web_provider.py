@@ -229,6 +229,18 @@ def test_search_invalid_time_range_falls_back_to_week(fake_http):
     assert captured["params"]["time_range"] == "week"
 
 
+def test_search_passes_explicit_engines(fake_http):
+    captured = {}
+
+    def handler(url, kwargs):
+        captured["params"] = kwargs.get("params", {})
+        return _FakeResponse(payload={"results": []})
+
+    fake_http(handler)
+    asyncio.run(web_provider.web_search("x", engines=" brave, bing, "))
+    assert captured["params"]["engines"] == "brave,bing"
+
+
 def test_search_respects_max_results_cap(fake_http, monkeypatch):
     monkeypatch.setattr(settings, "search_max_results", 2)
     fake_http(lambda url, kwargs: _FakeResponse(payload={"results": [
@@ -461,6 +473,64 @@ def test_novel_source_quality_prefers_official_and_excludes_low_quality():
         "https://baike.baidu.com/item/novel",
     ]
     assert all("_novel_quality" not in web_provider.format_sources([item]) for item in selected)
+
+
+def test_novel_evidence_ignores_unrelated_search_snippet():
+    results = [
+        {
+            "title": "没钱修什么仙？ (熊狼狗)小说在线阅读",
+            "url": "https://www.qidian.com/book/example/",
+            "source": "qidian.com",
+            "summary": "杨景撞大运穿越到了兵荒马乱的王朝乱世。",
+        },
+        {
+            "title": "没钱修什么仙？_百度百科",
+            "url": "https://baike.baidu.com/item/novel",
+            "source": "baike.baidu.com",
+            "summary": "《没钱修什么仙？》是一本连载小说，作者是熊狼狗。",
+        },
+    ]
+    selected = web_provider.select_novel_evidence_results("没钱修什么仙？", results)
+    assert [item["url"] for item in selected] == ["https://baike.baidu.com/item/novel"]
+    fields = web_provider.novel_evidence_fields(selected)
+    assert fields["author"] == "熊狼狗"
+    assert "杨景" not in fields.get("synopsis", "")
+    assert "主角" not in fields
+
+
+def test_novel_evidence_fields_extract_only_explicit_public_facts():
+    source = {
+        "title": "没钱修什么仙？免费阅读（熊狼狗）",
+        "url": "https://book.qq.com/kol-rec/example",
+        "source": "book.qq.com",
+        "text": (
+            "仙侠 修真文明 413万字 连载中，2024年11月开始连载。"
+            "更新时间：2026-09-18 14:12:56 最新章节：第1000章 昆墟第33层。"
+            "简介：张羽冷哼一声，关掉了法力贷广告。学校面试与借贷修仙构成开篇冲突。"
+        ),
+    }
+    fields = web_provider.novel_evidence_fields([source])
+    assert fields["author"] == "熊狼狗"
+    assert fields["genres"] == "修真文明 / 仙侠"
+    assert fields["protagonist"] == "张羽"
+    assert fields["started"] == "2024年11月"
+    assert fields["updated"].startswith("2026-09-18")
+    assert fields["chapter"].startswith("第1000章")
+    assert fields["word_count"] == "413万字"
+    assert "法力贷" in fields["synopsis"]
+
+
+def test_novel_excerpt_reply_is_user_facing_and_hides_internal_card():
+    reply = web_provider.novel_excerpt_reply([{
+        "title": "没钱修什么仙？（熊狼狗）",
+        "url": "https://book.qq.com/kol-rec/example",
+        "source": "book.qq.com",
+        "summary": "仙侠 修真文明 413万字，张羽冷哼一声，关掉了法力贷广告。",
+    }])
+    assert "作者：熊狼狗" in reply
+    assert "类型：修真文明 / 仙侠" in reply
+    assert "小说事实卡片" not in reply
+    assert "https://" not in reply
 
 
 def test_sufficient_results_stop_after_first_attempt(fake_http):

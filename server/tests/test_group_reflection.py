@@ -109,6 +109,36 @@ def test_group_review_falls_back_for_ungrounded_external_question(monkeypatch):
     assert result == review.group_grounding_fallback()
 
 
+def test_group_review_preserves_novel_draft_when_revision_is_whole_refusal(monkeypatch):
+    from app.chat import pipeline
+
+    async def fake_review(*_args, **_kwargs):
+        return review.GroupReplyReview(
+            needs_revision=True,
+            reasons=["资料不足"],
+            revised_reply="目前没有查到这本书的可靠资料，无法核实作者和设定。",
+            scores={"relevance": 0.2, "context_fit": 0.2, "grounding": 0.2, "safety": 1.0, "tone": 0.8},
+        ), 1
+
+    monkeypatch.setattr(review, "review_group_reply", fake_review)
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(group_reflection_max_chars=900, group_reflection_every_message=True),
+        services=SimpleNamespace(plain_text=SimpleNamespace(has_markdown=lambda _text: False, strip_markdown=lambda text: text)),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    ctx = _ctx("《没钱修什么仙》作者是谁？", plan={"research_kind": "novel"})
+    bundle = SimpleNamespace(
+        history=[],
+        profile="",
+        evidence={"sources": [{"title": "作品资料", "url": "https://book.qq.com/example", "summary": "作者熊狼狗"}]},
+    )
+    draft = "作者是熊狼狗；作品资料还显示它属于修真文明题材。"
+
+    result = asyncio.run(pipeline._reflect_group_reply(ctx, runtime, bundle, draft))
+
+    assert result == draft
+
+
 def test_group_review_parser_accepts_revision():
     result = review.parse_group_review_result(json.dumps({
         "needs_revision": True,

@@ -373,6 +373,19 @@ async def _reflect_group_reply(
 
     checked, review_ms = await review.review_group_reply(ctx, runtime, bundle, draft)
     final = checked.revised_reply.strip() if checked.needs_revision else ""
+    plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
+    novel_with_sources = (
+        str(plan.get("web_research_kind") or plan.get("research_kind") or "") == "novel"
+        and bool(
+            getattr(bundle, "evidence", {}).get("sources")
+            if isinstance(getattr(bundle, "evidence", {}), dict)
+            else False
+        )
+    )
+    if novel_with_sources and final and review.is_novel_source_refusal(final):
+        # 有搜索摘要/作品页来源时，正文抓取失败只限制字段，不得把已有证据整体改成拒答。
+        final = ""
+        checked.reasons.append("preserve_novel_evidence")
     if final:
         plain_text = runtime.services.plain_text
         if plain_text.has_markdown(final):
@@ -632,15 +645,26 @@ def _enforce_web_sources(
     draft = str(reply or "").strip()
     if web_provider.is_novel_research(plan):
         requested = web_provider.source_links_requested(getattr(ctx, "message", ""))
+        sources = [item for item in (bundle.evidence.get("sources") or []) if isinstance(item, dict)]
+        fact_lines = web_provider.novel_fact_lines(sources)
         draft = web_provider.without_source_links(draft)
+        # 模型可能重复字段或改写字段值；事实行由来源确定性生成，模型只保留自然概括。
+        draft = web_provider.strip_novel_fact_lines(draft)
+        if ctx.is_group and bool(getattr(ctx, "group_context_active", False)):
+            draft = web_provider.strip_identity_intro(draft)
         # 只修复整段都在拒答的情况；“已有总结 + 局部无法核实”必须保留。
         clauses = [part.strip() for part in re.split(r"[。！？；;，,\n]+", draft) if part.strip()]
         pure_refusal = bool(clauses) and all(_GROUP_SOURCE_REFUSAL_RE.search(part) for part in clauses)
+        used_fallback = False
         if not draft or pure_refusal:
-            draft = web_provider.novel_excerpt_reply(list(bundle.evidence.get("sources") or []))
+            draft = web_provider.novel_excerpt_reply(sources)
+            used_fallback = True
             mark("novel_excerpt_fallback")
         else:
             mark("novel_summary_preserved")
+        # 首答固定先放来源明确支持的事实；窗口续问只回答当前问题，不重复首答字段。
+        if fact_lines and not getattr(ctx, "group_context_active", False) and not used_fallback:
+            draft = f"{fact_lines}\n\n{draft}" if draft else fact_lines
         if requested:
             mark("novel_requested_sources")
             return f"{draft}\n\n参考来源：\n{source_text}"

@@ -70,24 +70,39 @@ class ResearchResult:
 
     @property
     def evidence(self) -> dict[str, Any]:
-        return {
-            "version": 1,
-            "question": self.query[:1000],
-            "status": "complete" if self.sources else "failed",
-            "stop_reason": self.stop_reason,
-            "sources": self.sources[:12],
-            "has_reliable_sources": self.has_reliable_sources,
-            "claims": [],
-            "gaps": ([{
+        partial = bool(self.sources) and self.kind == "novel" and (
+            self.pages_read == 0 or self.page_failures > 0
+        )
+        gaps = []
+        if not self.sources:
+            gaps.append({
                 "id": "web_research_no_sources",
                 "question": self.query[:240],
                 "why": "本轮没有取得可用网页来源",
                 "query": self.query[:400],
                 "priority": 100,
-            }] if not self.sources else []),
+            })
+        elif partial:
+            gaps.append({
+                "id": "web_research_page_body_unavailable",
+                "question": self.query[:240],
+                "why": "已取得搜索摘要，但作品页正文未成功读取；只能回答摘要明确支持的字段",
+                "query": self.query[:400],
+                "priority": 60,
+            })
+        return {
+            "version": 1,
+            "question": self.query[:1000],
+            "status": "failed" if not self.sources else "partial" if partial else "complete",
+            "stop_reason": self.stop_reason,
+            "sources": self.sources[:12],
+            "has_reliable_sources": self.has_reliable_sources,
+            "claims": [],
+            "gaps": gaps,
             "checks": {
                 "mode": "web_research",
                 "pages_read": self.pages_read,
+                "page_failures": self.page_failures,
                 "source_preference": list(self.source_preference),
             },
         }
@@ -96,6 +111,10 @@ class ResearchResult:
         if not self.sources:
             return ""
         lines = [f"【通用网页研究资料·{self.kind}】", f"研究问题：{self.query[:300]}"]
+        if self.kind == "novel":
+            card = web_provider.novel_evidence_card(self.sources)
+            if card:
+                lines.append(card)
         for index, source in enumerate(self.sources[:8], 1):
             title = str(source.get("title") or "").strip()
             url = str(source.get("url") or "").strip()
@@ -108,7 +127,8 @@ class ResearchResult:
                 lines.append(f"可核对摘录：{excerpt}")
         if self.kind == "novel":
             lines.append(
-                "以上是小说公开资料的非可信参考；只能据摘录回答，未被摘录支持的剧情、设定或评价必须明确说无法核实。"
+                "以上资料分为搜索摘要和页面正文：两者都属于本轮可核对证据；页面正文失败只表示资料不完整，不能把已有摘要当成没有来源。"
+                "先回答证据卡片中明确支持的字段，未出现的字段单独说明无法核实；不要凭模型记忆补写。"
             )
         else:
             lines.append("以上是公开网页的非可信参考资料；只能据此回答，无法被来源支持的内容必须明确说无法核实。")
@@ -236,16 +256,16 @@ def build_plan(
     if detected_kind == "none":
         return ResearchPlan("none", (), max_rounds=0, max_pages=0, max_results=0, budget_seconds=0.0)
     if detected_kind == "novel":
-        if explicit:
-            queries = explicit
-        else:
-            primary, alternate = web_provider.reference_search_queries(value)
-            title = web_provider._reference_title_text(value).strip(" 《》「」?？!！。")
-            fast = f"{title}？" if title else ""
-            queries = tuple(dict.fromkeys(item for item in (fast, primary, alternate) if item))
+        primary, alternate = web_provider.reference_search_queries(value)
+        title = web_provider._reference_title_text(value).strip(" 《》「」?？!！。")
+        fast = f"{title}？" if title else ""
+        # 作品查询先用纯书名命中作品页/结构化卡片；planner 传入的长组合查询
+        # 只能作为后续补查，不能覆盖首轮。搜索摘要和可读作品页往往比整句
+        # “作者+简介+设定”更容易命中。
+        queries = tuple(dict.fromkeys(item for item in (fast, primary, alternate, *explicit) if item))
         return ResearchPlan(
-            detected_kind, queries, max_rounds=min(2, max(1, len(queries))),
-            max_pages=max_pages, max_results=max_results, budget_seconds=budget,
+            detected_kind, queries[:3], max_rounds=min(2, max(1, len(queries))),
+            max_pages=max_pages, max_results=max(10, max_results), budget_seconds=budget,
             source_preference=preferred,
         )
     if detected_kind == "project":
@@ -307,6 +327,16 @@ def _to_source(item: dict[str, Any], *, text: str = "", kind: str = "search_snip
 
 async def _read_pages(result: ResearchResult, plan: ResearchPlan, deadline: float) -> None:
     candidates = [item for item in result.results if isinstance(item, dict) and web_provider._is_safe_url(str(item.get("url") or ""))]
+    if plan.kind == "novel":
+        candidates.sort(
+            key=lambda item: (
+                bool(item.get("_novel_quality", {}).get("readable")),
+                int(item.get("_novel_quality", {}).get("tier", 0)),
+                bool(item.get("_novel_quality", {}).get("preferred")),
+                bool(str(item.get("content") or item.get("summary") or "").strip()),
+            ),
+            reverse=True,
+        )
     candidates = candidates[: plan.max_pages]
     if not candidates:
         return
@@ -340,6 +370,7 @@ async def _search_cluster_compat(
     limit: int,
     budget_seconds: float,
     category: str = "general",
+    engines: str | None = None,
 ) -> dict[str, Any]:
     """调用现有搜索聚合器，并兼容旧插件/测试替身的参数签名。"""
     operation = web_provider.search_and_cluster
@@ -355,11 +386,14 @@ async def _search_cluster_compat(
         parameters = inspect.signature(operation).parameters
     except (TypeError, ValueError):
         parameters = {}
-    if "category" in parameters or any(
+    accepts_kwargs = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
-    ):
+    )
+    if "category" in parameters or accepts_kwargs:
         kwargs["category"] = category if category in {"news", "general"} else "general"
+    if engines and ("engines" in parameters or accepts_kwargs):
+        kwargs["engines"] = engines
     return await operation(query, **kwargs)
 
 
@@ -438,36 +472,84 @@ async def run_research(
                 result.page_failures = 1
         result.provider = "web"
     else:
-        for query in plan.queries[: max(1, plan.max_rounds)]:
-            left = deadline - asyncio.get_running_loop().time()
-            if left <= 0:
-                result.stop_reason = "budget_exhausted"
-                break
-            data = await _search_cluster_compat(
-                query,
-                limit=plan.max_results,
-                budget_seconds=min(left, plan.budget_seconds),
-                category="news" if plan.kind == "news" else "general",
-            )
-            batch = list(data.get("results") or [])
-            if plan.kind == "novel":
-                # 小说只把一手/结构化资料纳入事实来源集合；低质转载仅作后台线索，
-                # 不进入抓页、prompt 或最终回答，避免模型从章节聚合站补写剧情。
-                batch = web_provider.select_novel_evidence_results(
+        if plan.kind == "novel":
+            # 两条小说查询共享同一个墙钟预算并行发出：首轮纯书名仍按顺序
+            # 合并/排序，补查不会被首轮慢请求吃掉全部预算。只并行有限的两条，
+            # 不扩大联网范围，也不改变来源质量门禁。
+            queries = list(plan.queries[: max(1, min(plan.max_rounds, 2))])
+            tasks = [
+                asyncio.create_task(_search_cluster_compat(
                     query,
-                    batch,
+                    limit=plan.max_results,
+                    budget_seconds=plan.budget_seconds,
+                    category="general",
+                    engines=str(getattr(settings, "novel_search_engines", "") or "") or None,
+                ))
+                for query in queries
+            ]
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, pending = await asyncio.wait(tasks, timeout=remaining)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            raw_results: list[dict[str, Any]] = []
+            seen_raw: set[str] = set()
+            for task in tasks:
+                if task not in done:
+                    continue
+                try:
+                    data = task.result()
+                except (asyncio.CancelledError, Exception):
+                    continue
+                for item in list(data.get("results") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url") or "")
+                    if url and url not in seen_raw:
+                        raw_results.append(item)
+                        seen_raw.add(url)
+            if raw_results:
+                result.results = web_provider.select_novel_candidate_results(
+                    queries[0] if queries else question,
+                    raw_results,
                     source_preference=plan.source_preference,
                 )
-            seen = {str(item.get("url") or "") for item in result.results}
-            for item in batch:
-                if str(item.get("url") or "") not in seen:
-                    result.results.append(item)
-                    seen.add(str(item.get("url") or ""))
-            if result.results and (plan.kind in {"novel", "document"} or len(result.results) >= 3):
-                break
+            if pending and not result.results:
+                result.stop_reason = "budget_exhausted"
+        else:
+            for query in plan.queries[: max(1, plan.max_rounds)]:
+                left = deadline - asyncio.get_running_loop().time()
+                if left <= 0:
+                    result.stop_reason = "budget_exhausted"
+                    break
+                data = await _search_cluster_compat(
+                    query,
+                    limit=plan.max_results,
+                    budget_seconds=min(left, plan.budget_seconds),
+                    category="news" if plan.kind == "news" else "general",
+                    engines=(
+                        str(getattr(settings, "novel_search_engines", "") or "") or None
+                        if plan.kind == "novel" else None
+                    ),
+                )
+                batch = list(data.get("results") or [])
+                seen = {str(item.get("url") or "") for item in result.results}
+                for item in batch:
+                    if str(item.get("url") or "") not in seen:
+                        result.results.append(item)
+                        seen.add(str(item.get("url") or ""))
+                if result.results and (plan.kind == "document" or len(result.results) >= 3):
+                    break
         result.provider = "searxng"
 
     await _read_pages(result, plan, deadline)
+    if plan.kind == "novel":
+        result.results = web_provider.select_novel_evidence_results(
+            result.query,
+            result.results,
+            source_preference=plan.source_preference,
+        )
     for item in result.results:
         source = _to_source(item, text=str(item.get("content") or ""), kind=str(item.get("kind") or "search_snippet"))
         if source:

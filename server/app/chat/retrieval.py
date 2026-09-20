@@ -46,6 +46,44 @@ def _detect_domains(detector, query: str, user_id: str):
     return detector(query, user_id=user_id) if supports_user_id else detector(query)
 
 
+def _search_cluster_kwargs(
+    operation,
+    *,
+    time_range: str,
+    limit: int,
+    alt_query: str | None,
+    category: str,
+    deep_dive: bool,
+    max_attempts: int | None,
+    budget_seconds: float | None,
+    engines: str | None = None,
+) -> dict[str, Any]:
+    """为搜索调用过滤可选参数，兼容旧插件和测试替身签名。"""
+    values = {
+        "time_range": time_range,
+        "limit": limit,
+        "alt_query": alt_query,
+        "category": category,
+        "deep_dive": deep_dive,
+        "max_attempts": max_attempts,
+        "budget_seconds": budget_seconds,
+        "engines": engines,
+    }
+    try:
+        parameters = inspect.signature(operation).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    return {
+        name: value
+        for name, value in values.items()
+        if (name in parameters or accepts_kwargs) and value is not None
+    }
+
+
 def _call_with_user(func, *args, user_id: str):
     """调用支持主体参数的注入器；兼容旧插件/测试替身。"""
     return _call_with_context(func, *args, user_id=user_id)
@@ -550,13 +588,20 @@ async def _retrieve_group_web(
         with ctx.trace.stage("group_web_search"):
             data = await web_provider.search_and_cluster(
                 query,
-                time_range=web_provider.time_range_default(),
-                limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
-                alt_query=alternate if alternate and alternate != query else None,
-                **({"category": "general"} if is_reference_lookup else {}),
-                deep_dive=False,
-                max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
-                budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 12.0))),
+                **_search_cluster_kwargs(
+                    web_provider.search_and_cluster,
+                    time_range=web_provider.time_range_default(),
+                    limit=max(1, int(getattr(settings, "group_web_search_max_results", 5))),
+                    alt_query=alternate if alternate and alternate != query else None,
+                    category="general",
+                    deep_dive=False,
+                    max_attempts=max(1, int(getattr(settings, "group_web_search_max_attempts", 2))),
+                    budget_seconds=max(1.0, float(getattr(settings, "group_web_search_budget_seconds", 12.0))),
+                    engines=(
+                        str(getattr(settings, "novel_search_engines", "") or "")
+                        if is_reference_lookup else None
+                    ),
+                ),
             )
         raw_results = list(data.get("results") or [])
         results = (
@@ -937,13 +982,20 @@ async def retrieve(ctx: ChatContext, runtime: ChatRuntime, preparation: TurnPrep
                 with ctx.trace.stage("web_search"):
                     data = await web_provider.search_and_cluster(
                         query,
-                        time_range=web_provider.time_range_default(),
-                        alt_query=alt if alt and alt != query else None,
-                        **({"category": "general"} if is_reference_lookup else {}),
-                        # 有界调查替代固定角度，避免先重复搜一遍再叠加深挖预算。
-                            # 有界调查关闭时也不偷偷退回旧的固定深挖；普通事件请求只做一次主检索。
+                        **_search_cluster_kwargs(
+                            web_provider.search_and_cluster,
+                            time_range=web_provider.time_range_default(),
+                            limit=10,
+                            alt_query=alt if alt and alt != query else None,
+                            category="general",
                             deep_dive=False,
-                        **initial_options,
+                            max_attempts=initial_options.get("max_attempts"),
+                            budget_seconds=initial_options.get("budget_seconds"),
+                            engines=(
+                                str(getattr(settings, "novel_search_engines", "") or "")
+                                if is_reference_lookup else None
+                            ),
+                        ),
                     )
                 from app.chat import investigation
 

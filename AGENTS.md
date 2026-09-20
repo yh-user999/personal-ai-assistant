@@ -544,6 +544,6 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 ### 2026-09-20 — 当前项目状态与 Agent 方案交接记录
 - 代码/配置：未改运行代码、生产配置或 QQ 链路；记录当前方案为“自建 OneBot 网关 + FastAPI 主服务”继续做唯一事实/权限源。若以后优先增强 QQ 群社交，候选为 MaiBot 单独接管 QQ 社交前端；AnySearch 仅作为搜索/抓页工具候选，不是 Agent；OpenClaw 仅在 Windows/桌面执行成为首要目标时再评估。
 - 验证：核对生产 2026-09-20 17:21 左右日志；响应 planner 首次超时后回退规则计划，但裸书名“你知道没钱修什么仙这本书吗”未被当前规则识别为作品查询，未进入搜索请求，最终被群聊 grounding fallback 改写为“没有可靠来源”话术。该次不是搜索后端冷却。
-- 提交：未提交；本次仅更新项目状态文档与 Dynamic Spec。
+- 提交：事实交接文档与方案状态已随 `37311f2` 提交并推送 GitHub；本次更正仍为文档改动。
 - 运行状态：未重启、未改现网；现有自建 OneBot 网关和 FastAPI 链路保持原状。MaiBot/AstrBot/OpenClaw/Hermes/AnySearch 均未接入生产。
 - 未完成：裸书名规则 fallback 修复与回归测试待下一阶段；修复后需重新运行定向/全量验证、脱敏检查，并按发布流程提交、推送、同步部署和健康检查；外部 Agent 的最终接入所有权尚未实施。

@@ -53,7 +53,15 @@ QQ/NapCat 登录（保留）
 3. 真实 At、Reply 目标确认、配置前缀和有限 follow-up 才能放行群直达；无法确认账号或引用目标时拒绝触发。非直达默认不调用服务端，主动插话必须显式开启。
 4. 网关复用服务端的 QQ 身份 HMAC、访客 token、群作用域、`request_id` 幂等和 OneBot action 发送出口。
 
-## 2.3 服务端只读架构审计结论（2026-09-16）
+### 2.3 当前 Agent 方案记录（2026-09-20，未实施）
+
+- 当前生产仍只运行自建 `qq/onebot_gateway`、FastAPI 服务、NapCat 与 SearXNG；MaiBot、AstrBot、OpenClaw、Hermes、NarraFork 均未接入运行链路。
+- 主服务继续作为事实与权限源：身份/群作用域、记忆/知识库、联网检索、小说工作台、健身/提醒和最终审校不迁出 FastAPI。
+- 若目标优先是 QQ 群社交拟人化，候选方案是 **MaiBot 作为唯一外部 QQ 社交前端**，FastAPI 作为工具/事实后端；MaiBot 与自建网关不能同时对同一 NapCat 事件做双重收发，接入前必须先确定唯一 QQ 入站/出站所有者。
+- `AnySearch` 只作为搜索/抓页工具，不是 Agent；可在未来作为 MaiBot 插件、MCP/HTTP 工具或 FastAPI 检索 provider 的候选，不改变来源质量门禁、SSRF 防护、群限额和证据边界。
+- OpenClaw 仅在“Windows/桌面/远程执行”成为首要目标时作为替代候选；Hermes 偏长期记忆/自学习实验；NarraFork 继续只作为开发维护入口。当前不把多个 Agent 叠加到生产 QQ 链路。
+
+## 2.4 服务端只读架构审计结论（2026-09-16）
 
 - FastAPI 入口由 `server/run.py` 启动，`server/app/main.py` 负责生命周期、鉴权中间件、路由注册、健康检查和静态页；另有 MCP 入口，OneBot 入站由独立 `qq/onebot_gateway` 进程承接。
 - HTTP 聊天主链路为 `api.chat` 兼容层 → `services_registry` 全量模块装配 → `chat.pipeline` → 群聊闸门/响应规划 → 检索 → 提示词 → LLM → 审校 → 持久化；MCP 与部分领域 API 仍绕过统一应用服务。
@@ -532,3 +540,10 @@ systemctl restart personal-assistant   # 仅 server/ 代码有更新时需要
 - 提交：代码 `eca2313` 已推送 GitHub；部署仓已 fast-forward 同步，本条状态记录随补充提交推送。
 - 运行状态：`personal-assistant` 重启后 active；未修改 QQ 网关配置，未发送真实 QQ 测试消息；部署仓既有未跟踪实施方案文档保留且未纳入 Git。
 - 未完成：上游聊天生成偶发 503、QQ 推送/主人数字身份仍按既有决策项暂缓；无新增代码阻塞。
+
+### 2026-09-20 — 当前项目状态与 Agent 方案交接记录
+- 代码/配置：未改运行代码、生产配置或 QQ 链路；记录当前方案为“自建 OneBot 网关 + FastAPI 主服务”继续做唯一事实/权限源。若以后优先增强 QQ 群社交，候选为 MaiBot 单独接管 QQ 社交前端；AnySearch 仅作为搜索/抓页工具候选，不是 Agent；OpenClaw 仅在 Windows/桌面执行成为首要目标时再评估。
+- 验证：核对生产 2026-09-20 17:21 左右日志；响应 planner 首次超时后回退规则计划，但裸书名“你知道没钱修什么仙这本书吗”未被当前规则识别为作品查询，未进入搜索请求，最终被群聊 grounding fallback 改写为“没有可靠来源”话术。该次不是搜索后端冷却。
+- 提交：未提交；本次仅更新项目状态文档与 Dynamic Spec。
+- 运行状态：未重启、未改现网；现有自建 OneBot 网关和 FastAPI 链路保持原状。MaiBot/AstrBot/OpenClaw/Hermes/AnySearch 均未接入生产。
+- 未完成：裸书名规则 fallback 修复与回归测试待下一阶段；修复后需重新运行定向/全量验证、脱敏检查，并按发布流程提交、推送、同步部署和健康检查；外部 Agent 的最终接入所有权尚未实施。

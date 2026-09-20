@@ -226,6 +226,7 @@ def test_novel_prompt_requires_excerpt_support_without_exposing_quality_labels()
     system = prompting.build_system_prompt(ctx, _runtime_stub(), base_bundle())
     assert "摘录明确支持" in system
     assert "凭记忆补写" in system
+    assert "默认自然概括，不贴原始链接" in system
     assert "不要展示内部来源分级" in system
 
 

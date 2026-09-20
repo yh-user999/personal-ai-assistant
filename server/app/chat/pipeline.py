@@ -22,6 +22,7 @@ from app.chat import (
     retrieval,
     routing,
     review,
+    web_provider,
 )
 from app.chat.context import (
     GUEST_MAX_MSG_CHARS,
@@ -544,8 +545,20 @@ async def _apply_reply_reflection(
     return reply
 
 
-def _source_only_fallback_reply(bundle: retrieval.RetrievalBundle) -> str:
-    """LLM 失败但事实来源已到位时，只返回可核实来源，不自行补写结论。"""
+def _source_only_fallback_reply(
+    bundle: retrieval.RetrievalBundle, *, ctx: ChatContext | None = None,
+) -> str:
+    """LLM 失败时只引用已有资料，不自行补写结论或伪装为正常生成。"""
+    plan = getattr(getattr(ctx, "trace", None), "response_plan", {}) or {}
+    if web_provider.is_novel_research(plan) and bundle.evidence.get("sources"):
+        reply = "查到了作品资料，但生成服务暂时不可用。" + web_provider.novel_excerpt_reply(
+            list(bundle.evidence["sources"]),
+        )
+        if web_provider.source_links_requested(getattr(ctx, "message", "")):
+            source_text = _compact_source_text(bundle)
+            if source_text:
+                reply += "\n" + source_text
+        return reply
     source_text = _group_source_text(bundle)
     if not source_text:
         return ""
@@ -617,6 +630,21 @@ def _enforce_web_sources(
             return "未查到可靠的公开来源，暂时无法核实。"
         return reply
     draft = str(reply or "").strip()
+    if web_provider.is_novel_research(plan):
+        requested = web_provider.source_links_requested(getattr(ctx, "message", ""))
+        draft = web_provider.without_source_links(draft)
+        # 只修复整段都在拒答的情况；“已有总结 + 局部无法核实”必须保留。
+        clauses = [part.strip() for part in re.split(r"[。！？；;，,\n]+", draft) if part.strip()]
+        pure_refusal = bool(clauses) and all(_GROUP_SOURCE_REFUSAL_RE.search(part) for part in clauses)
+        if not draft or pure_refusal:
+            draft = web_provider.novel_excerpt_reply(list(bundle.evidence.get("sources") or []))
+            mark("novel_excerpt_fallback")
+        else:
+            mark("novel_summary_preserved")
+        if requested:
+            mark("novel_requested_sources")
+            return f"{draft}\n\n参考来源：\n{source_text}"
+        return draft
     if _GROUP_SOURCE_REFUSAL_RE.search(draft):
         mark("replaced_refusal")
         return "我能确认到的公开信息有限，先不把没有证据的部分说满：\n" + source_text
@@ -784,6 +812,9 @@ async def _run_chat(
     hint = response_plan.build_rule_plan(
         msg, is_owner=ctx.is_owner, history=planner_history,
         investigation_context=ctx.trace.investigation_context,
+        is_group=ctx.is_group,
+        group_context_active=ctx.group_context_active,
+        user_id=ctx.uid,
     )
     if ctx.is_group:
         hint = response_plan.apply_group_social_requirements(
@@ -942,7 +973,7 @@ async def _run_chat(
                 memories_used=0,
                 interaction=followup.build_interaction_hint(ctx, active_plan, fixed_reply),
             )
-        source_fallback = _source_only_fallback_reply(bundle)
+        source_fallback = _source_only_fallback_reply(bundle, ctx=ctx)
         if source_fallback:
             ctx.trace.status = "degraded"
             ctx.trace.error_code = "llm_failed_source_fallback"

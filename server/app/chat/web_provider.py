@@ -813,6 +813,51 @@ def format_events(events: list[dict[str, Any]], limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+def source_links_requested(message: str) -> bool:
+    """只把明确索要出处视为展示链接请求；否定表达不算。"""
+    text = str(message or "")[:800]
+    text = re.sub(r"(?:《[^》]*》|「[^」]*」|https?://\S+)", "", text)
+    if re.search(r"(?:不要|不用|别|无需|不必).{0,8}(?:来源|链接|出处|资料页)", text):
+        return False
+    return bool(re.search(
+        r"(?:给|发|贴|附|看|要|提供|列出|查看|找).{0,8}(?:来源|链接|出处|资料页)"
+        r"|(?:来源|链接|出处|资料页).{0,8}(?:在哪|哪里|是什么|呢|给|发|贴|提供|看看)"
+        r"|^(?:来源|链接|出处|资料页)[？?！!。\s]*$", text,
+    ))
+
+
+def is_novel_research(plan: dict[str, Any]) -> bool:
+    return (plan.get("web_research_kind") or plan.get("research_kind")) == "novel"
+
+
+def without_source_links(text: str) -> str:
+    """移除小说前台引用尾注和 URL，保留正文；后台证据不变。"""
+    value = re.split(r"(?:^|\n)\s*(?:参考来源|参考资料|来源链接|资料来源)\s*[:：]", text, maxsplit=1)[0]
+    value = re.sub(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)", r"\1", value, flags=re.I)
+    value = re.sub(r"(?:https?://|www\.)[^\s<>，。；！？、）)\]】]+", "", value, flags=re.I)
+    value = re.sub(r"[（(]\s*[)）]", "", value)
+    return value.strip()
+
+
+def novel_excerpt_reply(sources: list[dict[str, Any]]) -> str:
+    """生成失败/整段拒答时仅引用有限原句，绝不生成作品评价。"""
+    for item in sources[:4]:
+        if not isinstance(item, dict) or not _is_safe_url(str(item.get("url") or "")):
+            continue
+        text = str(item.get("summary") or item.get("text") or "").strip()
+        text = " ".join(without_source_links(text).split())
+        # 不切断否定或条件句；没有完整短句就不展示摘录。
+        sentences = re.findall(r"[^。！？\n]+[。！？]", text)
+        excerpt = ""
+        for sentence in sentences:
+            if len(excerpt) + len(sentence) > 240:
+                break
+            excerpt += sentence
+        if excerpt:
+            return f"目前公开资料的摘录是：“{excerpt}” 仅凭这段资料，还不足以评价整本书。"
+    return "查到了作品资料，但现有摘录不足以概括内容或评价整本书。"
+
+
 def format_sources(results: list[dict[str, Any]], limit: int = 8) -> str:
     """格式化为带来源与时间的参考资料块（供 prompt 注入）。
 

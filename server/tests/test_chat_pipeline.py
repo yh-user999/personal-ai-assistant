@@ -237,6 +237,63 @@ def test_compact_source_text_hides_excerpt_and_internal_quality_fields():
     assert "official" not in text
 
 
+def _novel_reply_context(message="《测试作品》简介", *, active=False):
+    return SimpleNamespace(
+        message=message, is_group=True, group_context_active=active,
+        trace=SimpleNamespace(response_plan={
+            "provider": "web_search", "research_kind": "novel", "web_has_sources": True,
+        }),
+    )
+
+
+def _novel_source_bundle():
+    return SimpleNamespace(evidence={"sources": [{
+        "title": "测试作品", "source": "起点中文网",
+        "url": "https://www.qidian.com/book/fixture/",
+        "text": "简介写的是一位学徒学习修行的故事。",
+        "summary": "简介写的是一位学徒学习修行的故事。",
+    }]})
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_novel_summary_with_honest_caveat_is_preserved(active):
+    ctx = _novel_reply_context(active=active)
+    draft = "简介讲的是学徒修行；后续剧情无法核实，不凭印象补写。"
+    assert _enforce_group_web_sources(ctx, _novel_source_bundle(), draft) == draft
+
+
+@pytest.mark.parametrize("message", ["给我来源链接", "出处在哪里？"])
+def test_novel_sources_are_shown_only_on_explicit_request(message):
+    ctx = _novel_reply_context(message, active=True)
+    reply = _enforce_group_web_sources(ctx, _novel_source_bundle(), "这是目前查到的资料。")
+    assert "https://www.qidian.com/book/fixture/" in reply
+
+
+def test_novel_reply_hides_model_supplied_links_but_keeps_summary():
+    ctx = _novel_reply_context("不要链接，概括一下")
+    reply = _enforce_group_web_sources(ctx, _novel_source_bundle(),
+        "简介是学徒修行。\n参考来源：\n- 测试作品\n  来源链接：https://www.qidian.com/book/fixture/")
+    assert "简介是学徒修行" in reply
+    assert "https://" not in reply
+    assert "参考来源" not in reply
+
+
+def test_novel_false_refusal_uses_excerpt_not_link_list():
+    reply = _enforce_group_web_sources(
+        _novel_reply_context(), _novel_source_bundle(), "目前没有可靠来源，请发一下链接或简介。",
+    )
+    assert "学徒学习修行" in reply
+    assert "https://" not in reply
+    assert "目前没有可靠来源" not in reply
+
+
+def test_novel_generation_failure_is_honest_and_has_no_unsolicited_links():
+    reply = _source_only_fallback_reply(_novel_source_bundle(), ctx=_novel_reply_context())
+    assert "生成服务暂时不可用" in reply
+    assert "https://" not in reply
+    assert "学徒学习修行" in reply
+
+
 def test_group_web_sources_replace_false_no_source_claim():
     ctx = SimpleNamespace(
         is_group=True,

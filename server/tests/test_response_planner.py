@@ -1,7 +1,92 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.chat.response_plan import ResponsePlan, parse_llm_plan, plan_response, validate_plan
+
+
+def _window_ctx():
+    return SimpleNamespace(
+        message="你怎么看待这本书", is_owner=False, is_group=True,
+        group_id="123", uid="member", group_directed=False, group_context_active=True,
+        request_id="window-test",
+    )
+
+
+def _book_history():
+    return [
+        {"role": "user", "content": "你知道《测试作品》吗？"},
+        {"role": "assistant", "content": "简介讲的是学徒修行，后续剧情还无法核实。"},
+    ]
+
+
+@pytest.mark.parametrize("message", ["你怎么看", "你怎么看待这本书", "你觉得这本书怎么样", "值得看吗"])
+def test_book_opinion_fallback_requires_active_window_and_recovers_title(message):
+    from app.chat.response_plan import build_rule_plan
+
+    plan = build_rule_plan(message, is_owner=False, history=_book_history(),
+                           is_group=True, group_context_active=True)
+    assert plan.context_relation == "continues_previous"
+    assert plan.context_continue and plan.reply_decision == "answer"
+    assert plan.context_subject == plan.subject == "测试作品"
+    assert plan.research_kind == "novel" and plan.provider == "web_search"
+    assert "测试作品" in plan.research_queries[0]
+    assert "你怎么看" not in plan.research_queries[0]
+    assert not plan.needs_moral_judgment
+
+
+@pytest.mark.parametrize("message,history,active,is_group", [
+    ("你怎么看", _book_history(), False, True),
+    ("你怎么看", _book_history(), True, False),
+    ("你怎么看", [], True, True),
+    ("换个话题，你怎么看", _book_history(), True, True),
+    ("你怎么看", [{"role": "user", "content": "这个项目怎么样"}], True, True),
+    ("你怎么看", _book_history() + [{"role": "user", "content": "现在聊晚饭"}], True, True),
+    ("你怎么看", [{"role": "user", "content": "《甲书》和《乙书》哪个好"},
+                    {"role": "assistant", "content": "材料有限"}], True, True),
+])
+def test_book_opinion_fallback_does_not_guess_topic(message, history, active, is_group):
+    from app.chat.response_plan import build_rule_plan
+
+    plan = build_rule_plan(message, history=history, is_owner=False,
+                           is_group=is_group, group_context_active=active)
+    assert not plan.context_continue
+
+
+@pytest.mark.parametrize("response", [None, "invalid JSON", '{"mode":"reasoning","confidence":0.2}'])
+def test_planner_failures_keep_window_book_fallback(response):
+    async def chat(*args, **kwargs):
+        if response is None:
+            raise TimeoutError()
+        return response
+
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(semantic_planner_enabled=True, llm_model="test",
+            response_plan_model="", response_plan_timeout=1,
+            response_plan_max_tokens=400, response_plan_min_confidence=0.6),
+        llm=SimpleNamespace(chat=chat),
+    )
+    plan = asyncio.run(plan_response(_window_ctx(), runtime, _book_history()))
+    assert plan.context_continue and plan.research_kind == "novel"
+    assert not plan.needs_moral_judgment
+
+
+def test_valid_semantic_ignore_is_not_overridden_by_book_fallback():
+    async def chat(*args, **kwargs):
+        return json.dumps({"mode": "casual_chat", "confidence": 0.95,
+                           "context_relation": "new_topic", "reply_decision": "ignore"})
+
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(semantic_planner_enabled=True, llm_model="test",
+            response_plan_model="", response_plan_timeout=1,
+            response_plan_max_tokens=400, response_plan_min_confidence=0.6),
+        llm=SimpleNamespace(chat=chat),
+    )
+    plan = asyncio.run(plan_response(_window_ctx(), runtime, _book_history()))
+    assert plan.source == "llm" and not plan.context_continue
+    assert plan.provider is None and not plan.needs_moral_judgment
 
 
 def test_parse_llm_plan_accepts_autonomous_mode():

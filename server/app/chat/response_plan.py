@@ -7,6 +7,7 @@ from typing import Any
 
 from app.chat import values as values_module
 from app.common.timeutil import now_local
+from app.group.context import speaker_alias
 
 _ALLOWED_PROVIDERS = frozenset({"current_datetime", "calculator", "web_search", "hotboard"})
 _ALLOWED_ROUTES = frozenset({"direct", "local_memory", "web_research", "hybrid", "domain"})
@@ -361,12 +362,78 @@ def is_investigation_followup(message: str) -> bool:
     ))
 
 
+_CONTEXT_BOOK_OPINION_RE = re.compile(
+    r"(?:那|所以)?\s*(?:你怎么看(?:待这(?:本书|部作品)|这(?:本书|部作品))?|"
+    r"(?:你觉得)?这(?:本书|部作品)怎么样|(?:这(?:本书|部作品))?值得看吗)"
+    r"[？?。！!\s]*"
+)
+
+
+def _context_book_title(history: list[dict[str, Any]] | None, user_id: str = "") -> str:
+    """只回溯有助手回应的相邻作品轮次；遇换题或多书比较就停止。"""
+    recent = (history or [])[-8:]
+    if not recent or recent[-1].get("role") != "assistant":
+        return ""
+    for item in reversed(recent):
+        if str(item.get("role") or "") != "user":
+            continue
+        raw = str(item.get("content") or "")[:500]
+        alias = re.match(r"^(成员[0-9a-f]{6})：", raw)
+        if alias and user_id and alias[1] != speaker_alias(user_id):
+            return ""  # 不把其他成员刚问的作品接到当前用户的窗口。
+        text = raw[alias.end():].strip() if alias else raw.strip()
+        if _SOCIAL_SWITCH_RE.search(text):
+            return ""
+        titles = re.findall(r"《([^《》\n]{2,40})》|「([^「」\n]{2,40})」", text)
+        if len(titles) == 1:
+            return next(part for part in titles[0] if part).strip()
+        if titles or not _CONTEXT_BOOK_OPINION_RE.fullmatch(text):
+            return ""
+    return ""
+
+
+def _window_book_opinion_plan(
+    message: str,
+    history: list[dict[str, Any]] | None,
+    *,
+    is_group: bool,
+    group_context_active: bool,
+    user_id: str = "",
+) -> ResponsePlan | None:
+    """仅对已开启窗口的明确作品观点续问提供安全规则 fallback。"""
+    text = str(message or "").strip()
+    if not (is_group and group_context_active and _CONTEXT_BOOK_OPINION_RE.fullmatch(text)):
+        return None
+    if _SOCIAL_SWITCH_RE.search(text):
+        return None
+    title = _context_book_title(history, user_id)
+    if not title:
+        return None
+    query = f"{title}？ 作品简介 剧情 设定"
+    return ResponsePlan(
+        mode="retrieve_then_answer", intent="novel_opinion_followup", confidence=0.86,
+        evidence_required=True, retrieval_required=True, tool_required=True,
+        provider="web_search", route="web_research", research_kind="novel",
+        subject=title[:160], research_question=text[:400], research_queries=[query],
+        query=query, context_relation="continues_previous", context_continue=True,
+        context_subject=title[:160], reply_decision="answer",
+        constraints=[
+            NO_SOURCE_RULE,
+            "只依据本轮作品资料摘录回答；资料不足时明确限制",
+            "把资料支持的事实与有限看法分开，不凭记忆补写剧情或口碑",
+        ], source="rule",
+    )
+
+
 def build_rule_plan(
     message: str,
     *,
     is_owner: bool = True,
     history: list[dict[str, Any]] | None = None,
     investigation_context: dict[str, Any] | None = None,
+    is_group: bool = False,
+    group_context_active: bool = False,
+    user_id: str = "",
 ) -> ResponsePlan:
     text = (message or "").strip()
     if not text:
@@ -378,6 +445,13 @@ def build_rule_plan(
             constraints=["必须使用当前时间 provider，不得凭模型记忆猜测"], source="rule",
         )
     from app.chat import web_provider, web_research
+
+    window_book_plan = _window_book_opinion_plan(
+        text, history, is_group=is_group, group_context_active=group_context_active,
+        user_id=user_id,
+    )
+    if window_book_plan is not None:
+        return window_book_plan
 
     prior = investigation_context or {}
     if is_owner and prior.get("question") and is_investigation_followup(text):
@@ -911,7 +985,15 @@ async def plan_response(ctx: Any, runtime: Any, history: list[dict[str, Any]] | 
             group_scene = group_context.scene_summary(getattr(ctx, "group_id", ""))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             group_scene = {}
-    hint = build_rule_plan(ctx.message, is_owner=ctx.is_owner, history=history, investigation_context=prior)
+    hint = build_rule_plan(
+        ctx.message,
+        is_owner=ctx.is_owner,
+        history=history,
+        investigation_context=prior,
+        is_group=is_group,
+        group_context_active=bool(getattr(ctx, "group_context_active", False)),
+        user_id=str(getattr(ctx, "uid", "") or ""),
+    )
     if is_group:
         hint = apply_group_social_requirements(
             hint,

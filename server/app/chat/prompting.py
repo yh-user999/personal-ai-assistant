@@ -391,15 +391,22 @@ def build_system_prompt(ctx: ChatContext, runtime: ChatRuntime, bundle: Retrieva
         if plan.get("hotboard_empty") or plan.get("hotboard_unavailable"):
             block.append("热榜暂时取不到：如实说明当前拿不到热点清单，不要凭记忆编造。")
         if plan.get("web_has_sources"):
-            block.append(
-                "本轮已取得实时检索资料（见下方不可信参考块）："
-                "只能依据该资料作答，并标注来源；多篇报道不一致时说明分歧。"
-            )
-            if str(plan.get("web_research_kind") or plan.get("research_kind") or "") == "novel":
+            research_kind = str(plan.get("web_research_kind") or plan.get("research_kind") or "")
+            if research_kind == "novel":
+                block.append(
+                    "本轮已取得实时检索资料（见下方不可信参考块）：只能依据该资料作答；"
+                    "资料块是备查材料，不是要照抄的来源清单。默认自然概括，不贴原始链接；"
+                    "只有用户明确索要来源、出处或链接时才展示有限来源。"
+                )
                 block.append(
                     "这是小说资料查询：作者、平台、简介和设定只能采用摘录明确支持的内容；"
                     "摘录没有覆盖的剧情或评价不得凭记忆补写。回答自然简洁，"
                     "不要展示内部来源分级、评分或审校过程。"
+                )
+            else:
+                block.append(
+                    "本轮已取得实时检索资料（见下方不可信参考块）："
+                    "只能依据该资料作答，并标注来源；多篇报道不一致时说明分歧。"
                 )
             if ctx.is_group and getattr(ctx, "group_context_active", False):
                 block.append(
